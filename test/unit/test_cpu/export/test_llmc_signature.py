@@ -10,6 +10,7 @@ from auto_round.export.formats.compressed_tensors.integer import (
 )
 from auto_round.export.formats.compressed_tensors.utils import (
     _compact_llmcompressor_regex_config,
+    add_routed_experts_if_moe,
     assign_config_group_targets,
     collect_fused_expert_modules,
     compact_expert_targets,
@@ -218,6 +219,20 @@ def test_rewrite_config_group_targets_adds_routed_experts_for_moe():
     assert rewritten["config_groups"]["group_1"]["targets"] == ["Linear"]
 
 
+def test_rewrite_config_group_targets_adds_routed_experts_for_uniform_moe():
+    weights = {"num_bits": 4, "type": "int"}
+    model = torch.nn.Module()
+    model.mlp = torch.nn.Module()
+    model.mlp.experts = torch.nn.ModuleList([torch.nn.Module()])
+    model.mlp.experts[0].gate_proj = torch.nn.Linear(2, 2)
+    model.mlp.experts[0].gate_proj.quantization_scheme = SimpleNamespace(weights=weights, input_activations=None)
+    config = {"config_groups": {"group_0": {"weights": weights, "input_activations": None, "targets": ["Linear"]}}}
+
+    rewritten = _rewrite_config_group_targets(model, config)
+
+    assert rewritten["config_groups"]["group_0"]["targets"] == ["Linear", "RoutedExperts"]
+
+
 def test_ignored_fused_experts_get_vllm_ignore_entry():
     model = torch.nn.Module()
     model.mlp = torch.nn.Module()
@@ -253,6 +268,12 @@ def test_assign_config_group_targets_uses_class_fallback_only_for_largest_group(
         "moe": group_layers["moe"],
         "attn": ["Linear"],
     }
+
+
+def test_assign_config_group_targets_recognizes_expert_container_names():
+    group_layers = {"moe": ["model.layers.0.mlp.experts"]}
+
+    assert assign_config_group_targets(group_layers, ["Linear"]) == {"moe": ["Linear", "RoutedExperts"]}
 
 
 def test_revert_quantization_config_names_uses_checkpoint_namespace():

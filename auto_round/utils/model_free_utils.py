@@ -36,10 +36,10 @@ import torch
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.formats.compressed_tensors.utils import add_routed_experts_if_moe as _add_routed_experts_if_moe
 from auto_round.export.formats.compressed_tensors.utils import assign_config_group_targets
-from auto_round.export.formats.compressed_tensors.utils import compact_expert_targets as _compact_expert_targets
 from auto_round.export.formats.compressed_tensors.utils import (
     ignore_fused_experts_for_vllm as _ignore_fused_experts_for_vllm,
 )
+from auto_round.export.formats.compressed_tensors.utils import normalize_expert_groups as _normalize_expert_groups
 from auto_round.export.formats.compressed_tensors.utils import select_fallback_group
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
@@ -3561,7 +3561,7 @@ def _build_quantization_config(
             qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = "nvfp4-pack-quantized"
         qconfig.update(_get_llm_compressor_metadata())
-        return _compact_expert_targets(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
+        return _normalize_expert_groups(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -3587,7 +3587,7 @@ def _build_quantization_config(
             "compressed-tensors"
         ):
             qconfig = _explicit_mxfp_targets(qconfig, quantized_layers)
-        return _compact_expert_targets(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
+        return _normalize_expert_groups(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
 
     # When the default is full-precision (BF16/FP16) but INT layers were
     # quantized via layer_config, derive the dominant INT scheme and use it as

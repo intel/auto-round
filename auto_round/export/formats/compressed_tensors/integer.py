@@ -153,11 +153,11 @@ def _rewrite_config_group_targets(model, quantization_config_dict):
     their scheme signature and rewrite the matching group's `targets` to the
     concrete module names.
 
-    Single-group (uniform) models are left untouched: their lone `["Linear"]`
-    target is unambiguous and already loads correctly.
+    Uniform models also need `RoutedExperts` when their sole group contains MoE
+    projections; dense-only uniform models retain the unambiguous `["Linear"]` target.
     """
     groups = quantization_config_dict.get("config_groups", {})
-    if len(groups) <= 1:
+    if not groups:
         return quantization_config_dict
 
     from collections import defaultdict

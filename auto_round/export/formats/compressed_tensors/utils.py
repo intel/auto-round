@@ -53,6 +53,11 @@ def add_routed_experts_if_moe(
         if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
             return list(targets) + ["RoutedExperts"]
 
+        if lname.endswith((".experts", ".shared_experts")):
+            if include_standard_experts:
+                return list(targets) + ["RoutedExperts"]
+            continue
+
         if ".experts." not in lname:
             continue
 
@@ -97,6 +102,9 @@ def compact_expert_targets(qconfig: dict) -> dict:
     vLLM resolves a FusedMoE scheme only from the exact ``<experts>.0.<proj>`` paths (exact, so its name mapper
     still renames them), while compressed-tensors matches every expert through the regex, which enumerates exactly
     the listed expert indices so it never claims modules of another group.
+
+    A group without expert 0 keeps no exact target on purpose: vLLM picks one scheme per FusedMoE layer from the
+    expert-0 probe only, so such a group was never reachable by that probe, even with literal targets.
     """
     for group in (qconfig.get("config_groups") or {}).values():
         targets = group.get("targets") or []
@@ -122,6 +130,23 @@ def compact_expert_targets(qconfig: dict) -> dict:
                 f"re:^{re.escape(container)}\\.{_numeric_values_to_regex(list(expert_ids))}\\.{alternatives}$"
             )
         group["targets"] = kept + compress_regex_patterns(regexes)
+    return qconfig
+
+
+def _holds_experts(group: dict) -> bool:
+    return any(target == "RoutedExperts" or ".experts" in target for target in group.get("targets") or [])
+
+
+def normalize_expert_groups(qconfig: dict) -> dict:
+    """Compact expert targets and move expert-holding groups first.
+
+    transformers dequantizes fused experts with a single scheme: the first group with an ``re:`` experts target,
+    else the first group with any non-regex target. vLLM and compressed-tensors do not depend on group order.
+    """
+    qconfig = compact_expert_targets(qconfig)
+    groups = qconfig.get("config_groups")
+    if groups:
+        qconfig["config_groups"] = dict(sorted(groups.items(), key=lambda item: not _holds_experts(item[1])))
     return qconfig
 
 
@@ -229,7 +254,7 @@ def finalize_llmcompressor_config_names(
     ]
     qconfig = ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
     # Runs after the revert so the expert regexes are built from checkpoint names.
-    return _compact_llmcompressor_regex_config(compact_expert_targets(qconfig))
+    return _compact_llmcompressor_regex_config(normalize_expert_groups(qconfig))
 
 
 def collect_fused_expert_modules(model: torch.nn.Module) -> list[str]:
