@@ -244,8 +244,10 @@ def save_quantized_rrq(
 
     logger.info(f"Saving RRQ residual model ({num_planes - 1} planes) to {output_dir}")
 
-    # Build a state dict containing *only* the packed residual planes, and
-    # rename the in-memory ``rrq_*_k`` buffers to the on-disk ``*_k`` names.
+    # Build a state dict containing *only* the packed residual planes.
+    # The in-memory ``rrq_*_k`` buffers are mapped to the on-disk ``*_k``
+    # names in the state dict *without* mutating ``module._buffers``, so the
+    # in-memory module state is unchanged after export.
     residual_state: dict[str, torch.Tensor] = {}
     for name, module in model.named_modules():
         if not hasattr(module, "rrq_total_planes"):
@@ -257,10 +259,7 @@ def save_quantized_rrq(
                 (f"rrq_qzeros_{k}", f"qzeros_{k}"),
             ):
                 if src in module._buffers:
-                    module._buffers[dst] = module._buffers.pop(src)
-            for dst in (f"qweight_{k}", f"scales_{k}", f"qzeros_{k}"):
-                if dst in module._buffers:
-                    residual_state[f"{name}.{dst}"] = module._buffers[dst].detach().cpu()
+                    residual_state[f"{name}.{dst}"] = module._buffers[src].detach().cpu()
 
     # Serialize the residual state dict (safetensors by default, torch otherwise).
     _save_state_dict_sharded(residual_state, output_dir, safe_serialization)

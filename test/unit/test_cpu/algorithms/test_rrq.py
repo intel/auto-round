@@ -649,13 +649,11 @@ class TestRRQSave:
         out_dir = str(tmp_path / "rrq_residual")
         save_quantized_rrq(out_dir, model)
 
-        # The three residual planes (packed INT2) should be renamed to the ABI.
+        # In-memory buffers keep their ``rrq_*`` names (no side-effect rename).
         for k in range(1, 4):
-            assert f"qweight_{k}" in layer._buffers, f"qweight_{k} buffer missing"
-            assert f"scales_{k}" in layer._buffers, f"scales_{k} buffer missing"
-            assert f"qzeros_{k}" in layer._buffers, f"qzeros_{k} buffer missing"
-            for old in (f"rrq_qweight_{k}", f"rrq_scales_{k}", f"rrq_qzeros_{k}"):
-                assert old not in layer._buffers
+            assert f"rrq_qweight_{k}" in layer._buffers, f"rrq_qweight_{k} buffer missing"
+            assert f"rrq_scales_{k}" in layer._buffers, f"rrq_scales_{k} buffer missing"
+            assert f"rrq_qzeros_{k}" in layer._buffers, f"rrq_qzeros_{k} buffer missing"
 
         # Only residual-plane tensors should be saved -- no base weight, no
         # non-RRQ params.  There are exactly 3 planes x 3 tensors = 9 entries.

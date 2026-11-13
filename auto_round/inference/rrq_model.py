@@ -327,19 +327,23 @@ def load_rrq_model(
     try:
         base_model = transformers.AutoModelForCausalLM.from_pretrained(
             base_model_dir,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
             low_cpu_mem_usage=True,
             **load_kwargs,
         )
-    except Exception:  # pragma: no cover - fall back to architecture-only load
+    except (KeyError, ValueError, RuntimeError) as e:  # pragma: no cover
+        # Packed qweight keys may not match nn.Linear.weight shape; fall back
+        # to architecture-only load.  Only weight-loading errors are caught --
+        # a broad ``except Exception`` would silently produce a model with
+        # random weights (e.g. on OOM or network errors).
         logger.warning(
-            "from_pretrained(%s) failed; loading architecture without weights.",
+            "from_pretrained(%s) failed (%s); loading architecture without weights.",
             base_model_dir,
-            exc_info=True,
+            type(e).__name__,
         )
         base_model = transformers.AutoModelForCausalLM.from_config(
             transformers.AutoConfig.from_pretrained(base_model_dir)
-        )
+        ).to(torch.float16)
     base_model.to(device_obj)
 
     from auto_round.inference.rrq_linear import RRQLinear
