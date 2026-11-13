@@ -154,6 +154,43 @@ set_rrq_bits(model, 6)
 set_rrq_random_residual(model, fraction=0.25, seed=1, high_bits=4, low_bits=2)
 ```
 
+## Inference performance
+
+`RRQLinear` keeps the packed INT2 planes resident and dequantizes them on every
+forward. That is what makes a single checkpoint switchable between
+2/4/6/8-bit, but it is slow: each layer rebuilds its weight tensor for every
+token.
+
+Calling `materialize_rrq(model)` once converts every RRQ layer into a dense
+`nn.Linear`, paying the dequantization a single time and then running ordinary
+dense GEMMs. The trade-off is memory and flexibility: the dense copy needs about
+2 bytes per parameter (~54 GB for a 27B model in bf16) and the precision is
+frozen at whatever was active when it was called.
+
+```python
+from auto_round import load_rrq_model, materialize_rrq
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=4, device="cuda")
+# ... validate accuracy at 2/4/6/8-bit if you like ...
+materialize_rrq(model)  # freeze the active precision, dense inference
+```
+
+Measured on Qwen3.8-27B (8-bit, single 80 GB card):
+
+| Path | Speed | Peak VRAM |
+|---|---|---|
+| `load_rrq_model` only (dequant per forward) | 0.31 tok/s | 30.9 GB |
+| after `materialize_rrq` | **15.08 tok/s** | 51.1 GB |
+
+That is a **48x** speedup, numerically equivalent (same float32 accumulation,
+rounded to the layer dtype).
+
+`load_rrq_model` also caches dequantized weights automatically when the whole
+model fits: it enables the cache only if one dense copy of *every* layer fits in
+the free device memory, and otherwise logs how many GiB it would need. A
+partial cache cannot help because each forward visits every layer, so the
+uncached ones dominate.
+
 ## Notes and limitations
 
 - **MTP layers.** Qwen3.8 ships Multi-Token Prediction head layers (`mtp.*`).

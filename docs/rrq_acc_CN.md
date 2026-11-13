@@ -144,6 +144,37 @@ set_rrq_bits(model, 6)
 set_rrq_random_residual(model, fraction=0.25, seed=1, high_bits=4, low_bits=2)
 ```
 
+## 推理性能
+
+`RRQLinear` 常驻内存的是打包后的 INT2 平面，并在每次 forward 时反量化。这正是单个
+checkpoint 能在 2/4/6/8-bit 之间切换的原因，但代价是慢：每层都要为每个 token 重建
+权重张量。
+
+调用一次 `materialize_rrq(model)` 即可把每个 RRQ 层转换为稠密 `nn.Linear`，把反量化
+成本只付一次，之后便是普通的稠密矩阵乘。代价是内存与灵活性：稠密副本需要约每参数
+2 字节（27B 模型 bf16 约 54 GB），且精度会冻结在调用时生效的那一档。
+
+```python
+from auto_round import load_rrq_model, materialize_rrq
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=4, device="cuda")
+# ... 需要时先验证 2/4/6/8-bit 的精度 ...
+materialize_rrq(model)  # 冻结当前精度，转为稠密推理
+```
+
+在 Qwen3.8-27B 上实测（8-bit，单张 80 GB 卡）：
+
+| 路径 | 速度 | 峰值显存 |
+|---|---|---|
+| 仅 `load_rrq_model`（每次 forward 反量化） | 0.31 tok/s | 30.9 GB |
+| 调用 `materialize_rrq` 后 | **15.08 tok/s** | 51.1 GB |
+
+即 **48 倍**加速，且数值等价（同样以 float32 累加，再舍入到层的 dtype）。
+
+此外，当整个模型能放下时，`load_rrq_model` 会自动缓存反量化后的权重：仅当**每一层**
+的稠密副本能装进设备空闲显存时才开启缓存，否则会打印所需的 GiB 数。部分缓存没有
+帮助，因为每次 forward 都会经过所有层，未缓存的层会成为瓶颈。
+
 ## 说明与限制
 
 - **MTP 层。** Qwen3.8 带有 Multi-Token Prediction 头层（`mtp.*`）。RRQ 仅
