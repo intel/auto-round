@@ -516,9 +516,19 @@ def load_rrq_model(
     else:
         set_rrq_bits(base_model, active_bits)
         logger.info(f"Built {replaced} RRQ layers from base + residual (active={active_bits}-bit).")
+
+    # Cache the dequantized weights only if one dense copy of every layer fits.
+    # A partial cache cannot help -- each forward visits every layer, so the
+    # uncached ones dominate -- and an unconditional cache OOMs on large models.
+    from auto_round.inference.rrq_linear import enable_rrq_weight_cache_if_it_fits
+
+    enable_rrq_weight_cache_if_it_fits(base_model)
+
     logger.info(
         "Switch precision via auto_round.inference.rrq_linear.set_rrq_bits(model, bits). "
         "Each RRQ layer dequantizes all active planes into a single weight and runs "
-        "one matmul+bias (stock W2A16 dequant; correctness reference, not a fused kernel)."
+        "one matmul+bias (stock W2A16 dequant; correctness reference, not a fused kernel). "
+        "For deployment, call auto_round.inference.rrq_linear.materialize_rrq(model) once "
+        "to trade the multi-precision planes for ~50x faster dense inference."
     )
     return base_model

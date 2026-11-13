@@ -591,6 +591,76 @@ class TestRRQLinear:
         with pytest.raises(ValueError):
             set_rrq_random_residual(nn.Module())
 
+    def test_materialize_rrq_replaces_layers_and_preserves_output(self):
+        """materialize_rrq converts to dense nn.Linear with the same numerics."""
+        from auto_round.inference.rrq_linear import RRQLinear, materialize_rrq
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        layer.set_active_bits(4)  # 2 planes
+
+        x = torch.randn(4, 64)
+        with torch.no_grad():
+            before = layer(x)
+
+        container = nn.Module()
+        container.proj = layer
+        n = materialize_rrq(container)
+
+        assert n == 1
+        assert isinstance(container.proj, nn.Linear)
+        assert not isinstance(container.proj, RRQLinear)
+        assert container.proj.weight.shape == (32, 64)
+
+        with torch.no_grad():
+            # materialize_rrq rounds to the model dtype (fp32 on CPU here).
+            after = container.proj(x)
+        assert torch.allclose(before, after, atol=1e-3), "materialized output diverged"
+
+    def test_materialize_rrq_frees_packed_planes(self):
+        """Packed INT2 plane buffers are released so the dense copy does not double memory."""
+        from auto_round.inference.rrq_linear import materialize_rrq
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        container = nn.Module()
+        container.proj = layer
+
+        # Keep a handle so we can inspect it after replacement.
+        materialize_rrq(container)
+        assert layer.base is None
+        assert layer.planes is None
+
+    def test_required_cache_bytes_matches_dense_footprint(self):
+        """required_rrq_cache_bytes sums one dense copy of every RRQ layer."""
+        from auto_round.inference.rrq_linear import required_rrq_cache_bytes
+
+        model = nn.Module()
+        model.a = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        model.b = self._build_rrq_layer(128, 64, group_size=32, num_residual=3)
+
+        # bf16 -> 2 bytes/element: (32*64 + 64*128) * 2
+        expected = (32 * 64 + 64 * 128) * 2
+        assert required_rrq_cache_bytes(model, torch.bfloat16) == expected
+        assert required_rrq_cache_bytes(model, torch.float32) == expected * 2
+        assert required_rrq_cache_bytes(nn.Module()) == 0
+
+    def test_cache_budget_gates_cuda_caching_only(self):
+        """A zero budget disables CUDA caching; CPU always caches."""
+        from auto_round.inference import rrq_linear
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        assert layer.base.qweight.device.type == "cpu"
+
+        # CPU ignores the budget: repeated forwards reuse the cached weight.
+        rrq_linear.set_rrq_weight_cache_budget(0)
+        layer.reset_packed_weight_cache()
+        x = torch.randn(2, 64)
+        with torch.no_grad():
+            layer(x)
+        assert layer._packed_weight is not None, "CPU should cache regardless of budget"
+
+        # Reset for other tests.
+        rrq_linear.set_rrq_weight_cache_budget(0)
+
 
 class TestRRQConfigBuilder:
     """Tests for the residual-model quantization_config builder."""

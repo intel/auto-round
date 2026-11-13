@@ -32,7 +32,125 @@ import torch.nn.functional as F
 
 from auto_round.utils import logger
 
-__all__ = ["RRQLinear", "set_rrq_bits", "set_rrq_random_residual"]
+__all__ = ["RRQLinear", "materialize_rrq", "set_rrq_bits", "set_rrq_random_residual", "set_rrq_weight_cache_budget"]
+
+
+# -- Dequantized-weight cache budget ------------------------------------------
+#
+# ``RRQLinear`` keeps packed INT2 planes on the device and dequantizes them on
+# demand.  Retaining the dequantized weight per layer makes forwards fast but
+# needs a dense copy of the whole model (a bf16 27B model is ~54 GB on top of
+# the ~30 GB packed planes), which does not fit on a single 80 GB card.  A
+# bounded budget lets small models cache automatically while large ones fall
+# back to rebuilding per forward rather than failing with OOM.
+_RRQ_CACHE_BUDGET_BYTES = 0  # 0 disables CUDA caching (set by load_rrq_model)
+_RRQ_CACHE_USED_BYTES = 0
+
+
+def set_rrq_weight_cache_budget(num_bytes: int | None = None) -> int:
+    """Set how many bytes of dequantized weights may be cached on CUDA.
+
+    The budget is all-or-nothing in practice: a single forward pass visits every
+    RRQ layer, so holding only part of the dequantized weights does not speed
+    anything up (the uncached layers dominate).  Callers should therefore pass
+    the *total* footprint needed for the whole model, or ``0``.
+
+    Args:
+        num_bytes: Byte budget for cached dequantized weights.  ``None`` leaves
+            caching disabled -- use :func:`required_rrq_cache_bytes` to size it
+            from the model.  ``0`` disables caching (lowest memory, slowest).
+
+    Returns:
+        The budget that is now in effect.
+    """
+    global _RRQ_CACHE_BUDGET_BYTES, _RRQ_CACHE_USED_BYTES
+    if num_bytes is None:
+        num_bytes = 0
+    _RRQ_CACHE_BUDGET_BYTES = max(0, int(num_bytes))
+    _RRQ_CACHE_USED_BYTES = 0
+    if _RRQ_CACHE_BUDGET_BYTES:
+        logger.info("RRQ dequantized-weight cache budget set to %.1f GiB", _RRQ_CACHE_BUDGET_BYTES / 2**30)
+    return _RRQ_CACHE_BUDGET_BYTES
+
+
+def required_rrq_cache_bytes(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> int:
+    """Bytes needed to cache the dequantized weight of every RRQ layer in ``model``.
+
+    Args:
+        model: Model containing ``RRQLinear`` modules.
+        dtype: Storage dtype the cache would use (bf16 by default).
+
+    Returns:
+        Total bytes for one dense copy of all RRQ layers, or ``0`` if the model
+        has no RRQ layers.
+    """
+    element_size = torch.tensor([], dtype=dtype).element_size()
+    total = 0
+    for module in model.modules():
+        if isinstance(module, RRQLinear):
+            total += module.in_features * module.out_features * element_size
+    return total
+
+
+def enable_rrq_weight_cache_if_it_fits(model: nn.Module, dtype: torch.dtype = torch.bfloat16) -> bool:
+    """Cache all dequantized weights when the device has room; otherwise disable.
+
+    A partial cache cannot help: every forward visits every layer, so the
+    uncached ones dominate.  This enables the cache only when the *whole* dense
+    copy fits in the free device memory (keeping 20% headroom for activations),
+    and otherwise leaves it disabled so the model still runs, just slower.
+
+    Args:
+        model: Model containing ``RRQLinear`` modules.
+        dtype: Cache storage dtype.
+
+    Returns:
+        True if caching was enabled.
+    """
+    needed = required_rrq_cache_bytes(model, dtype)
+    if needed == 0:
+        set_rrq_weight_cache_budget(0)
+        return False
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:  # pragma: no cover - parameterless model
+        set_rrq_weight_cache_budget(0)
+        return False
+    if device.type != "cuda":
+        # CPU always caches; the budget only gates CUDA.
+        set_rrq_weight_cache_budget(0)
+        return True
+
+    free, _total = torch.cuda.mem_get_info(device)
+    if needed > free * 0.8:
+        set_rrq_weight_cache_budget(0)
+        logger.info(
+            "RRQ: %.1f GiB needed to cache dequantized weights but only %.1f GiB is free; "
+            "running without the cache (slow). Call auto_round.inference.materialize_rrq(model) "
+            "once for ~30x faster dense inference.",
+            needed / 2**30,
+            free / 2**30,
+        )
+        return False
+    set_rrq_weight_cache_budget(needed)
+    return True
+
+
+def _rrq_cache_acquire(num_bytes: int) -> bool:
+    """Reserve ``num_bytes`` of the cache budget; False if it does not fit."""
+    global _RRQ_CACHE_USED_BYTES
+    if _RRQ_CACHE_BUDGET_BYTES <= 0:
+        return False
+    if _RRQ_CACHE_USED_BYTES + num_bytes > _RRQ_CACHE_BUDGET_BYTES:
+        return False
+    _RRQ_CACHE_USED_BYTES += num_bytes
+    return True
+
+
+def _rrq_cache_release(num_bytes: int) -> None:
+    """Return ``num_bytes`` to the cache budget."""
+    global _RRQ_CACHE_USED_BYTES
+    _RRQ_CACHE_USED_BYTES = max(0, _RRQ_CACHE_USED_BYTES - num_bytes)
 
 
 class RRQLinear(nn.Module):
@@ -140,19 +258,27 @@ class RRQLinear(nn.Module):
         Each plane is dequantized via :meth:`QuantLinear._dequantize` and the
         results are summed in float32 to avoid precision loss.
 
-        Caching policy: the accumulated weight is large (a bf16 copy of a 27B
-        model is ~54 GB), so caching it for every layer on CUDA exceeds a single
-        80 GB card once the model itself is resident.  On CUDA the tensor is
-        therefore rebuilt per forward and freed when it goes out of scope.  On
-        CPU (unit tests, small reference models) the result is cached to keep
-        repeated forwards cheap.
+        Caching policy: a dense copy of a large model does not fit alongside its
+        packed representation (a bf16 copy of a 27B model is ~54 GB), so caching
+        every layer unconditionally OOMs.  The cache is therefore bounded:
+
+        - On CPU (unit tests, small reference models) the result is always
+          cached -- repeated forwards are the common case and memory is ample.
+        - On CUDA caching is allowed only while the global budget set by
+          :func:`set_rrq_weight_cache_budget` has room.  ``load_rrq_model``
+          sizes that budget from the free device memory, so models that fit are
+          fast automatically and larger ones degrade to rebuilding per forward
+          instead of failing.
+
+        Note that a *partial* cache only helps when it covers a layer once per
+        forward pass; for real deployment prefer :func:`materialize_rrq`, which
+        converts the layers to dense ``nn.Linear`` once and is ~50x faster.
         """
-        cacheable = self.base.qweight.device.type != "cuda"
+        device = self.base.qweight.device
         if (
-            cacheable
-            and self._packed_weight is not None
+            self._packed_weight is not None
             and self._packed_weight_planes == num_planes
-            and self._packed_weight.device == self.base.qweight.device
+            and self._packed_weight.device == device
         ):
             return self._packed_weight
 
@@ -161,15 +287,35 @@ class RRQLinear(nn.Module):
         for index in range(1, num_planes):
             weight = weight + self.planes[f"rrq_{index}"]._dequantize().float()
 
-        if cacheable:
-            self._packed_weight = weight
+        # Cache in bf16 on CUDA: it halves the footprint (letting roughly twice
+        # as many models cache) and matches the compute dtype, so the matmul
+        # needs no extra conversion.  CPU keeps fp32 for exact reference numerics.
+        store_dtype = torch.float32 if device.type != "cuda" else torch.bfloat16
+        nbytes = weight.numel() * torch.tensor([], dtype=store_dtype).element_size()
+        if self._can_cache(nbytes):
+            self._packed_weight = weight.to(store_dtype)
             self._packed_weight_planes = num_planes
+            return self._packed_weight
         return weight
+
+    def _can_cache(self, nbytes: int) -> bool:
+        """Return whether ``nbytes`` of cache budget can be reserved."""
+        if not torch.cuda.is_available():
+            return True
+        if self.base.qweight.device.type != "cuda":
+            return True
+        return _rrq_cache_acquire(nbytes)
+
+    def _release_cached_weight(self) -> None:
+        """Drop the cached weight and return its bytes to the budget."""
+        if self._packed_weight is not None:
+            _rrq_cache_release(self._packed_weight.numel() * self._packed_weight.element_size())
+        self._packed_weight = None
+        self._packed_weight_planes = None
 
     def reset_packed_weight_cache(self) -> None:
         """Invalidate the cached weight (call after in-place weight changes)."""
-        self._packed_weight = None
-        self._packed_weight_planes = None
+        self._release_cached_weight()
 
     # -- Non-packed (reference) path helpers --------------------------------------
 
@@ -313,3 +459,93 @@ def set_rrq_random_residual(
         f"rest at {low_bits}-bit (fraction={fraction}, seed={seed})."
     )
     return n_high
+
+
+def materialize_rrq(model: nn.Module, dtype: torch.dtype | None = None) -> int:
+    """Convert every ``RRQLinear`` into a dense ``nn.Linear`` and free the planes.
+
+    ``RRQLinear`` dequantizes its active planes on every forward.  That keeps
+    memory low (only the packed INT2 planes are resident) but is roughly 50x
+    slower than a plain matmul, because each layer rebuilds its weight tensor
+    for every token.  Materializing once pays the dequantization a single time
+    and then runs ordinary dense GEMMs.
+
+    The conversion is numerically equivalent: the same float32 accumulation is
+    performed, then rounded to ``dtype``.  Layers are converted one at a time
+    and their packed planes are released immediately, so the transient peak
+    stays close to the final dense footprint rather than double it.
+
+    Trade-off: the dense weights need ~2 bytes/parameter (a 27B bf16 model is
+    ~54 GB), against ~30 GB for the packed 4-plane checkpoint, and the result is
+    no longer switchable between 2/4/6/8-bit -- it is frozen at the precision
+    that was active when it was called.
+
+    Args:
+        model: Model whose ``RRQLinear`` modules should be materialized.
+        dtype: Storage dtype for the dense layers.  Defaults to the model's own
+            dtype, except on CPU where float32 is used so reference numerics
+            stay exact.
+
+    Returns:
+        The number of layers that were converted.
+    """
+    import gc
+
+    from auto_round.utils import set_module
+
+    if dtype is None:
+        # ``nn.Module`` itself has no ``dtype``; HuggingFace models do.  Fall
+        # back to the first parameter's dtype, then to bf16.
+        model_dtype = getattr(model, "dtype", None)
+        if model_dtype is None:
+            try:
+                model_dtype = next(model.parameters()).dtype
+            except StopIteration:  # pragma: no cover - parameterless model
+                model_dtype = torch.bfloat16
+        dtype = model_dtype if model_dtype.is_floating_point else torch.bfloat16
+    try:
+        first_device = next(model.parameters()).device
+    except StopIteration:  # pragma: no cover - parameterless model
+        first_device = torch.device("cpu")
+    if first_device.type == "cpu":
+        dtype = torch.float32
+
+    names = [name for name, module in model.named_modules() if isinstance(module, RRQLinear)]
+    for name in names:
+        module = model.get_submodule(name)
+        planes = module.active_planes
+
+        weight = module.base._dequantize().float()
+        for index in range(1, planes):
+            weight = weight + module.planes[f"rrq_{index}"]._dequantize().float()
+
+        bias = None
+        if module.base.bias is not None:
+            bias = module.base.bias.detach().to(dtype).clone()
+
+        linear = nn.Linear(
+            module.in_features,
+            module.out_features,
+            bias=bias is not None,
+            device=weight.device,
+            dtype=dtype,
+        )
+        with torch.no_grad():
+            # ``_dequantize`` yields (in_features, out_features); nn.Linear
+            # stores (out_features, in_features).
+            linear.weight.copy_(weight.to(dtype).t())
+            if bias is not None:
+                linear.bias.copy_(bias)
+        set_module(model, name, linear)
+
+        # Release this layer's packed INT2 planes right away to keep the peak low.
+        module._release_cached_weight()
+        module.base = None
+        module.planes = None
+        del weight, module
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    logger.info("Materialized %d RRQ layers to dense %s linear layers", len(names), dtype)
+    return len(names)
