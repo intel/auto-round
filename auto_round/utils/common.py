@@ -29,6 +29,7 @@ from packaging import version
 
 from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
+from auto_round.utils.regex import matches_any_regex, to_standard_regex  # noqa: F401
 
 
 def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "<idx>") -> str:
@@ -879,92 +880,6 @@ def flatten_list(nested_list):
         else:
             flattened.append(item)
     return flattened
-
-
-def to_standard_regex(pattern: str) -> str:
-    """
-    Convert a user-specified string into a standardized regex for layer matching.
-
-    Rules:
-    - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
-      keep them as-is.
-    - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
-    - Always ensure the returned regex is valid (compilable by re).
-
-    Examples:
-    >>> to_standard_regex("model.embed_tokens")
-    '.*model\\.embed_tokens.*'
-    >>> to_standard_regex("mlp.gate")
-    '.*mlp\\.gate.*'
-    >>> to_standard_regex("mlp.gate$")
-    '.*mlp\\.gate$'
-    >>> to_standard_regex("mlp.*gate")
-    '.*mlp.*gate.*'
-    """
-    # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {"*", "{", "}", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
-    has_regex = any(tok in pattern for tok in meta_chars)
-    if not has_regex:
-        # Escape literal dots, etc., and wrap with .* for substring matching
-        pattern = re.escape(pattern)
-        regex = f".*{pattern}.*"
-    else:
-        # Only escape bare dots that are not already part of regex constructs:
-        # keep escape sequences (e.g. "\\.", "\\d") and quantified dots
-        # (".*", ".+", ".?", ".{n}") unchanged.
-        tmp = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i] == "\\" and i + 1 < len(pattern):
-                tmp.append(pattern[i : i + 2])  # keep escape sequence
-                i += 2
-                continue
-            if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] in "*+?{":
-                    tmp.append(".")  # keep regex token
-                else:
-                    tmp.append("\\.")  # escape bare dot
-            else:
-                tmp.append(pattern[i])
-            i += 1
-        regex = "".join(tmp)
-        # If no anchors are provided, allow substring matching
-        if not regex.startswith("^") and not regex.startswith(".*"):
-            regex = ".*" + regex
-        if not regex.endswith("$") and not regex.endswith(".*"):
-            regex = regex + ".*"
-    # Validate regex
-    try:
-        re.compile(regex)
-    except re.error as e:
-        raise ValueError(f"Invalid regex generated from pattern '{pattern}': {e}")
-    return regex
-
-
-def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
-    """
-    Check whether `layer_name` matches any regex pattern key in `regex_config`.
-    Args:
-        layer_name (str): The layer name to test.
-        regex_config (dict[str, dict]): A mapping of regex patterns to configs.
-    Returns:
-        bool: True if any pattern matches `layer_name`, otherwise False.
-    """
-    if not regex_config:
-        return False
-
-    for pattern in regex_config:
-        # Strip dynamic prefixes (e.g., "+:" or "-:")
-        raw_pattern = pattern[2:] if pattern.startswith(("+:", "-:")) else pattern
-
-        try:
-            if re.search(raw_pattern, layer_name):
-                return True
-        except re.error as e:
-            logger.warning("Skipping invalid regex pattern %r: %s", pattern, e)
-            continue
-
-    return False
 
 
 def json_serialize(obj: Any):

@@ -32,7 +32,6 @@ class TestAddAutoroundConfig:
             "lr": 0.005,
             "nsamples": 128,
             "seqlen": 2048,
-            "scale_dtype": "torch.float16",
             "act_bits": None,
             "regex_config": {"foo": {"bits": 8}},
             "supported_types": ["Linear"],
@@ -40,8 +39,7 @@ class TestAddAutoroundConfig:
         out = add_autoround_config(qconfig, serialization_dict)
         assert out is qconfig
         ar = qconfig[AUTOROUND_CONFIG_KEY]
-        # SERIALIZATION_KEYS (maintainer request) includes compressor fields such as
-        # regex_config / supported_types; dicts stringify via _to_json_value.
+        # Structured per-layer and runtime fields remain usable JSON values.
         assert ar == {
             "autoround_version": "0.17.0",
             "bits": 4,
@@ -51,15 +49,21 @@ class TestAddAutoroundConfig:
             "lr": 0.005,
             "nsamples": 128,
             "seqlen": 2048,
-            "scale_dtype": "torch.float16",
-            "regex_config": "{'foo': {'bits': 8}}",
-            "supported_types": ["Linear"],
+            "regex_config": {"foo": {"bits": 8}},
         }
+        assert "quant_block_list" not in ar
+        assert "to_quant_block_names" not in ar
+        assert "scale_dtype" not in ar
+        assert "supported_types" not in ar
+        assert "static_kv_dtype" not in ar
+        assert "static_attention_dtype" not in ar
+        assert "static_kv_granularity" not in ar
+        assert "static_attention_granularity" not in ar
         # untouched top-level keys
         assert qconfig["quant_method"] == "compressed-tensors"
         json.dumps(qconfig)
 
-    def test_non_json_values_are_stringified(self):
+    def test_keeps_applicable_static_dtype_and_json_values(self):
         import enum
 
         import torch
@@ -68,21 +72,39 @@ class TestAddAutoroundConfig:
             A = "alpha"
 
         qconfig = {"provider": "auto-round"}
+        applicable_qconfig = qconfig | {
+            "kv_cache_scheme": {"num_bits": 8},
+            "attention_input_activations": {"num_bits": 8},
+        }
         add_autoround_config(
-            qconfig,
+            applicable_qconfig,
             {
                 "scale_dtype": torch.float16,
                 "group_size": (128, 128),
                 "static_kv_dtype": torch.device("cpu"),
                 "static_attention_dtype": SampleEnum.A,
+                "static_kv_granularity": "head",
+                "static_attention_granularity": "tensor",
             },
         )
-        assert qconfig[AUTOROUND_CONFIG_KEY] == {
-            "scale_dtype": "torch.float16",
+        assert applicable_qconfig[AUTOROUND_CONFIG_KEY] == {
             "group_size": [128, 128],
             "static_kv_dtype": "cpu",
             "static_attention_dtype": "alpha",
+            "static_kv_granularity": "head",
+            "static_attention_granularity": "tensor",
         }
+
+    def test_quantization_block_list_is_not_exported(self):
+        qconfig = {"provider": "auto-round"}
+        add_autoround_config(
+            qconfig,
+            {
+                "quant_block_list": [["model.layers.0"]],
+                "to_quant_block_names": ["model.layers"],
+            },
+        )
+        assert AUTOROUND_CONFIG_KEY not in qconfig
 
     @pytest.mark.parametrize("serialization_dict", [None, {}, {"iters": None}])
     def test_noop_without_values(self, serialization_dict):
@@ -145,6 +167,9 @@ def test_llmc_export_writes_autoround_config(tiny_opt_model_path, tmp_path, sche
     assert ar_cfg["seqlen"] == 16
     assert ar_cfg["lr"] == 0.01
     assert ar_cfg["bits"] == 4
+    assert "scale_dtype" not in ar_cfg
+    assert "quant_block_list" not in ar_cfg
+    assert "quantization_config" not in ar_cfg
 
     from transformers import AutoConfig
 

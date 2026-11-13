@@ -45,6 +45,7 @@ from auto_round.utils import (
     set_module,
     to_standard_regex,
 )
+from auto_round.utils.regex import compress_autoround_extra_config
 from auto_round.wrapper import WrapperWALayer
 
 from .qlinear_fp import QuantLinear as FpQuantLinear
@@ -247,6 +248,7 @@ def save_checkpoint(
                     if cfg.get(key) is not None:
                         extra_config[regex_name][key] = cfg[key]
 
+    extra_config = compress_autoround_extra_config(extra_config, set(layer_config))
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     names = list(layer_config.keys())
