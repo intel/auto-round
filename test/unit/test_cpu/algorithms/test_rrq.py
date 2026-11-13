@@ -1388,4 +1388,3 @@ class TestRRQIncrementalFromRealBase:
             assert norms[i] <= norms[i - 1] + 1e-4, f"residual error increased at plane {i}: {norms[i]} > {norms[i-1]}"
         # 8-bit (base + 3 residuals) should be much closer to FP than 2-bit base.
         assert norms[-1] < norms[0] * 0.5, f"4-plane reconstruction not better than base: {norms}"
-
