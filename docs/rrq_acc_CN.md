@@ -51,7 +51,9 @@ model = load_rrq_model("./rrq_out/<model>/base", "./rrq_out/<model>/residual", a
 tokenizer = AutoTokenizer.from_pretrained("./rrq_out/<model>/base")
 
 result = simple_evaluate_user_model(
-    model, tokenizer, batch_size=8,
+    model,
+    tokenizer,
+    batch_size=8,
     tasks=["piqa", "winogrande", "hellaswag", "arc_easy", "arc_challenge"],
 )
 ```
@@ -129,9 +131,12 @@ model = load_rrq_model(base_dir, residual_dir, active_bits=4)
 
 # 随机混合：一半层 4-bit，一半层 2-bit（可复现）
 model = load_rrq_model(
-    base_dir, residual_dir,
-    residual_fraction=0.5, residual_seed=0,
-    residual_high_bits=4, residual_low_bits=2,
+    base_dir,
+    residual_dir,
+    residual_fraction=0.5,
+    residual_seed=0,
+    residual_high_bits=4,
+    residual_low_bits=2,
 )
 
 # 或加载后再切换
