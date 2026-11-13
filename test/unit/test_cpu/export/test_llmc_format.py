@@ -591,7 +591,7 @@ class TestLLMCNVFP4KV:
     def test_llmcompressor_nvfp4_kv_global_scales(self, tiny_opt_model_path, dataloader, tmp_path):
         from safetensors import safe_open
 
-        from auto_round.data_type.nvfp import calculate_gparam
+        from auto_round.data_type.nvfp import calculate_gparam, get_nvfp_gs_alpha
         from auto_round.experimental.kv_cache import QuantizedKVParameterCache
 
         _, quantized_model_path = self._quantize_nvfp4_kv(tiny_opt_model_path, dataloader, tmp_path)
@@ -613,10 +613,10 @@ class TestLLMCNVFP4KV:
                 assert v_global_scale.dtype == torch.float32 and v_global_scale.shape == torch.Size([1])
                 assert cache.k_amax[i] > 0 and cache.v_amax[i] > 0
                 # vLLM serving convention: the checkpoint stores the dequantization
-                # multiplier amax / 2688 = 1 / calculate_gparam(amax) (see
-                # _nvfp4_global_scale), not the weight-style 2688 / amax.
-                expected_k = 1.0 / calculate_gparam(cache.k_amax[i])
-                expected_v = 1.0 / calculate_gparam(cache.v_amax[i])
+                # multiplier 4 * amax / 2688 = 1 / calculate_gparam(amax) (alpha=4 by default,
+                # see _nvfp4_global_scale), not the weight-style 2688 / amax.
+                expected_k = 1.0 / calculate_gparam(cache.k_amax[i], alpha=get_nvfp_gs_alpha(e5m3=False))
+                expected_v = 1.0 / calculate_gparam(cache.v_amax[i], alpha=get_nvfp_gs_alpha(e5m3=False))
                 assert torch.isclose(k_global_scale.flatten()[0], expected_k, rtol=1e-5, atol=0.0)
                 assert torch.isclose(v_global_scale.flatten()[0], expected_v, rtol=1e-5, atol=0.0)
 

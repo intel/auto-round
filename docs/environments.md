@@ -40,6 +40,17 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_NVFP_GS_ALPHA
+- **Description**: Multiplier applied to the collected amax before deriving an NVFP **input (activation) global scale** (`global_scale = scale_max * FLOAT4_E2M1_MAX / (alpha * amax)`). A larger alpha lowers the global scale so that outliers stay representable in the block scales. It applies only to input global scales: static activation scales, dynamic activation scales, fused MoE activation scales, and the KV-cache NVFP4 global scale. Weight global scales always use alpha=1 and are not affected.
+- **Default**: `auto`, which uses `4` for NVFP4 and `8` for NVFP4_E5M3_GS
+- **Valid Values**: `auto` (case-insensitive) or an empty value for the per-scheme default; any other value must be a positive finite float (for example `4`, `2.5`). Invalid values such as `0`, negative numbers, `nan`, `inf`, or non-numeric strings raise `ValueError`.
+- **Usage**: Override only when you need a different outlier headroom than the default. The override applies to both NVFP4 families.
+
+```bash
+export AR_NVFP_GS_ALPHA=auto   # default: 4 for NVFP4, 8 for NVFP4_E5M3_GS
+export AR_NVFP_GS_ALPHA=6     # use alpha=6 for both families
+```
+
 ### AR_DISABLE_DEFAULT_SHARED_LAYERS
 - **Description**: Disables AutoScheme's default sharing of one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, MLA `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). A fused kernel can only apply one scheme, so sharing is enabled by default. Equivalent to `AutoScheme(default_shared_layers=False)` and the CLI flag `--disable_default_shared_layers`.
 - **Default**: `False` (equivalent to `"0"`)

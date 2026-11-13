@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
+    AR_NVFP_GS_ALPHA: float | None = None
     AR_ALLOW_W8_ASYM: bool = False
     AR_DISABLE_DEFAULT_SHARED_LAYERS: bool = False
     AR_CALIB_DATA_MULTIPLIER: int = 100
@@ -89,6 +90,14 @@ def _get_optional_positive_float_env(name: str) -> float | None:
     if not (value > 0 and value != float("inf")):
         raise ValueError(f"{name} must be a positive finite float, got {value}")
     return value
+
+
+def _get_nvfp_gs_alpha_env() -> float | None:
+    """Read ``AR_NVFP_GS_ALPHA``: unset, empty or ``auto`` means the per-format default (``None``)."""
+    raw = os.getenv("AR_NVFP_GS_ALPHA")
+    if raw is None or raw.strip().lower() in ("", "auto"):
+        return None
+    return _get_optional_positive_float_env("AR_NVFP_GS_ALPHA")
 
 
 environment_variables: dict[str, Callable[[], Any]] = {
@@ -255,6 +264,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
+    # Multiplier applied to the collected amax before deriving NVFP global scales.
+    # ``auto`` (default) uses 4 for NVFP4 and 8 for NVFP4_E5M3_GS.
+    "AR_NVFP_GS_ALPHA": lambda: _get_nvfp_gs_alpha_env(),
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
     # AutoScheme shares one quantization scheme across vLLM-fused projections
     # (q/k/v, MLA q_a/kv_a, gate/up) by default, because a fused serving kernel

@@ -110,7 +110,9 @@ tokenizer = AutoTokenizer.from_pretrained("./nvfp4_e5m3_model")
 `NVFP4_E5M3_GS` keeps the FP4 E2M1 values and UE5M3 block scales, and adds a
 per-tensor FP32 global scale for weights and activations (like standard NVFP4):
 
-$$\text{global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+$$\text{weight\_global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+
+The weight global scale has no alpha. For the input (activation) global scale, the amax is multiplied by $\alpha$: $\text{input\_global\_scale} = \frac{114688 \times 6}{\alpha \cdot \text{amax}}$. $\alpha$ defaults to `8` for this scheme (`4` for NVFP4) and can be overridden with `AR_NVFP_GS_ALPHA` (see [environments.md](environments.md)).
 
 | Property | Value |
 |---|---|

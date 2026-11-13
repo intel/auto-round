@@ -329,8 +329,9 @@ def _nvfp4_global_scale(amax: float | torch.Tensor, device: torch.device) -> tor
     ``block_max * amax / (6 * 2688)``, which underflows e4m3 (min subnormal
     ~2**-9) for typical activation magnitudes and zeroes the KV cache.
 
-    The reciprocal ``amax / 2688 = 1 / calculate_gparam(amax)`` makes the
-    runtime's block scale ``(2688 / amax) * block_max / 6`` -- exactly the
+    The reciprocal ``amax * alpha / 2688 = 1 / calculate_gparam(amax)`` (``alpha`` is the
+    ``AR_NVFP_GS_ALPHA`` amax multiplier, 4 for NVFP4 by default) makes the
+    runtime's block scale ``(2688 / (alpha * amax)) * block_max / 6`` -- exactly the
     value auto-round's QDQ simulation (``nv_fp4_with_static_gs``) uses during
     calibration, so served outputs match calibration up to fp8 rounding.
 
@@ -339,9 +340,9 @@ def _nvfp4_global_scale(amax: float | torch.Tensor, device: torch.device) -> tor
     6``).  The two runtimes use opposite conventions; vLLM is the target
     serving engine, hence this convention.
     """
-    from auto_round.data_type.nvfp import calculate_gparam
+    from auto_round.data_type.nvfp import calculate_gparam, get_nvfp_gs_alpha
 
-    global_scale = calculate_gparam(amax, device=device)
+    global_scale = calculate_gparam(amax, device=device, alpha=get_nvfp_gs_alpha(e5m3=False))
     return (1.0 / global_scale).reshape(1).detach()
 
 

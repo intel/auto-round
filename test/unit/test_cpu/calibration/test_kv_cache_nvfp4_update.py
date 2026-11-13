@@ -88,24 +88,25 @@ def test_update_running_max_per_side():
     assert cache.v_amax[2] == pytest.approx(8.0)
 
 
-def test_stored_nvfp4_scale_uses_vllm_dequant_multiplier_convention():
-    """The checkpoint scale must be amax / 2688 (vLLM dequant multiplier).
+def test_stored_nvfp4_scale_uses_vllm_dequant_multiplier_convention(monkeypatch):
+    """The checkpoint scale must be alpha * amax / 2688 (vLLM dequant multiplier, alpha=4 by default).
 
     vLLM's store kernel computes ``global_scale = 1 / k_scale`` and
     ``sf = global_scale * block_max / 6``.  Storing the weight-style
-    ``2688 / amax`` instead makes the runtime fp8 block scale
-    ``block_max * amax / (6 * 2688)`` underflow e4m3 (min subnormal 2**-9)
+    ``2688 / (alpha * amax)`` instead makes the runtime fp8 block scale
+    ``block_max * alpha * amax / (6 * 2688)`` underflow e4m3 (min subnormal 2**-9)
     for typical activation amax values, zeroing the served KV cache.
     """
     from auto_round.experimental.kv_cache import _nvfp4_global_scale
 
+    monkeypatch.delenv("AR_NVFP_GS_ALPHA", raising=False)
     device = torch.device("cpu")
     for amax in (0.5, 2.0, 282.0):
         scale = _nvfp4_global_scale(amax, device)
         assert scale.shape == (1,) and scale.dtype == torch.float32
-        # Reciprocal of the weight-style global scale (2688 / amax).
-        assert scale[0] == pytest.approx(amax / (448.0 * 6.0), rel=1e-6)
-        assert 1.0 / scale[0] == pytest.approx(448.0 * 6.0 / amax, rel=1e-5)
+        # Reciprocal of the weight-style global scale (2688 / (4 * amax)).
+        assert scale[0] == pytest.approx(4.0 * amax / (448.0 * 6.0), rel=1e-6)
+        assert 1.0 / scale[0] == pytest.approx(448.0 * 6.0 / (4.0 * amax), rel=1e-5)
 
         # Every runtime fp8 block scale, from a block at 1% of the calibrated
         # amax up to the worst-case block, must stay representable in e4m3.

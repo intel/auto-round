@@ -105,7 +105,9 @@ tokenizer = AutoTokenizer.from_pretrained("./nvfp4_e5m3_model")
 
 `NVFP4_E5M3_GS` 保留 FP4 E2M1 数值和 UE5M3 块级 scale，并像标准 NVFP4 一样为权重和激活额外增加一个张量级 FP32 全局 scale：
 
-$$\text{global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+$$\text{weight\_global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+
+权重 global scale 不含 alpha。对于输入（激活）global scale，amax 需乘以 $\alpha$：$\text{input\_global\_scale} = \frac{114688 \times 6}{\alpha \cdot \text{amax}}$。其中 $\alpha$ 默认为 `8`（NVFP4 为 `4`），可通过 `AR_NVFP_GS_ALPHA` 覆盖（参见 [environments_CN.md](environments_CN.md)）。
 
 | 参数 | 值 |
 |---|---|

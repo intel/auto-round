@@ -40,6 +40,17 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_NVFP_GS_ALPHA
+- **描述**：在推导 NVFP **输入（激活）global scale** 之前，对统计到的 amax 乘以的系数（`global_scale = scale_max * FLOAT4_E2M1_MAX / (alpha * amax)`）。alpha 越大，global scale 越小，使 outlier 更稳定地由 block scale 表达。仅作用于 input global scale：静态激活 scale、动态激活 scale、fused MoE 激活 scale 以及 KV cache 的 NVFP4 global scale。权重 global scale 始终使用 alpha=1，不受影响。
+- **默认值**：`auto`，NVFP4 使用 `4`，NVFP4_E5M3_GS 使用 `8`
+- **有效值**：`auto`（不区分大小写）或空值表示使用各方案的默认值；其他值必须是正的有限浮点数（如 `4`、`2.5`）。`0`、负数、`nan`、`inf` 或非数字字符串会抛出 `ValueError`。
+- **用途**：仅当需要与默认值不同的 outlier 余量时才覆盖。该覆盖同时作用于两种 NVFP4 方案。
+
+```bash
+export AR_NVFP_GS_ALPHA=auto   # 默认：NVFP4 为 4，NVFP4_E5M3_GS 为 8
+export AR_NVFP_GS_ALPHA=6     # 两种方案均使用 alpha=6
+```
+
 ### AR_DISABLE_DEFAULT_SHARED_LAYERS
 - **描述**：关闭 AutoScheme 的默认行为：为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、MLA 的 `q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。由于单个融合 kernel 只能使用一种量化方案，该共享默认开启。等价于 `AutoScheme(default_shared_layers=False)` 以及命令行参数 `--disable_default_shared_layers`。
 - **默认值**：`False`（等价于 `"0"`）

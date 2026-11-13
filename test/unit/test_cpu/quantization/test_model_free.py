@@ -3271,7 +3271,7 @@ def test_streaming_recipient_hydrates_global_scale_from_donor(tmp_path, monkeypa
     recipient_output = core._resume_processed_shards[recipient]["output_file"]
     with safe_open(str(output_dir / recipient_output), framework="pt") as f:
         global_scale = f.get_tensor("model.layers.3.mlp.experts.30.gate_proj.weight_global_scale").item()
-    # Decoded amax is 448 * 2**-13; raw FP8 bytes would give 114688 * 6 / 448 = 1536.
+    # Decoded amax is 448 * 2**-13; weight-side global scale uses alpha=1.
     assert global_scale == pytest.approx(114688 * 6 / (448 * 2**-13), rel=1e-6)
 
 

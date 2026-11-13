@@ -14,6 +14,7 @@
 
 import torch
 
+from auto_round import envs
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
 from auto_round.data_type.gguf import _imatrix_handle_zero
 from auto_round.data_type.register import register_dtype
@@ -54,16 +55,41 @@ FLOAT4_E2M1_MAX = 6.0
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8_e4m3fn") else 448
 FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
+# Default amax multipliers for NVFP global scales; overridable via ``AR_NVFP_GS_ALPHA``.
+NVFP4_GS_ALPHA = 4.0
+NVFP4_E5M3_GS_ALPHA = 8.0
 
-def calculate_gparam(tensor, group_size=16, device="cpu", scale_max=None):
-    """Calculate global scaling factor for NVFP quantization."""
+
+def get_nvfp_gs_alpha(e5m3: bool = False) -> float:
+    """Return the multiplier applied to the collected amax before deriving an NVFP global scale.
+
+    ``AR_NVFP_GS_ALPHA`` takes precedence when set to a positive float. Otherwise the default is 8 for
+    NVFP4_E5M3_GS (``e5m3=True``) and 4 for NVFP4.
+    """
+    override = envs.AR_NVFP_GS_ALPHA
+    if override is not None:
+        return override
+    return NVFP4_E5M3_GS_ALPHA if e5m3 else NVFP4_GS_ALPHA
+
+
+def nvfp_global_scale(amax, scale_max, alpha):
+    """Return ``scale_max * FLOAT4_E2M1_MAX / (alpha * amax)``; a zero ``amax`` yields zero."""
+    return scale_max * FLOAT4_E2M1_MAX * get_reciprocal(amax * alpha)
+
+
+def calculate_gparam(tensor, group_size=16, device="cpu", scale_max=None, alpha=1.0):
+    """Calculate the weight-side per-tensor global scale for NVFP4.
+
+    ``alpha`` defaults to 1 (no amax scaling). ``AR_NVFP_GS_ALPHA`` applies only to input/activation global
+    scales, so activation callers must pass ``alpha=get_nvfp_gs_alpha(e5m3=False)`` explicitly.
+    """
     assert group_size == 16, f"Only group_size=16 is supported, got {group_size}"
     scale_max = FLOAT8_E4M3_MAX if scale_max is None else scale_max
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()
     elif isinstance(tensor, torch.Tensor):
         tensor_amax = tensor.to(torch.float32).abs().max()
-    global_scale = scale_max * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
+    global_scale = nvfp_global_scale(tensor_amax, scale_max, alpha)
     return global_scale
 
 
@@ -89,8 +115,9 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0,
     init_scale = 1.0 if init_scale is None else init_scale
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
+        # Weight dtype (RTN/AWQ/TEQ call it without global_scale): keep alpha=1 to match calculate_gparam.
         tensor_max = tensor.to(torch.float32).abs().max()
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = nvfp_global_scale(tensor_max, FLOAT8_E4M3_MAX, 1.0)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -116,7 +143,7 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, g
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
             if tensor_max.numel() != 1:
                 tensor_max = tensor_max.abs().max()
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = nvfp_global_scale(tensor_max, FLOAT8_E4M3_MAX, get_nvfp_gs_alpha(e5m3=False))
     elif not isinstance(global_scale, torch.Tensor):
         global_scale = torch.tensor(global_scale, device=tensor.device, dtype=torch.float32)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
@@ -210,7 +237,7 @@ def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=No
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
             tensor_max = tensor_max.abs().max()
-    global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = nvfp_global_scale(tensor_max, FLOAT8_UE5M3_MAX, get_nvfp_gs_alpha(e5m3=True))
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.reshape(-1).to(tensor.device)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
@@ -229,15 +256,25 @@ def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     return qdq_res.to(orig_dtype), scale, None
 
 
-def calculate_gparam_e5m3(tensor, group_size=16, device="cpu"):
-    """Calculate the per-tensor global scale for NVFP4 E5M3 (UE5M3 block scales)."""
-    return calculate_gparam(tensor, group_size, device, scale_max=FLOAT8_UE5M3_MAX)
+def calculate_gparam_e5m3(tensor, group_size=16, device="cpu", alpha=1.0):
+    """Calculate the weight-side per-tensor global scale for NVFP4 E5M3 (UE5M3 block scales).
+
+    ``alpha`` defaults to 1; see :func:`calculate_gparam`.
+    """
+    return calculate_gparam(tensor, group_size, device, scale_max=FLOAT8_UE5M3_MAX, alpha=alpha)
 
 
-def calculate_gparam_by_dtype(tensor, data_type, group_size=16, device="cpu"):
-    if "nvfp4_v2" in str(data_type).lower():
-        return calculate_gparam_e5m3(tensor, group_size, device)
-    return calculate_gparam(tensor, group_size, device)
+def calculate_gparam_by_dtype(tensor, data_type, group_size=16, device="cpu", activation=False):
+    """Return the per-tensor global scale for ``data_type``.
+
+    Weight global scales (default) use alpha=1. Pass ``activation=True`` for input global scales, which apply
+    :func:`get_nvfp_gs_alpha` to the collected amax.
+    """
+    is_e5m3 = "nvfp4_v2" in str(data_type).lower()
+    alpha = get_nvfp_gs_alpha(e5m3=is_e5m3) if activation else 1.0
+    if is_e5m3:
+        return calculate_gparam_e5m3(tensor, group_size, device, alpha=alpha)
+    return calculate_gparam(tensor, group_size, device, alpha=alpha)
 
 
 def _to_global_scale_tensor(global_scale, device):
@@ -275,7 +312,7 @@ def nvfp4_v2_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None,
             tensor_max = tensor.to(torch.float32).abs().max()
         elif isinstance(tensor_max, torch.Tensor):
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32).abs().max()
-        global_scale = calculate_gparam_e5m3(tensor_max, group_size, tensor.device)
+        global_scale = calculate_gparam_e5m3(tensor_max, group_size, tensor.device, alpha=get_nvfp_gs_alpha(e5m3=True))
     global_scale = _to_global_scale_tensor(global_scale, tensor.device)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
@@ -288,8 +325,9 @@ def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=
     init_scale = 1.0 if init_scale is None else init_scale
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
+        # Weight dtype: keep alpha=1 to match calculate_gparam.
         tensor_max = tensor.abs().max().to(torch.float32)
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = nvfp_global_scale(tensor_max, FLOAT8_E4M3_MAX, 1.0)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -395,7 +433,8 @@ def _search_nvfp4_e4m3_multiplier(x, weight):
         float32 tensor of shape [G] holding the best multiplier per group.
     """
     amax = x.abs().amax(dim=-1)
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(x.abs().max())
+    # Weight-side search: the global scale must match the weight's ``calculate_gparam`` (alpha=1).
+    global_scale = nvfp_global_scale(x.abs().max(), FLOAT8_E4M3_MAX, 1.0)
 
     base_scale = _nvfp4_e4m3_block_scale(amax, torch.ones((), device=x.device), global_scale)
     diff = _nvfp4_e4m3_qdq(x, base_scale, global_scale) - x
@@ -671,7 +710,7 @@ def rtn_nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=Non
         if tensor_max.numel() != 1:
             tensor_max = tensor_max.abs().max()
 
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = nvfp_global_scale(tensor_max, FLOAT8_E4M3_MAX, get_nvfp_gs_alpha(e5m3=False))
     global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant_inplace(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
