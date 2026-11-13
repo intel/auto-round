@@ -115,6 +115,58 @@ def _in_out_from_qweight(qweight: torch.Tensor, bits: int):
     return in_features, out_features
 
 
+def _bf16_is_usable(device: torch.device) -> bool:
+    """Return whether ``torch.bfloat16`` can be used on ``device``.
+
+    bf16 is preferred over fp16 for loading large bases: its 8-bit exponent
+    matches modern checkpoints' native dtype and cannot overflow the way fp16
+    can.  CPU always supports it; CUDA depends on the device generation.
+    """
+    if device.type != "cuda":
+        return True
+    try:
+        return bool(torch.cuda.is_bf16_supported())
+    except Exception:  # pragma: no cover - older torch / driver combos
+        return False
+
+
+def _build_path_remap(model):
+    """Build a checkpoint-path -> module-path remap for composite models.
+
+    Checkpoints of composite models (e.g. Qwen3.5, whose keys are
+    ``model.language_model.layers``) load as bare text models
+    (``model.layers``), because transformers applies its conversion mapping on
+    load.  The state-dict keys enumerated from the checkpoint files then no
+    longer match ``model.get_submodule`` paths, so ``load_rrq_model`` must
+    translate them.  Mirrors ``convert_model._remap_paths_for_text_model``;
+    returns ``None`` when no mapping applies (normal single-namespace models).
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    except ImportError:
+        return None
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type is None:
+        return None
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return None
+    renamings = [r for r in mapping if hasattr(r, "source_patterns") and hasattr(r, "target_patterns")]
+    if not renamings:
+        return None
+
+    def remap(path):
+        for r in renamings:
+            for src, tgt in zip(r.source_patterns, r.target_patterns):
+                new_path = re.sub(src, tgt, path)
+                if new_path != path:
+                    return new_path
+        return path
+
+    return remap
+
+
 def _enumerate_base_layers(state: dict, bits: int) -> dict:
     """Map ``layer_name -> (in, out, has_bias)`` for packed base planes.
 
@@ -324,10 +376,16 @@ def load_rrq_model(
     # load with uninitialised weights here -- we rebuild them as ``QuantLinear``
     # from the packed tensors below, so the uninitialised values are discarded.
     logger.info(f"Loading base model architecture from {base_model_dir}")
+    # Large bases must not be loaded in float32: a 27B model needs ~108 GB that
+    # way, which OOMs on a single 80 GB card before dequantization even starts.
+    # bfloat16 matches the native dtype of most modern checkpoints and has a
+    # wider exponent range than float16 (safer against overflow); fall back to
+    # float16 only where bf16 is unsupported.
+    load_dtype = torch.bfloat16 if _bf16_is_usable(device_obj) else torch.float16
     try:
         base_model = transformers.AutoModelForCausalLM.from_pretrained(
             base_model_dir,
-            torch_dtype=torch.float16,
+            torch_dtype=load_dtype,
             low_cpu_mem_usage=True,
             **load_kwargs,
         )
@@ -343,20 +401,31 @@ def load_rrq_model(
         )
         base_model = transformers.AutoModelForCausalLM.from_config(
             transformers.AutoConfig.from_pretrained(base_model_dir)
-        ).to(torch.float16)
+        ).to(load_dtype)
     base_model.to(device_obj)
 
     from auto_round.inference.rrq_linear import RRQLinear
     from auto_round.utils import set_module
 
+    # Composite models (e.g. Qwen3.5, whose checkpoints use
+    # ``model.language_model.layers``) load as bare text models
+    # (``model.layers``) because transformers applies its conversion mapping on
+    # load.  The state-dict names then no longer match ``get_submodule`` paths,
+    # so translate them once here.  ``None`` for normal single-namespace models.
+    remap = _build_path_remap(base_model)
+
     replaced = 0
     for layer_name in sorted(eligible):
         in_features, out_features, has_bias = base_layers[layer_name]
 
+        # ``layer_name`` indexes the state dict; ``module_name`` is the path
+        # that ``get_submodule``/``set_module`` actually understand.
+        module_name = remap(layer_name) if remap is not None else layer_name
+
         try:
-            base_model.get_submodule(layer_name)
+            base_model.get_submodule(module_name)
         except AttributeError:
-            logger.warning(f"Base module {layer_name!r} not found; skipping.")
+            logger.warning(f"Base module {module_name!r} not found; skipping.")
             continue
 
         # --- Base plane (plane 0) ---
@@ -414,7 +483,7 @@ def load_rrq_model(
 
         # The base plane owns the bias; RRQLinear must not add a second one.
         rrq_linear = RRQLinear(base=base_plane, residual_planes=residual_planes, bias=None)
-        set_module(base_model, layer_name, rrq_linear)
+        set_module(base_model, module_name, rrq_linear)
         replaced += 1
 
     if replaced == 0:

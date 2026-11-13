@@ -135,26 +135,35 @@ class RRQLinear(nn.Module):
     # -- Packed (production) path helpers -----------------------------------------
 
     def _get_packed_weight(self, num_planes: int) -> torch.Tensor:
-        """Build (and cache) the dequantized accumulated weight for ``num_planes``.
+        """Build the dequantized accumulated weight for ``num_planes`` planes.
 
-        Each plane is dequantized once via :meth:`QuantLinear._dequantize`, and
-        the resulting ``(in, out)`` weights are summed in float32 to avoid
-        precision loss.  The cache is invalidated when the underlying packed
-        tensors change (the cache key is ``num_planes``).
+        Each plane is dequantized via :meth:`QuantLinear._dequantize` and the
+        results are summed in float32 to avoid precision loss.
+
+        Caching policy: the accumulated weight is large (a bf16 copy of a 27B
+        model is ~54 GB), so caching it for every layer on CUDA exceeds a single
+        80 GB card once the model itself is resident.  On CUDA the tensor is
+        therefore rebuilt per forward and freed when it goes out of scope.  On
+        CPU (unit tests, small reference models) the result is cached to keep
+        repeated forwards cheap.
         """
+        cacheable = self.base.qweight.device.type != "cuda"
         if (
-            self._packed_weight is not None
+            cacheable
+            and self._packed_weight is not None
             and self._packed_weight_planes == num_planes
             and self._packed_weight.device == self.base.qweight.device
         ):
             return self._packed_weight
 
+        # float32 is used only for the running accumulation.
         weight = self.base._dequantize().float()
         for index in range(1, num_planes):
-            weight = weight + self.planes[f"rrq_{index}"]._dequantize().to(weight.dtype)
+            weight = weight + self.planes[f"rrq_{index}"]._dequantize().float()
 
-        self._packed_weight = weight
-        self._packed_weight_planes = num_planes
+        if cacheable:
+            self._packed_weight = weight
+            self._packed_weight_planes = num_planes
         return weight
 
     def reset_packed_weight_cache(self) -> None:
