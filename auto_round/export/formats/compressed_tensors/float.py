@@ -33,6 +33,10 @@ from auto_round.export.common.serialization import (
 )
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 from auto_round.export.formats.compressed_tensors.config import initialize_quantization
+from auto_round.export.formats.compressed_tensors.transform import (
+    _export_hadamard_transform_config,
+    _save_immediate_hadamard_weights,
+)
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
     add_routed_experts_if_moe,
@@ -489,6 +493,9 @@ def save_checkpoint(
         [name for names in scheme_groups.values() for name in names],
     )
     quantization_config = add_autoround_config(quantization_config, serialization_dict)
+    transform_config = _export_hadamard_transform_config(model, data_type)
+    if transform_config is not None:
+        quantization_config["transform_config"] = transform_config
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
@@ -501,5 +508,9 @@ def save_checkpoint(
 
     dtype = None
     save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
+    if immediate_saving and transform_config is not None:
+        if not safe_serialization:
+            raise ValueError("Hadamard immediate export requires safe_serialization=True")
+        _save_immediate_hadamard_weights(model, output_dir)
 
     return model
