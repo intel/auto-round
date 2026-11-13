@@ -214,8 +214,11 @@ def save_quantized_rrq(
     **not** included -- they live in the separately-exported base model -- so
     the residual artifact is compact.
 
-    The in-memory buffers are renamed from ``rrq_*_k`` to the on-disk ``*_k``
-    names so ``RRQLinear``/loaders find them by convention; the packed INT2
+    Only the serialized state-dict keys are mapped: the in-memory
+    ``rrq_*_k`` buffers are written under the on-disk ABI names ``*_k``
+    (``qweight_k`` / ``scales_k`` / ``qzeros_k``) that loaders look up by
+    convention.  ``module._buffers`` is **not** mutated, so the in-memory
+    module state is identical before and after export.  The packed INT2
     tensors are stored as-is (no dequant/round-trip).
 
     Args:
@@ -248,6 +251,11 @@ def save_quantized_rrq(
     # The in-memory ``rrq_*_k`` buffers are mapped to the on-disk ``*_k``
     # names in the state dict *without* mutating ``module._buffers``, so the
     # in-memory module state is unchanged after export.
+    #
+    # Some code paths (older versions, external tooling) may already hold the
+    # buffers under the ABI-style ``*_k`` names; prefer ``rrq_*_k`` when
+    # present and fall back to ``*_k`` so those planes are not silently
+    # dropped.
     residual_state: dict[str, torch.Tensor] = {}
     for name, module in model.named_modules():
         if not hasattr(module, "rrq_total_planes"):
@@ -258,8 +266,9 @@ def save_quantized_rrq(
                 (f"rrq_scales_{k}", f"scales_{k}"),
                 (f"rrq_qzeros_{k}", f"qzeros_{k}"),
             ):
-                if src in module._buffers:
-                    residual_state[f"{name}.{dst}"] = module._buffers[src].detach().cpu()
+                buf = module._buffers.get(src, module._buffers.get(dst))
+                if buf is not None:
+                    residual_state[f"{name}.{dst}"] = buf.detach().cpu()
 
     # Serialize the residual state dict (safetensors by default, torch otherwise).
     _save_state_dict_sharded(residual_state, output_dir, safe_serialization)

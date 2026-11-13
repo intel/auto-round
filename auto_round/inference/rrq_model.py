@@ -390,10 +390,16 @@ def load_rrq_model(
             **load_kwargs,
         )
     except (KeyError, ValueError, RuntimeError) as e:  # pragma: no cover
-        # Packed qweight keys may not match nn.Linear.weight shape; fall back
-        # to architecture-only load.  Only weight-loading errors are caught --
-        # a broad ``except Exception`` would silently produce a model with
-        # random weights (e.g. on OOM or network errors).
+        # Packed qweight keys may not match ``nn.Linear.weight`` shape; fall
+        # back to an architecture-only load.  Only weight-loading errors are
+        # caught -- a broad ``except Exception`` would silently produce a model
+        # with random weights (e.g. on OOM or network errors).
+        #
+        # ``torch.OutOfMemoryError`` is a ``RuntimeError`` subclass, so it must
+        # be re-raised explicitly: falling back on OOM would hand back a
+        # randomly initialised model and garbage output.
+        if isinstance(e, torch.OutOfMemoryError) or "out of memory" in str(e).lower():
+            raise
         logger.warning(
             "from_pretrained(%s) failed (%s); loading architecture without weights.",
             base_model_dir,
