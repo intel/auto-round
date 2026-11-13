@@ -1205,3 +1205,187 @@ class TestResolveActiveBits:
         # 2 planes x 2 bits = 4-bit max; 6-bit is out of range for this checkpoint.
         with pytest.raises(ValueError, match="exceeds the maximum supported"):
             _resolve_active_bits(2, 2, 6)
+
+
+class TestRRQIncrementalFromRealBase:
+    """End-to-end: quantize a real model to a 2-bit base, then build residuals.
+
+    Covers the two-phase workflow that ``generate_rrq_residual`` exists for:
+    an INT2 base model exported by the normal ``auto_round`` path is extended
+    with RTN residual planes, without re-quantizing the base.  Uses OPT-125M
+    so the test exercises real layer names (``model.decoder.layers.*``) rather
+    than a synthetic state dict.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(0)
+        yield
+
+    @pytest.fixture(scope="class")
+    def quantized_base(self, tmp_path_factory):
+        """Quantize OPT-125M to a standard INT2 (W2A16) base model once."""
+        out_dir = tmp_path_factory.mktemp("rrq_opt_base")
+        ar = AutoRound(
+            opt_name_or_path,
+            scheme="W2A16",
+            nsamples=8,
+            seqlen=128,
+            batch_size=1,
+            iters=0,
+        )
+        _, save_folder = ar.quantize_and_save(output_dir=str(out_dir), format="auto_round")
+        return save_folder
+
+    def test_base_is_standard_int2(self, quantized_base):
+        """The first phase must produce a plain 2-bit auto_round model."""
+        import json
+        import os
+
+        with open(os.path.join(quantized_base, "config.json"), "r", encoding="utf-8") as f:
+            config = json.load(f)
+        quant = config["quantization_config"]
+        assert quant["bits"] == 2
+        assert quant["data_type"] == "int"
+        assert quant["quant_method"] == "auto-round"
+        # A standard base export must not advertise the RRQ packing format.
+        assert quant.get("packing_format") != RRQ_PACKING_FORMAT
+
+    def test_generate_residual_from_quantized_base(self, quantized_base, tmp_path):
+        """Phase two: RTN residual planes are generated from the exported base."""
+        import json
+        import os
+
+        from safetensors.torch import load_file
+
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        residual_dir = str(tmp_path / "residual")
+        generate_rrq_residual(
+            quantized_base,
+            raw_model=opt_name_or_path,
+            output_dir=residual_dir,
+            group_size=128,
+            sym=True,
+        )
+
+        # The residual artifact declares the RRQ ABI and 1 base + 3 residuals.
+        with open(os.path.join(residual_dir, "config.json"), "r", encoding="utf-8") as f:
+            quant = json.load(f)["quantization_config"]
+        assert quant["packing_format"] == RRQ_PACKING_FORMAT
+        assert quant["quant_method"] == RRQ_QUANT_METHOD
+        assert quant["total_planes"] == 4
+        assert quant["bits"] == 2
+
+        state = load_file(os.path.join(residual_dir, "model.safetensors"))
+        planes = sorted({int(k.rsplit("_", 1)[1]) for k in state if ".qweight_" in k})
+        assert planes == [1, 2, 3], f"expected residual planes 1..3, got {planes}"
+
+        # Every residual plane must be packed INT2 of the expected dtypes.
+        for key, tensor in state.items():
+            if ".qweight_" in key:
+                assert tensor.dtype == torch.int32, key
+            elif ".scales_" in key:
+                assert tensor.dtype == torch.float16, key
+            elif ".qzeros_" in key:
+                assert tensor.dtype == torch.int32, key
+
+        # Every packed base layer must have all three residual planes.
+        base_state = load_file(os.path.join(quantized_base, "model.safetensors"))
+        base_layers = {k.rsplit(".qweight", 1)[0] for k in base_state if k.endswith(".qweight")}
+        residual_layers = {k.rsplit(".qweight_", 1)[0] for k in state if ".qweight_" in k}
+        assert base_layers == residual_layers, (
+            f"base/residual layer mismatch: missing={sorted(base_layers - residual_layers)[:3]}, "
+            f"extra={sorted(residual_layers - base_layers)[:3]}"
+        )
+
+    def test_residual_reduces_error_against_fp(self, quantized_base, tmp_path):
+        """Each successive residual plane must lower the FP reconstruction error."""
+        import glob
+        import os
+
+        from safetensors.torch import load_file
+
+        from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.inference.rrq_model import _build_quant_plane
+
+        residual_dir = str(tmp_path / "residual_norm")
+        generate_rrq_residual(
+            quantized_base,
+            raw_model=opt_name_or_path,
+            output_dir=residual_dir,
+            group_size=128,
+            sym=True,
+        )
+
+        # Compare one projection layer end to end: base -> base+1 -> ... -> base+3.
+        base_state = load_file(os.path.join(quantized_base, "model.safetensors"))
+        residual_state = load_file(os.path.join(residual_dir, "model.safetensors"))
+
+        # ``opt_name_or_path`` may be an HF id; resolve it to a local checkpoint.
+        # ``snapshot_download`` can return a revision without safetensors weights,
+        # so scan the snapshot dirs and take the first file that actually exists.
+        raw_file = None
+        if os.path.isdir(opt_name_or_path):
+            raw_file = os.path.join(opt_name_or_path, "model.safetensors")
+        else:
+            from huggingface_hub import snapshot_download
+
+            local_dir = snapshot_download(opt_name_or_path)
+            candidates = glob.glob(os.path.join(os.path.dirname(local_dir), "*", "model.safetensors"))
+            candidates += glob.glob(os.path.join(local_dir, "model.safetensors"))
+            raw_file = next((c for c in candidates if os.path.exists(c)), None)
+        assert raw_file is not None, f"no FP safetensors weights found for {opt_name_or_path}"
+        raw_state = load_file(raw_file)
+
+        layer = "model.decoder.layers.0.self_attn.q_proj"
+        assert f"{layer}.qweight" in base_state
+        assert f"{layer}.weight" in raw_state
+
+        QuantLinear = _rrq_quant_linear_class(True)
+        out_features = raw_state[f"{layer}.weight"].shape[0]
+        in_features = raw_state[f"{layer}.weight"].shape[1]
+
+        accum = _build_quant_plane(
+            QuantLinear,
+            base_state[f"{layer}.qweight"],
+            base_state[f"{layer}.scales"],
+            base_state[f"{layer}.qzeros"],
+            2,
+            128,
+            in_features,
+            out_features,
+            False,
+            None,
+            torch.device("cpu"),
+        )
+        identity = torch.eye(in_features, dtype=torch.float32)
+        with torch.no_grad():
+            W = accum.forward(identity).T.to(torch.float32)
+
+        W_fp = raw_state[f"{layer}.weight"].to(torch.float32)
+        norms = [(W_fp - W).norm().item()]
+        for k in (1, 2, 3):
+            plane = _build_quant_plane(
+                QuantLinear,
+                residual_state[f"{layer}.qweight_{k}"],
+                residual_state[f"{layer}.scales_{k}"],
+                residual_state[f"{layer}.qzeros_{k}"],
+                2,
+                128,
+                in_features,
+                out_features,
+                False,
+                None,
+                torch.device("cpu"),
+            )
+            with torch.no_grad():
+                W = W + plane.forward(identity).T.to(torch.float32)
+            norms.append((W_fp - W).norm().item())
+
+        for i in range(1, len(norms)):
+            assert norms[i] <= norms[i - 1] + 1e-4, f"residual error increased at plane {i}: {norms[i]} > {norms[i-1]}"
+        # 8-bit (base + 3 residuals) should be much closer to FP than 2-bit base.
+        assert norms[-1] < norms[0] * 0.5, f"4-plane reconstruction not better than base: {norms}"
+
