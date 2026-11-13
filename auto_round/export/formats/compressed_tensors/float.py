@@ -36,8 +36,10 @@ from auto_round.export.formats.compressed_tensors.config import initialize_quant
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
     add_routed_experts_if_moe,
+    assign_config_group_targets,
     finalize_llmcompressor_config_names,
     generate_ignore_regex_list,
+    select_fallback_group,
 )
 from auto_round.logger import logger
 from auto_round.schemes import is_nvfp4_e5m3_family, is_nvfp4_e5m3_gs, needs_nvfp_global_scale
@@ -221,12 +223,17 @@ def _build_mixed_fp_quantization_config(
         quantization_config dict
     """
     global_key = (global_bits, global_data_type, global_act_bits)
+    # The ignore list is only trusted to complete a ["Linear"] target when a default group exists.
+    fallback_key = select_fallback_group(scheme_groups, global_key) if global_key in scheme_groups else None
+    group_targets = assign_config_group_targets(
+        scheme_groups, ["Linear"] if fallback_key is not None else None, fallback_key
+    )
 
-    # Override groups first, default group last
+    # Override groups first, fallback group last
     override_groups = []
     default_group = None
     for key, layer_names in scheme_groups.items():
-        if key == global_key:
+        if key == fallback_key:
             default_group = (key, layer_names)
         else:
             override_groups.append((key, layer_names))
@@ -241,10 +248,7 @@ def _build_mixed_fp_quantization_config(
             raise ValueError(f"Unsupported layer scheme: data_type={ldata_type}, bits={lbits}, act_bits={lact_bits}.")
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
-        is_default = (lbits, ldata_type, lact_bits) == global_key
-        tmp_quantization_config.targets = (
-            ["Linear"] if is_default else add_routed_experts_if_moe(list(layer_names), layer_names)
-        )
+        tmp_quantization_config.targets = group_targets[(lbits, ldata_type, lact_bits)]
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 

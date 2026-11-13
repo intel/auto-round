@@ -27,7 +27,7 @@ from auto_round.export.common.serialization import (
 )
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
-    add_routed_experts_if_moe,
+    assign_config_group_targets,
     finalize_llmcompressor_config_names,
 )
 from auto_round.logger import logger
@@ -173,20 +173,29 @@ def _rewrite_config_group_targets(model, quantization_config_dict):
         )
         sig_to_names[sig].append(name)
 
-    for group in groups.values():
+    group_names = {}
+    for group_name, group in groups.items():
         sig = (
             _quant_args_signature(group.get("weights")),
             _quant_args_signature(group.get("input_activations")),
         )
         names = sig_to_names.get(sig)
         if names:
-            group["targets"] = add_routed_experts_if_moe(sorted(names), names)
+            group_names[group_name] = names
         else:
             logger.warning(
                 "AutoRound llm_compressor export: no quantized module matched "
                 "config_group %s; leaving its targets unchanged.",
                 group.get("targets"),
             )
+
+    # Every unquantized module is in from_pretrained's ignore list, so the placeholder class targets are complete.
+    class_targets = sorted({target for name in group_names for target in groups[name].get("targets") or []})
+    targets = assign_config_group_targets(
+        {name: sorted(names) for name, names in group_names.items()}, class_targets or ["Linear"]
+    )
+    for group_name, group_targets in targets.items():
+        groups[group_name]["targets"] = group_targets
 
     return quantization_config_dict
 

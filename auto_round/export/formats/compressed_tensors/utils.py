@@ -14,35 +14,40 @@
 
 
 import re
+from typing import Any
 
 import torch
 
 from auto_round.compressors.base import SERIALIZATION_KEYS
-from auto_round.utils import matches_any_regex, to_standard_regex
+from auto_round.utils.regex import (
+    _numeric_values_to_regex,
+    compress_regex_patterns,
+    matches_any_regex,
+    to_standard_regex,
+)
 
 _EXPERT_SEGMENTS = ("experts", "shared_experts")
+_EXPERT_LAYER = re.compile(r"^(.*\.experts)\.(0|[1-9][0-9]*)\.([^.]+)$")
 
 
 # TODO: Remove when the issue is fixed
 # https://github.com/vllm-project/llm-compressor/issues/3069
-def add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
+def add_routed_experts_if_moe(
+    targets: list[str], layer_names: list[str], include_standard_experts: bool = False
+) -> list[str]:
     """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
 
     The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
     safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj``),
-    but trigger for non-standard expert paths and for any routed
-    expert structure that lives outside the standard ``mlp.experts`` naming.
+    which vLLM resolves by the ``<experts>.0.gate_proj`` name probe, unless
+    ``include_standard_experts`` marks the class-target fallback group.  Trigger for
+    non-standard expert paths and for any routed expert structure that lives
+    outside the standard ``mlp.experts`` naming.
     """
     if "RoutedExperts" in targets:
         return targets
 
-    def _projection_name(name: str) -> str:
-        # Eg. '...experts.0.gate_proj.weight' -> ['...', 'experts', '0', 'gate_proj', 'weight']
-        parts = name.split(".")
-        if len(parts) >= 2:
-            return parts[-2]
-        return parts[-1]
-
+    standard_projections = {"gate_proj", "up_proj", "down_proj"}
     for name in layer_names:
         lname = name.lower()
         if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
@@ -51,12 +56,73 @@ def add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> lis
         if ".experts." not in lname:
             continue
 
-        projection = _projection_name(name)
-        if projection in {"gate_proj", "up_proj", "down_proj"}:
+        # Accept both module names ('...experts.0.gate_proj') and tensor names ('...gate_proj.weight').
+        if standard_projections & set(name.split(".")[-2:]):
+            if include_standard_experts:
+                return list(targets) + ["RoutedExperts"]
             continue
         return list(targets) + ["RoutedExperts"]
 
     return targets
+
+
+def select_fallback_group(group_layers: dict, preferred: Any = None) -> Any:
+    """Return the key of the group covering the most layers, breaking ties in favor of ``preferred``."""
+    return max(group_layers, key=lambda key: (len(group_layers[key]), key == preferred), default=None)
+
+
+def assign_config_group_targets(
+    group_layers: dict, fallback_targets: list[str] | None = None, fallback_key: Any = None
+) -> dict:
+    """Map each config group key to its ``targets``.
+
+    The fallback group (``fallback_key``, default: the largest group) uses the class ``fallback_targets`` plus
+    ``RoutedExperts`` when it holds experts; exact names in the other groups outrank class targets in both vLLM
+    and compressed-tensors. Only pass ``fallback_targets`` when ``ignore`` lists every unquantized module.
+    """
+    if fallback_targets is not None and fallback_key is None:
+        fallback_key = select_fallback_group(group_layers)
+    targets = {}
+    for key, names in group_layers.items():
+        if fallback_targets is not None and key == fallback_key:
+            targets[key] = add_routed_experts_if_moe(list(fallback_targets), names, include_standard_experts=True)
+        else:
+            targets[key] = add_routed_experts_if_moe(list(names), names)
+    return targets
+
+
+def compact_expert_targets(qconfig: dict) -> dict:
+    """Replace per-expert exact targets with the vLLM probe names plus one regex per expert container.
+
+    vLLM resolves a FusedMoE scheme only from the exact ``<experts>.0.<proj>`` paths (exact, so its name mapper
+    still renames them), while compressed-tensors matches every expert through the regex, which enumerates exactly
+    the listed expert indices so it never claims modules of another group.
+    """
+    for group in (qconfig.get("config_groups") or {}).values():
+        targets = group.get("targets") or []
+        indices = {}  # (container, projection) -> expert indices
+        kept = []
+        for target in targets:
+            match = _EXPERT_LAYER.match(target)
+            if match is None:
+                kept.append(target)
+                continue
+            indices.setdefault((match.group(1), match.group(3)), set()).add(int(match.group(2)))
+            if match.group(2) == "0":
+                kept.append(target)
+        if not indices:
+            continue
+        projections = {}  # (container, expert index set) -> projections
+        for (container, projection), expert_ids in indices.items():
+            projections.setdefault((container, frozenset(expert_ids)), []).append(re.escape(projection))
+        regexes = []
+        for (container, expert_ids), names in projections.items():
+            alternatives = names[0] if len(names) == 1 else "(?:" + "|".join(sorted(names)) + ")"
+            regexes.append(
+                f"re:^{re.escape(container)}\\.{_numeric_values_to_regex(list(expert_ids))}\\.{alternatives}$"
+            )
+        group["targets"] = kept + compress_regex_patterns(regexes)
+    return qconfig
 
 
 def ignore_fused_experts_for_vllm(qconfig: dict, ignored_layers: list[str], quantized_layers: list[str]) -> dict:
@@ -83,9 +149,11 @@ def ignore_fused_experts_for_vllm(qconfig: dict, ignored_layers: list[str], quan
         # A partially quantized module cannot be described as ignored.
         if any(q == module or q.startswith(f"{module}.") for q in quantized_layers):
             continue
-        entry = f"re:^{re.escape(module)}\\.\\d+\\.(gate|up|down)_proj$"
-        if entry not in ignore:
-            ignore.append(entry)
+        # Exact paths, unlike "re:" entries, are renamed by vLLM's WeightsMapper.
+        for projection in ("gate_proj", "up_proj", "down_proj"):
+            entry = f"{module}.0.{projection}"
+            if entry not in ignore:
+                ignore.append(entry)
     qconfig["ignore"] = ignore
     return qconfig
 
@@ -139,6 +207,17 @@ def revert_quantization_config_names(qconfig: dict, revert) -> dict:
     return qconfig
 
 
+def _compact_llmcompressor_regex_config(qconfig: dict) -> dict:
+    """Merge ``re:`` ignore entries that differ by one numeric path segment.
+
+    Exact module paths are kept literal: vLLM's ``WeightsMapper`` remaps exact paths but leaves ``re:`` entries
+    untouched, so turning exact paths into regexes would break renamed (e.g. VLM) checkpoints.
+    """
+    if qconfig.get("ignore"):
+        qconfig["ignore"] = compress_regex_patterns(qconfig["ignore"])
+    return qconfig
+
+
 def finalize_llmcompressor_config_names(
     qconfig: dict, model: torch.nn.Module, ignored_layers: list[str], quantized_layers: list[str]
 ) -> dict:
@@ -148,7 +227,9 @@ def finalize_llmcompressor_config_names(
     ignored = list(qconfig.get("ignore") or []) + [
         revert(n) for n in ignored_layers + collect_fused_expert_modules(model) if not n.startswith("re:")
     ]
-    return ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+    qconfig = ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+    # Runs after the revert so the expert regexes are built from checkpoint names.
+    return _compact_llmcompressor_regex_config(compact_expert_targets(qconfig))
 
 
 def collect_fused_expert_modules(model: torch.nn.Module) -> list[str]:
@@ -208,12 +289,21 @@ def _autoround_config_fields() -> tuple[str, ...]:
     """
     from auto_round.algorithms.config import all_algorithm_serialized_fields
 
-    return ("autoround_version",) + tuple(SERIALIZATION_KEYS) + tuple(sorted(all_algorithm_serialized_fields()))
+    execution_fields = {
+        "quant_block_list",
+        "to_quant_block_names",
+        "scale_dtype",
+        "supported_types",
+    }
+    fields = tuple(key for key in SERIALIZATION_KEYS if key not in execution_fields)
+    return ("autoround_version",) + fields + tuple(sorted(all_algorithm_serialized_fields()))
 
 
 def _to_json_value(value):
     import enum
 
+    if value is None:
+        return None
     if isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, torch.dtype):
@@ -227,6 +317,8 @@ def _to_json_value(value):
         return value.name
     if isinstance(value, type):
         return f"{value.__module__}.{value.__qualname__}"
+    if isinstance(value, dict):
+        return {str(k): _to_json_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_to_json_value(v) for v in value]
     return str(value)
@@ -244,8 +336,18 @@ def add_autoround_config(quantization_config: dict, serialization_dict: dict | N
         return quantization_config
     if quantization_config.get("provider") != "auto-round":
         return quantization_config
+    has_kv_cache_quantization = quantization_config.get("kv_cache_scheme") is not None
+    has_attention_quantization = quantization_config.get("attention_input_activations") is not None
+    conditional_fields = {
+        "static_kv_dtype": has_kv_cache_quantization,
+        "static_kv_granularity": has_kv_cache_quantization,
+        "static_attention_dtype": has_attention_quantization,
+        "static_attention_granularity": has_attention_quantization,
+    }
     autoround_config = {}
     for key in _autoround_config_fields():
+        if key in conditional_fields and not conditional_fields[key]:
+            continue
         value = serialization_dict.get(key)
         if value is None:
             continue
