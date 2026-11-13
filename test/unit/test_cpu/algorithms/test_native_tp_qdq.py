@@ -274,7 +274,7 @@ def _check_tp_activation_edges(rank, mesh):
     from torch.distributed.tensor import DTensor, Shard
     from transformers.distributed.tensor_parallel import RowwiseParallel
 
-    from auto_round.data_type.nvfp import nv_fp4
+    from auto_round.data_type.nvfp import calculate_gparam_by_dtype, nv_fp4
     from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
     from auto_round.parallel.tp.qdq import TensorParallelQDQLinear
 
@@ -285,7 +285,8 @@ def _check_tp_activation_edges(rank, mesh):
         expected_x = data.clone().requires_grad_()
         local_x = data.chunk(2, dim=-1)[rank].clone().requires_grad_()
         distributed_x = DTensor.from_local(local_x, mesh, [Shard(-1)], run_check=False)
-        expected, _, _ = nv_fp4(expected_x, group_size=16)
+        expected_global_scale = calculate_gparam_by_dtype(expected_x, "nv_fp4", 16, activation=True)
+        expected, _, _ = nv_fp4(expected_x, group_size=16, global_scale=expected_global_scale)
         with patch.object(DTensor, "full_tensor", side_effect=AssertionError("activation gather is forbidden")):
             actual, _, _ = quantize(distributed_x, group_size=16, data_type="nv_fp4")
         torch.testing.assert_close(actual.to_local(), expected.chunk(2, dim=-1)[rank])
@@ -308,7 +309,10 @@ def _check_tp_activation_edges(rank, mesh):
         coefficient = torch.tensor(0.8, requires_grad=True)
         expected_x = data.clone().requires_grad_()
         expected_coefficient = coefficient.detach().clone().requires_grad_()
-        expected, _, _ = nv_fp4(expected_x, group_size=16, max_scale=expected_coefficient)
+        expected_global_scale = calculate_gparam_by_dtype(expected_x, "nv_fp4", 16, activation=True)
+        expected, _, _ = nv_fp4(
+            expected_x, group_size=16, global_scale=expected_global_scale, max_scale=expected_coefficient
+        )
         actual, _, _ = quantize(distributed_x, group_size=16, data_type="nv_fp4", max_scale=coefficient)
         actual.to_local().sum().backward()
         expected.sum().backward()
