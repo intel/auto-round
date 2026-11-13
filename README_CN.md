@@ -442,6 +442,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 > 该功能仍处于实验阶段，尚不支持生产级部署场景。
 
+Qwen3.8-27B（2+2+2+2）的实测精度、存储占用与量化成本见 [RRQ 精度与成本](./docs/rrq_acc_CN.md)。
+
 ```bash
 # 量化：输出目录中同时产出 base/ 和 residual/
 python -m auto_round.cli.main \

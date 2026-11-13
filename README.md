@@ -430,6 +430,8 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
 > This is an experimental feature and production-level deployments are not yet supported.
 
+Measured accuracy, storage footprint and quantization cost for Qwen3.8-27B (2+2+2+2) are in [RRQ accuracy and cost](./docs/rrq_acc.md).
+
 ```bash
 # Quantize: produces both base/ and residual/ in the output dir
 python -m auto_round.cli.main \
