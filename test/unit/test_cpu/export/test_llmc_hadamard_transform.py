@@ -22,7 +22,10 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers import LlamaConfig, LlamaForCausalLM
 
+from auto_round.algorithms.quantization.rtn.batched_search import _staged_weight
+from auto_round.algorithms.transforms.hadamard.apply import apply_rotation_transform
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+from auto_round.algorithms.transforms.teq.protocol import apply_teq_equivalent_weight_transform
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 from auto_round.export.formats.compressed_tensors import integer as llmc_export
 from auto_round.export.formats.compressed_tensors.float import save_checkpoint as save_quantized_as_fp
@@ -30,6 +33,7 @@ from auto_round.export.formats.compressed_tensors.integer import save_checkpoint
 from auto_round.export.formats.compressed_tensors.transform import (
     _export_hadamard_transform_config,
 )
+from auto_round.wrapper import WrapperLinear
 
 
 def _tiny_llama():
@@ -201,3 +205,26 @@ def test_packed_quantlinear_receives_online_transform():
 
     assert hasattr(packed, "v_input")
     assert packed.v_input.weight.shape == (32, 32)
+
+
+def test_batched_rtn_staging_applies_weight_rotation():
+    layer = torch.nn.Linear(64, 4, bias=False)
+    layer.bits = 4
+    layer.group_size = 32
+    layer.sym = True
+    layer.data_type = "mx_fp"
+    layer.act_bits = 16
+    layer.act_data_type = "mx_fp"
+    layer.act_group_size = 32
+    layer.act_sym = True
+    layer.scale_dtype = torch.uint8
+    model = torch.nn.Sequential(layer)
+    original = layer.weight.detach().clone()
+    apply_rotation_transform(model, "hadamard", use_tqdm=False)
+    wrapper = WrapperLinear(layer, enable_round_tuning=False, disable_opt_rtn=True, device="cpu")
+
+    staged = _staged_weight(wrapper)
+    expected = apply_teq_equivalent_weight_transform(layer, original)
+
+    assert torch.allclose(staged, expected)
+    assert not torch.allclose(staged, original)
