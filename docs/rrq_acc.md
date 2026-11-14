@@ -162,6 +162,63 @@ reproducible. Effective average precision ≈ 3-bit.
    uniform across layers, which makes `residual_fraction` a predictable knob:
    storage and accuracy both scale linearly with the fraction.
 
+## Base plane quality: RTN vs. AutoRound
+
+The numbers above use RTN for every plane (`--iters 0`). The base plane is by
+far the most important one, so it is worth spending sign-SGD tuning on it alone
+and generating the residual planes incrementally:
+
+1. Quantize the base plane with full AutoRound tuning (`--iters 1000`), optionally
+   sharded across GPUs.
+2. Feed that INT2 base to `generate_rrq_residual` to obtain the residual planes.
+
+That split is exactly what `generate_rrq_residual` exists for. Note that the
+residual planes still use RTN — the same optimized RTN scale search as the
+one-pass path — so the only difference between the two configurations is how
+the base plane was produced.
+
+| Configuration | Base plane | Residual planes | Base cost | Residual cost |
+|---|---|---|---|---|
+| **A** | RTN (`iters=0`) | RTN | incl. below | — |
+| **B** | AutoRound (`iters=1000`) | RTN | 6 h 09 m (4 GPUs) | 5 m 10 s (8 GPUs) |
+
+Configuration A takes 26 min 21 s in total; B costs an additional 6 h because of
+the sign-SGD tuning of the base plane.
+
+### Accuracy comparison
+
+lm-eval, full test sets, bf16 forward, identical evaluation harness.
+
+| Precision | A: all RTN | B: AutoRound base + RTN residual | **Δ** |
+|---|---|---|---|
+| 2-bit | 64.28 | **68.02** | **+3.74** |
+| 4-bit | **71.67** | 72.02 | +0.35 |
+| 6-bit | **72.19** | 72.03 | −0.16 |
+| 8-bit | **71.85** | 71.79 | −0.06 |
+
+Detailed Group B numbers:
+
+| Precision | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge |
+|---|---|---|---|---|---|
+| 2-bit | 77.97 | 71.35 | 55.60 | 81.86 | 53.33 |
+| 4-bit | 80.47 | 76.16 | 63.38 | 82.91 | 57.17 |
+| 6-bit | 81.18 | 74.90 | 63.67 | 83.16 | 57.25 |
+| 8-bit | 81.07 | 75.37 | 63.75 | 82.20 | 56.57 |
+
+### Observations
+
+1. **Tuning the base plane only pays off at 2-bit** (+3.74), where it buys
+   ~3.7 accuracy points for 6 extra hours of quantization time. HellaSwag gains
+   the most (+4.91), then ARC-challenge (+4.27).
+2. **At 4-bit and above the two configurations are equivalent** (spread ≤ 0.35,
+   i.e. evaluation noise). Once one residual plane is present the base plane is
+   no longer the bottleneck, so the expensive tuning is wasted: the extra
+   residual planes absorb the error the base leaves behind.
+3. **Practical guidance.** If the target deployment is 2-bit, tune the base with
+   AutoRound and generate the residuals incrementally. If the target is 4-bit or
+   higher — or if the checkpoint must serve several widths — quantize everything
+   with RTN (`--iters 0`) and get all four operating points in half an hour.
+
 ## Mixed precision
 
 `load_rrq_model` exposes random per-layer precision via three arguments, plus a
