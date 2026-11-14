@@ -56,6 +56,7 @@ __all__ = [
     "__version__",
     "generate_rrq_residual",
     "load_rrq_model",
+    "materialize_rrq",
     "quantize_and_save",
 ]
 
@@ -63,14 +64,20 @@ __all__ = [
 def __getattr__(name):
     """Lazy import for heavy submodules to avoid import cycles / slow startup.
 
-    Currently exposes ``load_rrq_model`` (combined base + residual RRQ loading)
-    and ``generate_rrq_residual`` (build residual from an existing base), both
-    of which live in the inference/export paths and pull in heavy imports.
+    Currently exposes ``load_rrq_model`` (combined base + residual RRQ loading),
+    ``materialize_rrq`` (convert the dynamic-precision layers to dense linear
+    layers for fast inference) and ``generate_rrq_residual`` (build residual from
+    an existing base), all of which live in the inference/export paths and pull
+    in heavy imports.
     """
     if name == "load_rrq_model":
         from auto_round.inference.rrq_model import load_rrq_model
 
         return load_rrq_model
+    if name == "materialize_rrq":
+        from auto_round.inference.rrq_linear import materialize_rrq
+
+        return materialize_rrq
     if name == "generate_rrq_residual":
         from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 

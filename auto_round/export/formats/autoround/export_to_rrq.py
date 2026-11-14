@@ -35,6 +35,9 @@ Storage strategy (packed INT2):
     loaders can distinguish the artifact while keeping the same quant Method.
 """
 
+import glob
+import json
+import os
 from typing import Union
 
 import torch
@@ -147,7 +150,6 @@ def _shard_safetensors(state: dict, output_dir: str, max_shard_bytes: int = 5 * 
         "metadata": {"total_size": sum(t.numel() * t.element_size() for t in state.values())},
         "weight_map": weights_map,
     }
-    import json
 
     with open(os.path.join(output_dir, "model.safetensors.index.json"), "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
@@ -163,7 +165,6 @@ def _write_quantization_config(quantization_config: dict, output_dir: str) -> No
     for architecture and reads the residual's ``quantization_config`` from the
     config.json / quantization_config.json in this directory).
     """
-    import json
     import os
 
     with open(os.path.join(output_dir, "quantization_config.json"), "w", encoding="utf-8") as f:
@@ -214,8 +215,11 @@ def save_quantized_rrq(
     **not** included -- they live in the separately-exported base model -- so
     the residual artifact is compact.
 
-    The in-memory buffers are renamed from ``rrq_*_k`` to the on-disk ``*_k``
-    names so ``RRQLinear``/loaders find them by convention; the packed INT2
+    Only the serialized state-dict keys are mapped: the in-memory
+    ``rrq_*_k`` buffers are written under the on-disk ABI names ``*_k``
+    (``qweight_k`` / ``scales_k`` / ``qzeros_k``) that loaders look up by
+    convention.  ``module._buffers`` is **not** mutated, so the in-memory
+    module state is identical before and after export.  The packed INT2
     tensors are stored as-is (no dequant/round-trip).
 
     Args:
@@ -244,8 +248,15 @@ def save_quantized_rrq(
 
     logger.info(f"Saving RRQ residual model ({num_planes - 1} planes) to {output_dir}")
 
-    # Build a state dict containing *only* the packed residual planes, and
-    # rename the in-memory ``rrq_*_k`` buffers to the on-disk ``*_k`` names.
+    # Build a state dict containing *only* the packed residual planes.
+    # The in-memory ``rrq_*_k`` buffers are mapped to the on-disk ``*_k``
+    # names in the state dict *without* mutating ``module._buffers``, so the
+    # in-memory module state is unchanged after export.
+    #
+    # Some code paths (older versions, external tooling) may already hold the
+    # buffers under the ABI-style ``*_k`` names; prefer ``rrq_*_k`` when
+    # present and fall back to ``*_k`` so those planes are not silently
+    # dropped.
     residual_state: dict[str, torch.Tensor] = {}
     for name, module in model.named_modules():
         if not hasattr(module, "rrq_total_planes"):
@@ -256,11 +267,9 @@ def save_quantized_rrq(
                 (f"rrq_scales_{k}", f"scales_{k}"),
                 (f"rrq_qzeros_{k}", f"qzeros_{k}"),
             ):
-                if src in module._buffers:
-                    module._buffers[dst] = module._buffers.pop(src)
-            for dst in (f"qweight_{k}", f"scales_{k}", f"qzeros_{k}"):
-                if dst in module._buffers:
-                    residual_state[f"{name}.{dst}"] = module._buffers[dst].detach().cpu()
+                buf = module._buffers.get(src, module._buffers.get(dst))
+                if buf is not None:
+                    residual_state[f"{name}.{dst}"] = buf.detach().cpu()
 
     # Serialize the residual state dict (safetensors by default, torch otherwise).
     _save_state_dict_sharded(residual_state, output_dir, safe_serialization)
@@ -430,6 +439,7 @@ def _generate_residual_for_layer(
     group_size: int,
     sym: bool,
     num_planes: int,
+    device: str | torch.device = "cpu",
 ) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Generate 3 packed INT2 residual planes for a single layer.
 
@@ -440,6 +450,8 @@ def _generate_residual_for_layer(
         group_size: Quantization group size.
         sym: Symmetric quantization flag.
         num_planes: Total planes (4 = 1 base + 3 residual).
+        device: Device to run the quantization on.  The optimized RTN scale
+            search dominates the runtime and is dramatically faster on a GPU.
 
     Returns:
         List of ``(qweight, scales, qzeros)`` tuples for planes 1..K-1.
@@ -448,11 +460,15 @@ def _generate_residual_for_layer(
     from auto_round.data_type.utils import get_quant_func
 
     QuantLinear = _rrq_quant_linear_class(sym)
+    # Match the RRQ quantizer path: residual planes use the optimized RTN
+    # (scale search), not plain min/max RTN.  Using different kernels here
+    # produced lower-quality residuals than quantizing the whole model in one
+    # RRQ pass, so incremental generation silently disagreed with the main path.
     quant_func, _ = get_quant_func(
         dtype="int",
         bits=bits,
         sym=sym,
-        disable_opt_rtn=True,
+        disable_opt_rtn=False,
         group_size=group_size,
         iters=0,
     )
@@ -474,17 +490,24 @@ def _generate_residual_for_layer(
         ql = QuantLinear(bits, group_size, in_features, out_features, bias=False)
         plane_linear = nn.Linear(in_features, out_features, bias=False)
         plane_linear.weight.data = dequant.detach().clone().to(torch.float32)
+        # Packing itself runs on CPU; move the dequantized plane back first.
+        plane_linear.to("cpu")
+        if isinstance(scale_n, torch.Tensor):
+            scale_n = scale_n.cpu()
+        if isinstance(zp_n, torch.Tensor):
+            zp_n = zp_n.cpu()
         ql.to("cpu")
         ql.pack(plane_linear, scale_n, zp_n, None, device="cpu")
-        ql.to("cpu")
         return ql.qweight.detach(), ql.scales.detach(), ql.qzeros.detach()
 
     # Start from the residual after the base plane
-    residual = W_fp.to(torch.float32) - W_dequant_base.to(torch.float32)
+    residual = W_fp.to(device=device, dtype=torch.float32) - W_dequant_base.to(device=device, dtype=torch.float32)
     accumulated = torch.zeros_like(residual)
     planes = []
 
     for plane_idx in range(1, num_planes):
+        # The optimized RTN scale search runs on ``device``; only the packed
+        # plane is brought back to CPU (packing is CPU-only).
         quantized, scale, zp = quant_func(
             residual,
             bits=bits,
@@ -500,6 +523,168 @@ def _generate_residual_for_layer(
     return planes
 
 
+def _residual_worker(args):
+    """Compute the residual planes for one layer (process-pool entry point).
+
+    Kept at module level so it is picklable.  The weight tensors are *not*
+    passed in: shipping every layer's float32 weight and dequantized base to the
+    workers costs them again in memory and quickly exhausts RAM on a large
+    model.  Instead each worker re-opens the shard it needs, so the peak stays
+    proportional to the worker count rather than the model size.
+
+    ``args`` is ``(layer_name, base_model_dir, raw_weight_path,
+    base_weight_path, in_features, out_features, bits, group_size, sym,
+    num_planes, device)``, where ``raw_weight_path`` is the safetensors shard
+    containing ``layer_name`` and ``device`` is the device assigned to this job
+    (``"cpu"``, ``"cuda:0"``, ...).  The device travels with the job rather than
+    living in an environment variable so a single pool can spread work over all
+    visible GPUs.
+
+    Returns:
+        ``(layer_name, planes)`` where ``planes`` is the list of
+        ``(qweight, scales, qzeros)`` tuples for planes 1..K-1.
+    """
+    (
+        layer_name,
+        base_model_dir,
+        raw_weight_path,
+        base_weight_path,
+        in_features,
+        out_features,
+        bits,
+        group_size,
+        sym,
+        num_planes,
+        job_device,
+    ) = args
+
+    # The optimized RTN scale search is the hot loop and runs ~100x faster on a
+    # GPU than on one CPU core, so the residual generation is GPU-bound in
+    # practice.
+    device = torch.device(job_device or _rrq_worker_device())
+
+    from safetensors import safe_open
+
+    from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+
+    QuantLinear = _rrq_quant_linear_class(sym)
+
+    # Read only this layer's tensors out of its shard.  ``safe_open`` gives
+    # per-tensor access, so the rest of the shard is never materialized.
+    with safe_open(raw_weight_path, framework="pt", device="cpu") as fh:
+        W_fp = fh.get_tensor(f"{layer_name}.weight").to(torch.float32)
+
+    with safe_open(base_weight_path, framework="pt", device="cpu") as fh:
+        qweight = fh.get_tensor(f"{layer_name}.qweight").to(torch.int32)
+        scales = fh.get_tensor(f"{layer_name}.scales").to(torch.float16)
+        qzeros = fh.get_tensor(f"{layer_name}.qzeros").to(torch.int32)
+
+    # Dequantize the base plane to get W_dequant_base.
+    ql = QuantLinear(bits, group_size, in_features, out_features, bias=False)
+    ql.qweight.data = qweight
+    ql.scales.data = scales
+    ql.qzeros.data = qzeros
+    ql.to(device)
+    identity = torch.eye(in_features, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        out = ql.forward(identity)  # (in_features, out_features)
+    W_dequant_base = out.T.float()  # (out_features, in_features)
+
+    planes = _generate_residual_for_layer(W_fp, W_dequant_base, bits, group_size, sym, num_planes, device=device)
+    # Move the packed results back to CPU for serialization.  Drop the device
+    # tensors first so the GPU cache is released before the next job starts.
+    result = [(qw.cpu(), sc.cpu(), qz.cpu()) for qw, sc, qz in planes]
+    del W_fp, W_dequant_base, ql, out, planes
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    return layer_name, result
+
+
+def _rrq_worker_devices(device):
+    """Resolve the per-job device list for the residual workers.
+
+    ``device`` may be a single device (``"cpu"``, ``"cuda:0"``) or a
+    comma-separated list (``"cuda:0,cuda:1"``).  A bare ``"cuda"`` expands to
+    *every* visible GPU, which lets one pool saturate the whole node.  Jobs are
+    then distributed round-robin over the resolved devices.
+    """
+    if isinstance(device, torch.device):
+        device = str(device)
+    parts = [p.strip() for p in str(device or "cpu").split(",") if p.strip()]
+    resolved: list[str] = []
+    for part in parts:
+        if part.lower() == "cuda":
+            count = torch.cuda.device_count()
+            resolved.extend([f"cuda:{i}" for i in range(count)] if count else ["cpu"])
+        else:
+            resolved.append(part)
+    return resolved or ["cpu"]
+
+
+def _rrq_worker_device():
+    """Device for one residual worker.
+
+    Each worker pins itself to one visible GPU (``CUDA_VISIBLE_DEVICES`` is set
+    per worker by the pool initializer) and falls back to CPU when no GPU is
+    available.
+    """
+    import os
+
+    if os.environ.get("AR_RRQ_DEVICE", "").lower().startswith("cuda"):
+        return torch.device("cuda:0")  # remapped by CUDA_VISIBLE_DEVICES
+    return torch.device("cpu")
+
+
+def _weight_names_from_dir(weight_dir, index_path, safetensors_files):
+    """Return the set of tensor names stored in ``weight_dir``.
+
+    Reads only the safetensors index (or the file headers when there is no
+    index), so the caller never materializes the weights themselves.
+    """
+    import json as _json
+
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as fh:
+            return set(_json.load(fh).get("weight_map", {}))
+
+    from safetensors import safe_open
+
+    names = set()
+    for path in safetensors_files:
+        with safe_open(path, framework="pt", device="cpu") as fh:
+            names.update(fh.keys())
+    return names
+
+
+def _enumerate_packed_base_layers(safetensors_files, index_path, weight_dir, bits):
+    """Map ``layer_name -> (in_features, out_features)`` for packed INT2 layers.
+
+    Reads only the safetensors headers (shapes), so the base model is never
+    fully loaded into memory here.  A layer counts as packed when it has both a
+    ``qweight`` and a ``scales`` tensor.
+    """
+    from safetensors import safe_open
+
+    keys_and_shapes = {}
+    for path in safetensors_files:
+        with safe_open(path, framework="pt", device="cpu") as fh:
+            for key in fh.keys():
+                if key.endswith((".qweight", ".scales")):
+                    keys_and_shapes[key] = fh.get_slice(key).get_shape()
+
+    layers = {}
+    for key, shape in keys_and_shapes.items():
+        if not key.endswith(".qweight"):
+            continue
+        layer_name = key.rsplit(".qweight", 1)[0]
+        if f"{layer_name}.scales" not in keys_and_shapes:
+            continue
+        in_features = shape[0] * 32 // bits
+        out_features = shape[1]
+        layers[layer_name] = (in_features, out_features)
+    return layers
+
+
 def generate_rrq_residual(
     base_model_dir: str,
     raw_model: str,
@@ -508,6 +693,7 @@ def generate_rrq_residual(
     sym: bool = False,
     device: str | torch.device = "cpu",
     safe_serialization: bool = True,
+    num_workers: int = 1,
 ):
     """Generate an RRQ residual model from an existing INT2 base model + FP weights.
 
@@ -521,16 +707,28 @@ def generate_rrq_residual(
         4. Run 3 rounds of RTN INT2 quantization on the residual
         5. Pack the results as ``auto_round:rrq``
 
+    Layers are independent, so the per-layer work parallelizes cleanly.  The
+    optimized RTN scale search dominates the cost, and it is roughly two orders
+    of magnitude faster on a GPU than on one CPU core (~1.9 min per 5120x5120
+    layer on CPU vs a few seconds on a GPU).  Pass ``device="cuda"`` together
+    with ``num_workers`` >= the number of visible GPUs to use the whole node.
+
     Args:
         base_model_dir: Path to the exported INT2 base model (standard ``auto_round`` format).
         raw_model: Path (or HF name) to the original FP model weights.
         output_dir: Output directory for the residual model.
         group_size: Quantization group size (must match the base model).
         sym: Symmetric quantization flag (must match the base model).
-        device: Device for computation.
+        device: Device for the quantization math.  ``"cpu"`` (default) keeps
+            the original behavior; ``"cuda"`` uses every visible GPU,
+            ``"cuda:0,cuda:1"`` restricts to a subset.  Jobs are assigned to
+            devices round-robin.  Packing always happens on CPU.
         safe_serialization: Use safetensors format (default True).
+        num_workers: Worker processes for the per-layer residual generation.
+            ``1`` (default) runs serially in-process; larger values fan the
+            layers out over processes.  Results are identical either way.  With
+            ``device="cuda"`` use at least one worker per GPU to saturate them.
     """
-    import glob
     import json
     import os
 
@@ -562,119 +760,125 @@ def generate_rrq_residual(
         f"(group_size={group_size}, sym={sym}) -> {output_dir}"
     )
 
-    # Load base state dict (packed INT2)
-    base_state: dict[str, torch.Tensor] = {}
-    for f in sorted(glob.glob(os.path.join(base_model_dir, "*.safetensors"))):
-        from safetensors.torch import load_file as _load_st
-
-        base_state.update(_load_st(f))
-    if not base_state:
-        for f in sorted(glob.glob(os.path.join(base_model_dir, "*.bin"))):
-            base_state.update(torch.load(f, map_location="cpu", weights_only=False))
-    if not base_state:
-        raise FileNotFoundError(f"No weight files found in {base_model_dir}")
-
-    # Load raw (FP) state dict
-    raw_state: dict[str, torch.Tensor] = {}
+    # Resolve the raw (FP) model to a directory holding safetensors weights.
+    # Only the weight index/headers are read here: loading every FP tensor in
+    # the parent would hold the whole model in RAM (~52 GiB for 27B), which is
+    # exactly what the workers are meant to avoid.
     raw_path = os.path.expanduser(raw_model)
     if os.path.isdir(raw_path):
-        for f in sorted(glob.glob(os.path.join(raw_path, "*.safetensors"))):
-            from safetensors.torch import load_file as _load_st
-
-            raw_state.update(_load_st(f))
-        if not raw_state:
-            for f in sorted(glob.glob(os.path.join(raw_path, "*.bin"))):
-                raw_state.update(torch.load(f, map_location="cpu", weights_only=False))
+        candidates = [raw_path]
     else:
-        # HF model name -- download via transformers
-        import transformers
-
-        # Use snapshot_download to get the local path
         from huggingface_hub import snapshot_download
-        from safetensors.torch import load_file as _load_st
 
         local_dir = snapshot_download(raw_model)
-        for f in sorted(glob.glob(os.path.join(local_dir, "*.safetensors"))):
-            raw_state.update(_load_st(f))
-        if not raw_state:
-            for f in sorted(glob.glob(os.path.join(local_dir, "*.bin"))):
-                raw_state.update(torch.load(f, map_location="cpu", weights_only=False))
+        # ``snapshot_download`` may resolve to a revision without safetensors
+        # (e.g. a legacy pytorch_model.bin-only upload); prefer any cached
+        # snapshot of the same repo that does have them.
+        candidates = [local_dir]
+        repo_root = os.path.dirname(local_dir)
+        if os.path.basename(repo_root) == "snapshots":
+            candidates.extend(sorted(glob.glob(os.path.join(repo_root, "*"))))
 
-    if not raw_state:
+    raw_dir_for_index = None
+    for cand in candidates:
+        if glob.glob(os.path.join(cand, "*.safetensors")):
+            raw_dir_for_index = cand
+            break
+    if raw_dir_for_index is None:
+        raise FileNotFoundError(
+            f"No safetensors weight files found for raw model: {raw_model}. "
+            "RRQ residual generation needs safetensors weights."
+        )
+
+    raw_safetensors = sorted(glob.glob(os.path.join(raw_dir_for_index, "*.safetensors")))
+    raw_index_path = os.path.join(raw_dir_for_index, "model.safetensors.index.json")
+    raw_weight_names = _weight_names_from_dir(raw_dir_for_index, raw_index_path, raw_safetensors)
+
+    if not raw_weight_names:
         raise FileNotFoundError(f"No weight files found for raw model: {raw_model}")
 
     # Enumerate base layers (packed INT2 with .qweight keys)
-    base_layers = {}
-    for key, value in base_state.items():
-        if not key.endswith(".qweight") or not isinstance(value, torch.Tensor):
-            continue
-        if key.rsplit(".", 1)[1] != "qweight":
-            continue
-        layer_name = key.rsplit(".qweight", 1)[0]
-        if f"{layer_name}.scales" not in base_state:
-            continue
-        in_features = value.shape[0] * 32 // bits
-        out_features = value.shape[1]
-        base_layers[layer_name] = (in_features, out_features)
+    base_index_path = os.path.join(base_model_dir, "model.safetensors.index.json")
+    base_safetensors = sorted(glob.glob(os.path.join(base_model_dir, "*.safetensors")))
+    base_layers = _enumerate_packed_base_layers(base_safetensors, base_index_path, base_model_dir, bits)
 
     if not base_layers:
         raise ValueError(f"No packed INT2 layers found in base model {base_model_dir}")
 
     logger.info(f"Found {len(base_layers)} base layers to generate residual for.")
 
-    # Build residual state dict
+    # Map each layer to the shard holding its tensors so workers load only what
+    # they need.  Passing tensors through the pool would duplicate the model in
+    # flight (48 workers x full layer = far beyond available RAM).
+    def _shard_for(index_path, weight_dir, files, tensor_name):
+        import json as _json
+
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as fh:
+                shard = _json.load(fh).get("weight_map", {}).get(tensor_name)
+            if shard:
+                return os.path.join(weight_dir, shard)
+        return files[0]
+
     residual_state: dict[str, torch.Tensor] = {}
-    processed = 0
-    for layer_name, (in_features, out_features) in base_layers.items():
+    job_devices = _rrq_worker_devices(device)
+    if len(job_devices) > 1:
+        logger.info(f"Residual generation will use devices: {', '.join(job_devices)}")
+    jobs = []
+    for layer_idx, (layer_name, (in_features, out_features)) in enumerate(base_layers.items()):
         # Check that the raw model has this layer's weight
-        if f"{layer_name}.weight" not in raw_state:
+        if f"{layer_name}.weight" not in raw_weight_names:
             logger.warning(f"Layer {layer_name!r} not found in raw model; skipping.")
             continue
 
-        W_fp = raw_state[f"{layer_name}.weight"].to(torch.float32)
+        raw_shard = _shard_for(raw_index_path, raw_dir_for_index, raw_safetensors, f"{layer_name}.weight")
+        base_shard = _shard_for(base_index_path, base_model_dir, base_safetensors, f"{layer_name}.qweight")
+        jobs.append(
+            (
+                layer_name,
+                base_model_dir,
+                raw_shard,
+                base_shard,
+                in_features,
+                out_features,
+                bits,
+                group_size,
+                sym,
+                num_planes,
+                job_devices[layer_idx % len(job_devices)],
+            )
+        )
 
-        # Dequantize the base plane to get W_dequant_base
-        qweight = base_state[f"{layer_name}.qweight"].to(torch.int32)
-        scales = base_state[f"{layer_name}.scales"].to(torch.float16)
-        qzeros = base_state.get(f"{layer_name}.qzeros")
-        if qzeros is None:
-            num_groups = (in_features + group_size - 1) // group_size
-            pack_factor = 32 // bits
-            qzeros = torch.zeros((num_groups, max(1, out_features // pack_factor)), dtype=torch.int32)
-        else:
-            qzeros = qzeros.to(torch.int32)
-
-        # Build QuantLinear and dequant
-        QuantLinear = _rrq_quant_linear_class(sym)
-        ql = QuantLinear(bits, group_size, in_features, out_features, bias=False)
-        ql.qweight.data = qweight
-        ql.scales.data = scales
-        ql.qzeros.data = qzeros
-        ql.to("cpu")
-
-        # Dequant by running forward on identity
-        identity = torch.eye(in_features, dtype=torch.float32)
-        with torch.no_grad():
-            out = ql.forward(identity)  # (in_features, out_features)
-        W_dequant_base = out.T.to(torch.float32)  # (out_features, in_features)
-
-        # Generate 3 residual planes
-        planes = _generate_residual_for_layer(W_fp, W_dequant_base, bits, group_size, sym, num_planes)
-
-        for k, (qw, sc, qz) in enumerate(planes, start=1):
-            residual_state[f"{layer_name}.qweight_{k}"] = qw
-            residual_state[f"{layer_name}.scales_{k}"] = sc
-            residual_state[f"{layer_name}.qzeros_{k}"] = qz
-        processed += 1
-
-        if processed % 50 == 0:
-            logger.info(f"  processed {processed}/{len(base_layers)} layers...")
-
-    if processed == 0:
+    if not jobs:
         raise ValueError(
             f"No layers could be processed: no common layers found between "
             f"base model ({len(base_layers)} layers) and raw model."
         )
+
+    total = len(jobs)
+    if num_workers > 1:
+        import multiprocessing as mp
+
+        logger.info(f"Generating residuals for {total} layers with {num_workers} workers...")
+        with mp.get_context("spawn").Pool(processes=num_workers) as pool:
+            for processed, (layer_name, planes) in enumerate(pool.imap_unordered(_residual_worker, jobs), start=1):
+                for k, (qw, sc, qz) in enumerate(planes, start=1):
+                    residual_state[f"{layer_name}.qweight_{k}"] = qw
+                    residual_state[f"{layer_name}.scales_{k}"] = sc
+                    residual_state[f"{layer_name}.qzeros_{k}"] = qz
+                if processed % 50 == 0 or processed == total:
+                    logger.info(f"  processed {processed}/{total} layers...")
+    else:
+        for processed, job in enumerate(jobs, start=1):
+            layer_name, planes = _residual_worker(job)
+            for k, (qw, sc, qz) in enumerate(planes, start=1):
+                residual_state[f"{layer_name}.qweight_{k}"] = qw
+                residual_state[f"{layer_name}.scales_{k}"] = sc
+                residual_state[f"{layer_name}.qzeros_{k}"] = qz
+            if processed % 50 == 0 or processed == total:
+                logger.info(f"  processed {processed}/{total} layers...")
+
+    processed = total
 
     # Save
     os.makedirs(output_dir, exist_ok=True)

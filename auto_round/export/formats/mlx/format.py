@@ -89,6 +89,14 @@ class MLXFormat(OutputFormat):
         """
         model = prepare_model(model, inplace, device="cpu")
 
+        # Fail fast: MLX does not support RRQ multi-plane models.
+        if hasattr(model, "config") and isinstance(getattr(model.config, "quantization_config", None), dict):
+            if model.config.quantization_config.get("packing_format") == "auto_round:rrq":
+                raise ValueError(
+                    "MLX format does not support RRQ (auto_round:rrq) models. "
+                    "Use the 'auto_round' format instead, or load via load_rrq_model."
+                )
+
         os.makedirs(output_dir, exist_ok=True)
 
         bits = serialization_dict.get("bits", 4) if serialization_dict else 4

@@ -12,6 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
+from auto_round.inference.rrq_linear import materialize_rrq, set_rrq_phase_bits
 from auto_round.inference.rrq_model import load_rrq_model
 
-__all__ = ["convert_hf_model", "infer_target_device", "load_rrq_model", "post_init"]
+__all__ = [
+    "convert_hf_model",
+    "infer_target_device",
+    "load_rrq_model",
+    "materialize_rrq",
+    "post_init",
+    "set_rrq_phase_bits",
+]
