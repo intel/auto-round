@@ -316,6 +316,21 @@ model.generate(**inputs)  # prefill 走 6-bit，随后每个生成的 token 走 
 | 8-bit | 3369 ms | 3200 ms/tok | — | — |
 | **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
 
+各拆分方式的 decode 吞吐（融合 kernel、batch 16、每条序列生成 96 token、单张
+80 GB 卡）：
+
+| 配置 | Decode | 相对 2-bit |
+|---|---|---|
+| 2-bit | **121.0 tok/s** | 1.00× |
+| 4-bit | 68.5 tok/s | 0.57× |
+| 6-bit | 48.8 tok/s | 0.40× |
+| prefill 6 / decode 2 | **110.0 tok/s** | 0.91× |
+| prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
+
+batch 必须不超过 `_RRQ_FUSED_MAX_BATCH`（16）。一旦超过，`RRQLinear` 会完全跳过融合
+kernel 并退化为 dequant + matmul：2-bit decode 从 batch 16 的 113 tok/s 掉到 batch
+24 的 **30 tok/s**。超过这个阈值的基准测到的是参考路径，而不是 kernel。
+
 ### GSM8K 精度
 
 这个配置要回答的精度问题是：*6-bit prefill 能否挽回 2-bit decode 损失的精度？*
@@ -331,13 +346,28 @@ GSM8K 是一个合适的探针，因为推理过程发生在生成阶段，而�
 |---|---|---|---|---|
 | 全部 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | 全部 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-分阶段配置如预期落在两个统一精度之间：比全部 2-bit 高 5.91 分，比全部 6-bit 低
-16.22 分。两个差距都统计显著（p6d2 − 2bit = +5.91 ± 3.28，6bit − p6d2 =
-+16.22 ± 2.54），因此它是一个真实的中间工作点，而非噪声。它挽回了
+把 decode 从 2-bit 加宽到 4-bit 是决定性的一步：**+17.29 分**，是 6-bit prefill
+在 2-bit decode 下所能带来收益的三倍。GSM8K 的算术几乎全部发生在 decode 阶段，
+因此分数跟随的是 **decode 权重宽度，而不是 prefill 宽度**。
+
+在 4-bit decode 下该配置达到 **95.60%，与均匀 6-bit 在统计上无法区分**（94.54% ±
+1.23；p6d4 − 6bit 的 +1.06 差距完全落在置信区间内）。超过 4-bit 后继续加宽 decode
+就饱和了：精度章节里的 4/6/8-bit 阶梯中，4→6-bit 只值 +0.52，6→8-bit 是 −0.34。
+所以一旦 decode 到了 4-bit，6-bit prefill 就已经达到精度目标，6-bit decode 买不到
+任何可测量的收益。
+
+在 2-bit decode 下，prefill 宽度仍然有意义：比均匀 2-bit 高 5.91 分，挽回了
 **2-bit → 6-bit 差距的 27%**（+22.14 分中的 +5.91 分），同时每个 token 都按
 2-bit 权重带宽生成。
+
+| 对比 | 差值 |
+|---|---|
+| prefill6/decode4 − 全部 2-bit | +23.20 |
+| prefill6/decode4 − prefill6/decode2 | +17.29 |
+| 全部 6-bit − prefill6/decode4 | −1.06（不显著） |
 
 prefill 只影响第一个 token，而 GSM8K 的大部分计算发生在 decode 阶段——算术链是
 一个 token 一个 token 在 2-bit 权重上生成的。更好的 prefill 让模型有个正确的

@@ -344,6 +344,23 @@ Measured on Qwen3.8-27B (105-token prompt, single 80 GB card, reference kernel):
 | 8-bit | 3369 ms | 3200 ms/tok | — | — |
 | **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
 
+Decode throughput of each split, measured with the fused kernel at batch 16
+(96 generated tokens per sequence, single 80 GB card):
+
+| Configuration | Decode | vs 2-bit |
+|---|---|---|
+| 2-bit | **121.0 tok/s** | 1.00× |
+| 4-bit | 68.5 tok/s | 0.57× |
+| 6-bit | 48.8 tok/s | 0.40× |
+| prefill 6 / decode 2 | **110.0 tok/s** | 0.91× |
+| prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
+
+Batch must stay at or below `_RRQ_FUSED_MAX_BATCH` (16). Above that cutoff
+`RRQLinear` skips the fused kernel entirely and falls back to dequant + matmul:
+2-bit decode drops from 113 tok/s at batch 16 to **30 tok/s at batch 24**. A
+benchmark that silently exceeds the cutoff measures the reference path, not the
+kernel.
+
 ### GSM8K accuracy
 
 The accuracy question this configuration has to answer is: *does a 6-bit
@@ -361,14 +378,32 @@ which silently depresses every configuration (see the note below the table).
 |---|---|---|---|---|
 | full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-The phase configuration sits between the two uniform precisions as expected:
-+5.91 points over full 2-bit and −16.22 points against full 6-bit. Both gaps are
-statistically significant (p6d2 − 2bit = +5.91 ± 3.28, 6bit − p6d2 = +16.22 ±
-2.54), so it is a genuine intermediate operating point rather than noise. It
-recovers **27% of the 2-bit → 6-bit gap** (+5.91 of +22.14 points) while
-generating every token at 2-bit weight bandwidth.
+Widening decode from 2 to 4 bits is the decisive step: **+17.29 points**, three
+times the gain the 6-bit prefill buys at 2-bit decode. Decode carries almost all
+of GSM8K's arithmetic, so decode weight width — not prefill width — is what the
+score tracks.
+
+At 4-bit decode the configuration reaches **95.60%, statistically
+indistinguishable from uniform 6-bit** (94.54% ± 1.23; the p6d4 − 6bit gap is
++1.06, well inside the confidence intervals). Above 4-bit, adding decode planes
+saturates: from the 4/6/8-bit ladder in the accuracy section, 4→6-bit was worth
++0.52 and 6→8-bit −0.34. So once decode is 4-bit, a 6-bit prefill already clears
+the accuracy target and a 6-bit decode buys nothing measurable.
+
+The phase configuration still sits between the two uniform precisions as
+expected for 2-bit decode:
+
+| Comparison | Delta |
+|---|---|
+| prefill6/decode4 − full 2-bit | +23.20 |
+| prefill6/decode4 − prefill6/decode2 | +17.29 |
+| full 6-bit − prefill6/decode4 | −1.06 (not significant) |
+
+For 2-bit decode, prefill width still matters: +5.91 points over uniform 2-bit
+(see below), recovering 27% of the 2-bit → 6-bit gap.
 
 Prefill affects the first token only, and most of GSM8K's computation happens
 during decode — the chain of arithmetic is produced token by token on 2-bit
