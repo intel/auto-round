@@ -350,36 +350,57 @@ The accuracy question this configuration has to answer is: *does a 6-bit
 prefill recover the accuracy that 2-bit decode loses?* GSM8K is a good probe
 because the reasoning happens during generation, which runs at 2-bit here.
 
-Full test set (1319 questions), greedy decoding, exact match on the `#### N`
-answer, single run per configuration:
+Full test set (1319 questions), greedy decoding, exact match on the final
+answer. Generation config: chat template with **thinking disabled** and
+**`max_new_tokens=2048`**, so every chain-of-thought finishes on its own. This
+matters for a reasoning model — with thinking left on and a short output budget
+the model spends the whole budget inside ` thinking` and never emits an answer,
+which silently depresses every configuration (see the note below the table).
 
-| Configuration | Correct | GSM8K accuracy | 95% CI |
-|---|---|---|---|
-| full 2-bit | 554 / 1319 | 42.00% | ±2.66 |
-| **prefill 6 / decode 2** | **705 / 1319** | **53.45%** | ±2.69 |
-| full 6-bit | 834 / 1319 | 63.23% | ±2.60 |
+| Configuration | Correct | GSM8K accuracy | 95% CI | Truncated |
+|---|---|---|---|---|
+| full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
+| **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-Both gaps are statistically significant (p6d2 − 2bit = +11.45 ± 3.79,
-6bit − p6d2 = +9.78 ± 3.74), so the phase configuration is a genuine
-intermediate operating point, not noise.
+The phase configuration sits between the two uniform precisions as expected:
++5.91 points over full 2-bit and −16.22 points against full 6-bit. Both gaps are
+statistically significant (p6d2 − 2bit = +5.91 ± 3.28, 6bit − p6d2 = +16.22 ±
+2.54), so it is a genuine intermediate operating point rather than noise. It
+recovers **27% of the 2-bit → 6-bit gap** (+5.91 of +22.14 points) while
+generating every token at 2-bit weight bandwidth.
 
-It recovers **54% of the 2-bit → 6-bit gap** (+11.45 of +21.23 points) while
-generating every token at 2-bit weight bandwidth. Two effects explain why it is
-not higher:
-
-- **Most of GSM8K's computation happens during decode.** The chain of arithmetic
-  is produced token by token, so the 2-bit weights are used for nearly all of the
-  reasoning. Only the prompt encoding benefits from 6-bit.
-- **Prefill affects the first token only.** A better-conditioned prefill helps
-  the model start on the right track, which is where the +11.45 points come from,
-  but it cannot re-introduce information the low-precision decode weights drop
-  later.
+Prefill affects the first token only, and most of GSM8K's computation happens
+during decode — the chain of arithmetic is produced token by token on 2-bit
+weights. A better-conditioned prefill helps the model start correctly, which is
+where the gain comes from, but it cannot re-introduce information the low-
+precision decode weights drop later.
 
 Practical reading: if a deployment must decode at 2-bit for speed, running
-prefill at 6-bit is a free accuracy win — it costs nothing measurable in decode
-time (779 ms/tok against 783 ms/tok) and 54% of the accuracy gap comes back. If
-the accuracy target is near 6-bit, no prefill/decode split will get there; the
+prefill at 6-bit is a free accuracy win — decode time is unchanged (779 ms/tok
+against 783 ms/tok) and about a quarter of the accuracy gap comes back. If the
+accuracy target is near 6-bit, no prefill/decode split will get there; the
 decode weights have to be wider.
+
+#### Generation-configuration sensitivity
+
+These numbers depend strongly on the decoding setup, and an earlier revision of
+this document reported much lower ones (42.00 / 53.45 / 63.23%) for the same
+checkpoints. That measurement used a raw prompt without the chat template and a
+320-token output budget. With the model's reasoning mode active, ` thinking` alone
+consumed the budget: 22 of 660 completions for 2-bit contained no parsable
+number at all, and the remainder were cut off mid-solution. Two independent
+settings were therefore needed — thinking off, and a 2048-token budget:
+
+| Configuration | Thinking | Max new tokens | 2-bit | prefill 6 / decode 2 | 6-bit |
+|---|---|---|---|---|---|
+| earlier (invalid) | on | 320 | 42.00% | 53.45% | 63.23% |
+| **current** | **off** | **2048** | **72.40%** | **78.32%** | **94.54%** |
+
+Residual truncation still costs a little, mostly at 2-bit where the model rambles
+more: excluding truncated rows gives 73.98% / 82.58% / 95.19%. The ordering and
+the size of each gap are unchanged, so the practical conclusion is not an
+artefact of the output budget.
 
 Prefill runs at the same three-plane 6-bit precision as uniform 6-bit, so its
 2412 ms versus 2580 ms is run-to-run variance rather than a saving. The real
