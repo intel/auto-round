@@ -334,49 +334,57 @@ kernel 并退化为 dequant + matmul：2-bit decode 从 batch 16 的 113 tok/s �
 ### GSM8K 精度
 
 这个配置要回答的精度问题是：*6-bit prefill 能否挽回 2-bit decode 损失的精度？*
-GSM8K 是一个合适的探针，因为推理过程发生在生成阶段，而生成阶段在这里走 2-bit。
+GSM8K 是一个合适的探针，因为推理过程发生在生成阶段，而生成阶段走的是 decode 的
+位宽。
 
 完整测试集（1319 题），贪心解码，按最终答案精确匹配。生成配置：chat template
 且**关闭 thinking**、**`max_new_tokens=2048`**，因此每条思维链都能自然结束。
 这对推理模型很关键——若 thinking 开启且输出预算较短，模型会把整个预算消耗在
-` thinking` 里而永远不输出答案，从而让所有配置的数字系统性偏低（见表格下方的
-说明）。
+`thinking` 块里而永远不输出答案，从而让所有配置的数字系统性偏低（见下文的
+*生成配置的敏感性*）。
 
 | 配置 | 正确数 | GSM8K 精度 | 95% 置信区间 | 截断数 |
 |---|---|---|---|---|
 | 全部 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| 全部 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | 全部 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-把 decode 从 2-bit 加宽到 4-bit 是决定性的一步：**+17.29 分**，是 6-bit prefill
-在 2-bit decode 下所能带来收益的三倍。GSM8K 的算术几乎全部发生在 decode 阶段，
-因此分数跟随的是 **decode 权重宽度，而不是 prefill 宽度**。
+有两点结论，且它们对分阶段方案指向不同方向：
 
-在 4-bit decode 下该配置达到 **95.60%，与均匀 6-bit 在统计上无法区分**（94.54% ±
-1.23；p6d4 − 6bit 的 +1.06 差距完全落在置信区间内）。超过 4-bit 后继续加宽 decode
-就饱和了：精度章节里的 4/6/8-bit 阶梯中，4→6-bit 只值 +0.52，6→8-bit 是 −0.34。
-所以一旦 decode 到了 4-bit，6-bit prefill 就已经达到精度目标，6-bit decode 买不到
-任何可测量的收益。
+- **decode 位宽是主导因素。** 从 2-bit 到 4-bit decode 值 **+21.99 分**；从 4-bit
+  到 6-bit decode 只值 **+0.15**，等于没有。GSM8K 的算术几乎全部发生在 decode
+  阶段，因此分数跟随 decode 权重宽度，并在 4-bit 处饱和。
+- **6-bit prefill 只在 decode 位宽很窄时才有收益。** 在 2-bit decode 下它带来
+  **+5.91 分**（z = 3.5，显著），挽回了 2-bit → 6-bit 差距的 27%。在 4-bit
+  decode 下只有 **+1.21 分**，不显著（z = 1.4，p ≈ 0.15），与噪声一致。
 
-在 2-bit decode 下，prefill 宽度仍然有意义：比均匀 2-bit 高 5.91 分，挽回了
-**2-bit → 6-bit 差距的 27%**（+22.14 分中的 +5.91 分），同时每个 token 都按
-2-bit 权重带宽生成。
+| 对比 | 差值 | 是否显著 |
+|---|---|---|
+| 全部 4-bit − 全部 2-bit | +21.99 | 是 |
+| prefill6/decode4 − prefill6/decode2 | +17.29 | 是 |
+| prefill6/decode2 − 全部 2-bit | +5.91 | 是 |
+| prefill6/decode4 − 全部 4-bit | +1.21 | 否（p ≈ 0.15） |
+| 全部 6-bit − 全部 4-bit | +0.15 | 否 |
+| prefill6/decode4 − 全部 6-bit | −1.06 | 否（p ≈ 0.21） |
 
-| 对比 | 差值 |
-|---|---|
-| prefill6/decode4 − 全部 2-bit | +23.20 |
-| prefill6/decode4 − prefill6/decode2 | +17.29 |
-| 全部 6-bit − prefill6/decode4 | −1.06（不显著） |
+**实践建议——按 decode 预算选工作点，而不是按 prefill：**
 
-prefill 只影响第一个 token，而 GSM8K 的大部分计算发生在 decode 阶段——算术链是
-一个 token 一个 token 在 2-bit 权重上生成的。更好的 prefill 让模型有个正确的
-起点，这正是增益的来源，但它无法补回低精度 decode 权重在后续丢掉的信息。
+- 如果 decode 为了速度必须走 2-bit，`set_rrq_phase_bits(model, 6, 2)` 是免费的
+  收益：decode 开销无可测量增加（110.0 tok/s 对 121.0 tok/s，即 0.91×）就换来
+  5.91 分，且不需要额外存储。
+- 如果 decode 用得起 4-bit，**直接用均匀 4-bit，跳过拆分**。它得到 94.39%，与
+  prefill6/decode4 的 95.60% 在统计上相同，decode 速度也一样是 68.5 tok/s，而
+  prefill 比 6-bit 更便宜。分阶段方案在这里只是多了机制，没有收益。
+- 均匀 6-bit 对 GSM8K 不值得：94.54% 落在均匀 4-bit 的噪声区间内，decode 速度却
+  只有 2-bit 的 0.40×。
 
-实践含义：如果部署为了速度必须用 2-bit decode，把 prefill 提到 6-bit 是一个免费
-的精度收益——decode 时间没有变化（779 ms/tok 对 783 ms/tok），约四分之一的精度
-差距被补回来。如果精度目标接近 6-bit，任何 prefill/decode 拆分都达不到，必须把
-decode 权重加宽。
+机制上，prefill 只影响第一个 token，而 GSM8K 的大部分计算发生在 decode 阶段——
+算术链是一个 token 一个 token 生成的。更好的 prefill 能让模型有个正确的起点，这
+就是那 +5.91 分的来源；但它无法补回低精度 decode 权重在后续丢掉的信息。这也解释
+了为什么 decode 一旦到 4-bit，prefill 加宽就失去作用：decode 权重本身已经不再是
+瓶颈。
 
 #### 生成配置的敏感性
 

@@ -365,57 +365,65 @@ kernel.
 
 The accuracy question this configuration has to answer is: *does a 6-bit
 prefill recover the accuracy that 2-bit decode loses?* GSM8K is a good probe
-because the reasoning happens during generation, which runs at 2-bit here.
+because the reasoning happens during generation, which runs at bit-width of the
+decode phase.
 
 Full test set (1319 questions), greedy decoding, exact match on the final
 answer. Generation config: chat template with **thinking disabled** and
 **`max_new_tokens=2048`**, so every chain-of-thought finishes on its own. This
 matters for a reasoning model — with thinking left on and a short output budget
-the model spends the whole budget inside ` thinking` and never emits an answer,
-which silently depresses every configuration (see the note below the table).
+the model spends the whole budget inside a `thinking` block and never emits
+an answer, which silently depresses every configuration (see
+*Generation-configuration sensitivity* below).
 
 | Configuration | Correct | GSM8K accuracy | 95% CI | Truncated |
 |---|---|---|---|---|
 | full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| full 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-Widening decode from 2 to 4 bits is the decisive step: **+17.29 points**, three
-times the gain the 6-bit prefill buys at 2-bit decode. Decode carries almost all
-of GSM8K's arithmetic, so decode weight width — not prefill width — is what the
-score tracks.
+Two facts stand out, and they point in opposite directions for the phase trick:
 
-At 4-bit decode the configuration reaches **95.60%, statistically
-indistinguishable from uniform 6-bit** (94.54% ± 1.23; the p6d4 − 6bit gap is
-+1.06, well inside the confidence intervals). Above 4-bit, adding decode planes
-saturates: from the 4/6/8-bit ladder in the accuracy section, 4→6-bit was worth
-+0.52 and 6→8-bit −0.34. So once decode is 4-bit, a 6-bit prefill already clears
-the accuracy target and a 6-bit decode buys nothing measurable.
+- **Decode width dominates.** Going from 2-bit to 4-bit decode is worth
+  **+21.99 points**; going from 4-bit to 6-bit decode is worth **+0.15**, i.e.
+  nothing. Decode carries nearly all of GSM8K's arithmetic, so the score tracks
+  the decode weight width and saturates once that width is 4 bits.
+- **The 6-bit prefill only pays off when decode is starved.** At 2-bit decode it
+  adds **+5.91 points** (z = 3.5, significant), recovering 27% of the
+  2-bit → 6-bit gap. At 4-bit decode it adds **+1.21 points**, which is not
+  significant (z = 1.4, p ≈ 0.15) and is consistent with noise.
 
-The phase configuration still sits between the two uniform precisions as
-expected for 2-bit decode:
+| Comparison | Delta | Significant? |
+|---|---|---|
+| full 4-bit − full 2-bit | +21.99 | yes |
+| prefill6/decode4 − prefill6/decode2 | +17.29 | yes |
+| prefill6/decode2 − full 2-bit | +5.91 | yes |
+| prefill6/decode4 − full 4-bit | +1.21 | no (p ≈ 0.15) |
+| full 6-bit − full 4-bit | +0.15 | no |
+| prefill6/decode4 − full 6-bit | −1.06 | no (p ≈ 0.21) |
 
-| Comparison | Delta |
-|---|---|
-| prefill6/decode4 − full 2-bit | +23.20 |
-| prefill6/decode4 − prefill6/decode2 | +17.29 |
-| full 6-bit − prefill6/decode4 | −1.06 (not significant) |
+**Practical reading — pick the operating point by decode budget, not by
+prefill:**
 
-For 2-bit decode, prefill width still matters: +5.91 points over uniform 2-bit
-(see below), recovering 27% of the 2-bit → 6-bit gap.
+- If decode must run at 2-bit for speed, `set_rrq_phase_bits(model, 6, 2)` is a
+  free win: it adds 5.91 points for no measurable decode cost (110.0 tok/s
+  against 121.0 tok/s, i.e. 0.91×) and needs no extra storage.
+- If decode can afford 4-bit, **use uniform 4-bit and skip the split.** It scores
+ 94.39% against prefill6/decode4's 95.60% — statistically identical — while
+  decoding at the same 68.5 tok/s, and its prefill is cheaper than 6-bit. The
+  phase configuration is strictly more machinery for no gain.
+- Uniform 6-bit is not worth it for GSM8K: 94.54% is inside the noise band of
+  uniform 4-bit, at 0.40× the decode speed of 2-bit.
 
-Prefill affects the first token only, and most of GSM8K's computation happens
-during decode — the chain of arithmetic is produced token by token on 2-bit
-weights. A better-conditioned prefill helps the model start correctly, which is
-where the gain comes from, but it cannot re-introduce information the low-
-precision decode weights drop later.
-
-Practical reading: if a deployment must decode at 2-bit for speed, running
-prefill at 6-bit is a free accuracy win — decode time is unchanged (779 ms/tok
-against 783 ms/tok) and about a quarter of the accuracy gap comes back. If the
-accuracy target is near 6-bit, no prefill/decode split will get there; the
-decode weights have to be wider.
+Mechanically, prefill touches only the first token while most of GSM8K's
+computation happens during decode — the chain of arithmetic is produced token by
+token. A better-conditioned prefill lets the model start correctly, which is
+where the +5.91 points come from, but it cannot re-introduce information the
+low-precision decode weights drop later. That is also why widening prefill stops
+helping once decode reaches 4 bits: the decode weights are no longer the
+bottleneck.
 
 #### Generation-configuration sensitivity
 
