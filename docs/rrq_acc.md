@@ -344,6 +344,43 @@ Measured on Qwen3.8-27B (105-token prompt, single 80 GB card, reference kernel):
 | 8-bit | 3369 ms | 3200 ms/tok | — | — |
 | **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
 
+### GSM8K accuracy
+
+The accuracy question this configuration has to answer is: *does a 6-bit
+prefill recover the accuracy that 2-bit decode loses?* GSM8K is a good probe
+because the reasoning happens during generation, which runs at 2-bit here.
+
+Full test set (1319 questions), greedy decoding, exact match on the `#### N`
+answer, single run per configuration:
+
+| Configuration | Correct | GSM8K accuracy | 95% CI |
+|---|---|---|---|
+| full 2-bit | 554 / 1319 | 42.00% | ±2.66 |
+| **prefill 6 / decode 2** | **705 / 1319** | **53.45%** | ±2.69 |
+| full 6-bit | 834 / 1319 | 63.23% | ±2.60 |
+
+Both gaps are statistically significant (p6d2 − 2bit = +11.45 ± 3.79,
+6bit − p6d2 = +9.78 ± 3.74), so the phase configuration is a genuine
+intermediate operating point, not noise.
+
+It recovers **54% of the 2-bit → 6-bit gap** (+11.45 of +21.23 points) while
+generating every token at 2-bit weight bandwidth. Two effects explain why it is
+not higher:
+
+- **Most of GSM8K's computation happens during decode.** The chain of arithmetic
+  is produced token by token, so the 2-bit weights are used for nearly all of the
+  reasoning. Only the prompt encoding benefits from 6-bit.
+- **Prefill affects the first token only.** A better-conditioned prefill helps
+  the model start on the right track, which is where the +11.45 points come from,
+  but it cannot re-introduce information the low-precision decode weights drop
+  later.
+
+Practical reading: if a deployment must decode at 2-bit for speed, running
+prefill at 6-bit is a free accuracy win — it costs nothing measurable in decode
+time (779 ms/tok against 783 ms/tok) and 54% of the accuracy gap comes back. If
+the accuracy target is near 6-bit, no prefill/decode split will get there; the
+decode weights have to be wider.
+
 Prefill runs at the same three-plane 6-bit precision as uniform 6-bit, so its
 2412 ms versus 2580 ms is run-to-run variance rather than a saving. The real
 gain is on decode: **779 ms/tok, identical to uniform 2-bit**, against
