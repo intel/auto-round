@@ -40,6 +40,40 @@ rrq_out/<model>/base/       # 标准 INT2 W2A16 基础平面（平面 0）
 rrq_out/<model>/residual/   # auto_round:rrq 产物（残差平面 1..3）
 ```
 
+### 为已有 INT2 基础模型生成残差
+
+如果已经有量化好的 INT2 模型，`generate_rrq_residual` 可以在不重新量化基础
+平面的前提下生成残差平面：
+
+```python
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/<model>/base",
+    raw_model="Qwen/Qwen3-27B",
+    output_dir="./rrq_out/<model>/residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+各层之间完全独立，因此可以完美并行。`num_workers` 控制展开到多少个进程，
+`device` 决定量化运算在何处执行；单独写 `"cuda"` 会展开为全部可见 GPU，任务
+按轮转方式分配。在 Qwen3.8-27B（400 层、8 卡、`num_workers=32`）上耗时
+**5 分 10 秒**，而单进程 CPU 串行需要数小时。每个 worker 会绑定到一张 GPU；
+打包（pack）仍在 CPU 上完成，因为打包 kernel 只支持 CPU。
+
+```bash
+# 不写 Python 脚本的多卡用法
+python -c "
+from auto_round.export import generate_rrq_residual
+generate_rrq_residual('base/', raw_model='Qwen/Qwen3-27B',
+                      output_dir='residual/', group_size=128, sym=True,
+                      device='cuda', num_workers=32)"
+```
+
 ### 评测命令
 
 ```python

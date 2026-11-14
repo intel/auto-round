@@ -43,6 +43,41 @@ rrq_out/<model>/base/       # standard INT2 W2A16 base plane (plane 0)
 rrq_out/<model>/residual/   # auto_round:rrq artifact (residual planes 1..3)
 ```
 
+### Generating residuals for an existing INT2 base
+
+If you already have a quantized INT2 model, `generate_rrq_residual` builds the
+residual planes without re-quantizing the base:
+
+```python
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/<model>/base",
+    raw_model="Qwen/Qwen3-27B",
+    output_dir="./rrq_out/<model>/residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+The layers are independent, so this parallelizes perfectly. `num_workers`
+spreads them over processes and `device` decides where the quantization math
+runs; a bare `"cuda"` expands to every visible GPU and jobs are assigned
+round-robin. For Qwen3.8-27B (400 layers, 8 GPUs, `num_workers=32`) this takes
+**5 min 10 s**, versus many hours serially on CPU. Each worker pins itself to
+one GPU, and packing stays on CPU because the packing kernel is CPU-only.
+
+```bash
+# multi-GPU without writing Python
+python -c "
+from auto_round.export import generate_rrq_residual
+generate_rrq_residual('base/', raw_model='Qwen/Qwen3-27B',
+                      output_dir='residual/', group_size=128, sym=True,
+                      device='cuda', num_workers=32)"
+```
+
 ### Evaluation command
 
 ```python
