@@ -312,6 +312,62 @@ the free device memory, and otherwise logs how many GiB it would need. A
 partial cache cannot help because each forward visits every layer, so the
 uncached ones dominate.
 
+## Phase-dependent precision: 6-bit prefill, 2-bit decode
+
+Prefill and decode have opposite bottlenecks, so the best weight width differs
+between them:
+
+- **Prefill** pushes the whole prompt through each weight load. It is compute
+  bound, so the matmul dominates and a wider weight is nearly free.
+- **Decode** emits one token per step and is bandwidth bound: every weight is
+  streamed for a single token, so the weight width *is* the speed.
+
+`set_rrq_phase_bits` exploits that by selecting the plane count from the input
+length, which needs no plumbing through the model — decode feeds
+`(batch, 1, hidden)` while prefill feeds `(batch, seq, hidden)`:
+
+```python
+from auto_round.inference import load_rrq_model, set_rrq_phase_bits
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=6, device="cuda")
+set_rrq_phase_bits(model, prefill_bits=6, decode_bits=2)
+
+model.generate(**inputs)  # prefill runs 6-bit, every decoded token runs 2-bit
+```
+
+Measured on Qwen3.8-27B (105-token prompt, single 80 GB card, reference kernel):
+
+| Configuration | Prefill | Decode | Prefill vs 6-bit | Decode vs 2-bit |
+|---|---|---|---|---|
+| 2-bit | 1690 ms | 783 ms/tok | — | — |
+| 6-bit | 2580 ms | 2397 ms/tok | 1.00× | — |
+| 8-bit | 3369 ms | 3200 ms/tok | — | — |
+| **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
+
+Prefill runs at the same three-plane 6-bit precision as uniform 6-bit, so its
+2412 ms versus 2580 ms is run-to-run variance rather than a saving. The real
+gain is on decode: **779 ms/tok, identical to uniform 2-bit**, against
+2397 ms/tok for uniform 6-bit. For an 8-token completion that is **3.1× faster**
+end to end, and the token stream is verified to match exactly — the first token
+equals the 8-bit run and all following tokens equal the 2-bit run.
+
+Two details make this correct rather than approximate:
+
+- **Sequence length, not token count.** Batched decode is `(batch, 1, hidden)`;
+  its total element count is the batch size, which would be misread as prefill.
+  The phase is therefore decided from `x.shape[-2]`.
+- **Cache keyed by plane count.** The two phases alternate on every request, so
+  a single cache slot would evict the weight the next phase needs and both
+  phases would rebuild every step. Each layer keeps one slot per plane count and
+  `required_rrq_cache_bytes` counts both, so the all-or-nothing cache check stays
+  honest.
+
+Note that this is the reference implementation, which dequantizes on demand; the
+speedup is bounded by packed-weight bandwidth. A fused kernel that selects the
+plane count from the sequence length without materializing the weight is where
+this scheme pays off fully, because the decode step would then read one plane
+instead of three.
+
 ## Notes and limitations
 
 - **MTP layers.** Qwen3.8 ships Multi-Token Prediction head layers (`mtp.*`).

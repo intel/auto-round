@@ -1458,3 +1458,149 @@ class TestRRQIncrementalFromRealBase:
             assert norms[i] <= norms[i - 1] + 1e-4, f"residual error increased at plane {i}: {norms[i]} > {norms[i-1]}"
         # 8-bit (base + 3 residuals) should be much closer to FP than 2-bit base.
         assert norms[-1] < norms[0] * 0.5, f"4-plane reconstruction not better than base: {norms}"
+
+
+class TestRRQPhasePrecision:
+    """Prefill at one precision, decode at another (``set_rrq_phase_bits``)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(0)
+        yield
+
+    def _build_rrq_layer(self, *args, **kwargs):
+        # ``_build_rrq_layer`` uses no instance state, so reuse the fixture
+        # logic from TestRRQLinear instead of duplicating the packing code.
+        return TestRRQLinear()._build_rrq_layer(*args, **kwargs)
+
+    def test_phase_bits_prefill_and_decode_differ(self):
+        """Prefill (many tokens) and decode (one token) use different precisions."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+
+        assert rrq.phase_bits == (6, 2)
+
+        x_seq = torch.randn(2, 8, in_features)  # seq=8 -> prefill
+        x_one = torch.randn(2, 1, in_features)  # seq=1 -> decode, even with batch=2
+        prefill_out = rrq(x_seq)
+        decode_out = rrq(x_one)
+
+        # Reference: 6-bit (3 planes) and 2-bit (1 plane) selected explicitly.
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(6)
+        ref_prefill = rrq(x_seq)
+        rrq.set_active_bits(2)
+        ref_decode = rrq(x_one)
+
+        assert torch.allclose(prefill_out, ref_prefill, atol=1e-3)
+        assert torch.allclose(decode_out, ref_decode, atol=1e-3)
+
+    def test_phase_bits_decode_differs_from_prefill_output(self):
+        """A single-token forward must not equal the 6-bit forward."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        x = torch.randn(1, 1, in_features)
+
+        rrq.set_phase_bits(prefill_bits=2, decode_bits=8)
+        decode_out = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        two_bit = rrq(x)
+        rrq.set_active_bits(8)
+        eight_bit = rrq(x)
+
+        assert torch.allclose(decode_out, eight_bit, atol=1e-3)
+        assert not torch.allclose(decode_out, two_bit, atol=1e-6)
+
+    def test_phase_bits_threshold(self):
+        """The threshold controls where the prefill/decode boundary sits."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        x = torch.randn(1, 16, in_features)  # seq_len=16
+
+        # Threshold above the sequence length -> decode precision (2-bit).
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=64)
+        below = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        assert torch.allclose(below, rrq(x), atol=1e-3)
+
+        # Threshold below the sequence length -> prefill precision (8-bit).
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=8)
+        above = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(8)
+        assert torch.allclose(above, rrq(x), atol=1e-3)
+
+    def test_phase_bits_batched_decode_stays_low_precision(self):
+        """Batched decode is (batch, 1, hidden): it must stay at decode precision.
+
+        Using the total token count instead of the sequence length would misread
+        a batch of 8 decode steps as prefill and silently pay prefill cost on
+        every generated token.
+        """
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2)
+
+        x_batched_decode = torch.randn(8, 1, in_features)
+        batched_out = rrq(x_batched_decode)
+
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        assert torch.allclose(batched_out, rrq(x_batched_decode), atol=1e-3)
+
+    def test_phase_bits_validation(self):
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=3, decode_bits=2)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=8, decode_bits=16)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=0)
+
+    def test_set_rrq_bits_disables_phase(self):
+        """set_rrq_bits is contradictory with phase precision, so it clears it."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_bits
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+        assert rrq.phase_bits == (6, 2)
+
+        set_rrq_bits(wrapper, 4)
+        assert rrq.phase_bits is None
+        assert rrq.active_bits == 4
+
+    def test_phase_cache_keeps_both_slots(self):
+        """Both phases stay cached; alternating them must not thrash the cache."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+
+        x_seq = torch.randn(1, 8, in_features)
+        x_one = torch.randn(1, 1, in_features)
+        rrq(x_seq)
+        rrq(x_one)
+
+        # Two distinct plane counts must be cached simultaneously.
+        assert rrq._packed_weight is not None
+        assert set(rrq._packed_weight) == {3, 1}, f"cache slots: {set(rrq._packed_weight)}"
+
+    def test_required_cache_bytes_counts_both_phases(self):
+        from auto_round.inference.rrq_linear import RRQLinear, required_rrq_cache_bytes
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        single = required_rrq_cache_bytes(wrapper)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+        doubled = required_rrq_cache_bytes(wrapper)
+        assert doubled == single * 2, f"{doubled} != 2 * {single}"

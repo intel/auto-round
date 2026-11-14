@@ -286,6 +286,55 @@ materialize_rrq(model)  # 冻结当前精度，转为稠密推理
 的稠密副本能装进设备空闲显存时才开启缓存，否则会打印所需的 GiB 数。部分缓存没有
 帮助，因为每次 forward 都会经过所有层，未缓存的层会成为瓶颈。
 
+## 分阶段精度：prefill 用 6-bit，decode 用 2-bit
+
+prefill 与 decode 的瓶颈正好相反，因此它们的最优权重位宽也不同：
+
+- **prefill** 把整段 prompt 压过每一份权重，属于计算受限：矩阵乘占主导，权重
+  宽一点几乎不增加成本。
+- **decode** 每步只产出一个 token，属于带宽受限：每个权重只服务一个 token，
+  权重位宽**就是**速度。
+
+`set_rrq_phase_bits` 利用这一点，按输入长度选择平面数量，无需在模型中额外传参——
+decode 喂入 `(batch, 1, hidden)`，prefill 喂入 `(batch, seq, hidden)`：
+
+```python
+from auto_round.inference import load_rrq_model, set_rrq_phase_bits
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=6, device="cuda")
+set_rrq_phase_bits(model, prefill_bits=6, decode_bits=2)
+
+model.generate(**inputs)  # prefill 走 6-bit，随后每个生成的 token 走 2-bit
+```
+
+在 Qwen3.8-27B 上实测（105 token 的 prompt，单张 80 GB 卡，参考 kernel）：
+
+| 配置 | Prefill | Decode | Prefill 相对 6-bit | Decode 相对 2-bit |
+|---|---|---|---|---|
+| 2-bit | 1690 ms | 783 ms/tok | — | — |
+| 6-bit | 2580 ms | 2397 ms/tok | 1.00× | — |
+| 8-bit | 3369 ms | 3200 ms/tok | — | — |
+| **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
+
+prefill 阶段运行的就是与 uniform 6-bit 相同的三平面精度，因此 2412 ms 对
+2580 ms 属于运行波动，不是真实收益。真正的收益在 decode：**779 ms/tok，与
+uniform 2-bit 完全一致**，而 uniform 6-bit 是 2397 ms/tok。以生成 8 个 token
+计，端到端**快 3.1 倍**，且 token 流完全一致——首个 token 与 8-bit 运行相同，
+后续所有 token 与 2-bit 运行相同。
+
+有两处细节让这个方案是精确的而非近似的：
+
+- **按序列长度而非总 token 数判断。** 批量 decode 的形状是
+  `(batch, 1, hidden)`，其总元素数等于 batch size，若按总数判断会被误判成
+  prefill。因此阶段由 `x.shape[-2]` 决定。
+- **缓存按平面数量分槽。** 两个阶段在每次请求中交替出现，单槽缓存会把下一个
+  阶段要用的权重驱逐掉，导致两个阶段每步都重建。每层为每个平面数量保留一个槽，
+  `required_rrq_cache_bytes` 也按两倍计算，使全有或全无的缓存判断依然准确。
+
+需要注意这是参考实现，按需反量化，因此加速受打包权重带宽限制。真正完全发挥这个
+方案的是融合 kernel：它能按序列长度选择平面数量而不物化权重，此时 decode 只读取
+一个平面而不是三个。
+
 ## 说明与限制
 
 - **MTP 层。** Qwen3.8 带有 Multi-Token Prediction 头层（`mtp.*`）。RRQ 仅
