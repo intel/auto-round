@@ -426,20 +426,29 @@ Note that the phase configuration decodes at the same speed as uniform 2-bit
 (254 against 253 ms/tok), which is the whole point: it pays 2-bit bandwidth for
 decode while keeping 6-bit prefill.
 
-Numerical behaviour:
+Numerical behaviour, measured as max relative error against an fp32 reference
+(`x @ W` with the dequantized weight kept in float32) over 24 layers:
 
-- **One plane is exact.** At `active_planes=1` the kernel and the dequant path
-  perform identical arithmetic, so the outputs are bit-identical (measured
-  relative error 0 and 1.1e-5 across layers, and identical generated tokens).
-- **Two or more planes differ by 0.3–0.7% relative.** The two paths add in a
-  different order — the dequant path sums the dequantized weights and then runs
-  one GEMM, the kernel runs one GEMV per plane and sums the results. Both are
-  linear, so the difference is float32 reassociation, not lost precision. It is
-  largest for 4-bit (0.7%) and shrinks for wider planes because the residual
-  planes contribute progressively less.
+| Planes | Kernel vs torch path | **Kernel vs fp32 truth** | **Torch path vs fp32 truth** |
+|---|---|---|---|
+| 2-bit (1) | 1.98e-04 | **2.51e-03** | 2.51e-03 |
+| 4-bit (2) | 4.36e-03 | **2.44e-03** | 2.88e-03 |
+| 6-bit (3) | 4.47e-03 | **2.44e-03** | 3.16e-03 |
 
-Pass `set_rrq_fused_decode(model, False)` to force the dequant reference path,
-which is useful for bisecting accuracy differences.
+The kernel is **as accurate as, and at 2+ planes slightly more accurate than** the
+dequant path. Two effects explain the numbers:
+
+- The dequant path rounds the accumulated weight to bf16 before the GEMM, which
+  costs ~2.5e-03 relative to fp32. The kernel never leaves float32, so at 2 and 3
+  planes it avoids that rounding and lands closer to the true value.
+- The kernel-vs-torch difference (up to 4.5e-03) is dominated by that same bf16
+  rounding on one side, not by kernel error. Both paths are equally distant from
+  the fp32 reference at 2-bit, where no accumulation order is involved.
+
+This also means the fused path does not change the model's accuracy in a way that
+differs from the reference path: both are bf16-level approximations of the same
+float32 result. Pass `set_rrq_fused_decode(model, False)` to force the dequant
+path, which is useful for bisecting any observed difference.
 
 ## Notes and limitations
 
