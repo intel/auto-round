@@ -399,11 +399,47 @@ Two details make this correct rather than approximate:
   `required_rrq_cache_bytes` counts both, so the all-or-nothing cache check stays
   honest.
 
-Note that this is the reference implementation, which dequantizes on demand; the
-speedup is bounded by packed-weight bandwidth. A fused kernel that selects the
-plane count from the sequence length without materializing the weight is where
-this scheme pays off fully, because the decode step would then read one plane
-instead of three.
+## Fused decode kernel
+
+Decode feeds one token per sequence, so each forward is a matrix-vector product
+that streams the whole weight and does almost no arithmetic. The generic path
+dequantizes the packed INT2 into bf16 and then runs a GEMM, which writes and
+re-reads 8× more bytes than the packed weights hold (2 bytes/parameter against
+0.25). At one token that materialization is **65% of the layer time**.
+
+`auto_round/inference/rrq_triton.py` provides a Triton kernel that never
+materializes the weight: each program owns a tile of output features, unpacks the
+INT2 nibbles in registers and accumulates `x @ W` directly. It engages
+automatically for `seq_len == 1` on CUDA and falls back to the dequant path
+everywhere else, so prefill and non-CUDA platforms keep working.
+
+Measured on Qwen3.8-27B, 16-token greedy decode, single 80 GB card:
+
+| Configuration | Dequant path | Fused kernel | Speedup |
+|---|---|---|---|
+| uniform 2-bit | 1708 ms/tok | **253 ms/tok** | 6.74× |
+| uniform 6-bit | 5242 ms/tok | **359 ms/tok** | 14.63× |
+| prefill 6 / decode 2 | 1708 ms/tok | **254 ms/tok** | 6.74× |
+
+The 6-bit case gains more because it previously had to materialize three planes.
+Note that the phase configuration decodes at the same speed as uniform 2-bit
+(254 against 253 ms/tok), which is the whole point: it pays 2-bit bandwidth for
+decode while keeping 6-bit prefill.
+
+Numerical behaviour:
+
+- **One plane is exact.** At `active_planes=1` the kernel and the dequant path
+  perform identical arithmetic, so the outputs are bit-identical (measured
+  relative error 0 and 1.1e-5 across layers, and identical generated tokens).
+- **Two or more planes differ by 0.3–0.7% relative.** The two paths add in a
+  different order — the dequant path sums the dequantized weights and then runs
+  one GEMM, the kernel runs one GEMV per plane and sums the results. Both are
+  linear, so the difference is float32 reassociation, not lost precision. It is
+  largest for 4-bit (0.7%) and shrinks for wider planes because the residual
+  planes contribute progressively less.
+
+Pass `set_rrq_fused_decode(model, False)` to force the dequant reference path,
+which is useful for bisecting accuracy differences.
 
 ## Notes and limitations
 
