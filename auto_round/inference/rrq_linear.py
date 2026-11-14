@@ -438,7 +438,7 @@ class RRQLinear(nn.Module):
             fast path cannot handle this layer and the caller must fall back.
         """
         try:
-            from auto_round.inference.rrq_triton import rrq_gemv
+            from auto_round.inference.rrq_triton import rrq_gemm, rrq_gemv
         except ImportError:  # pragma: no cover - platform dependent
             return None
         if not _rrq_triton_available(x.device):
@@ -449,32 +449,59 @@ class RRQLinear(nn.Module):
             return None
 
         batch = x.shape[0]
-        # The kernel is a GEMV, so flatten the leading batch dim and run it once
-        # per sequence.  batch is typically 1, so this is a single launch.
-        outs = []
-        for b in range(batch):
-            xb = x[b].reshape(-1)
-            acc = rrq_gemv(
-                xb,
-                self.base.qweight,
-                self.base.scales,
-                self.base.qzeros,
-                bits=self.bits,
-                group_size=group_size,
-            )
+        # Flatten (batch, 1, in_features) -> (batch, in_features).  A batched
+        # kernel is essential here: one GEMV per sequence would mean `batch`
+        # launches per layer, and at 400 layers that overhead swamps the win.
+        x2d = x.reshape(batch, -1)
+        try:
+            if batch == 1:
+                acc = rrq_gemv(
+                    x2d,
+                    self.base.qweight,
+                    self.base.scales,
+                    self.base.qzeros,
+                    bits=self.bits,
+                    group_size=group_size,
+                ).unsqueeze(0)
+            else:
+                acc = rrq_gemm(
+                    x2d,
+                    self.base.qweight,
+                    self.base.scales,
+                    self.base.qzeros,
+                    bits=self.bits,
+                    group_size=group_size,
+                )
             for index in range(1, planes):
                 plane = self.planes[f"rrq_{index}"]
-                acc = acc + rrq_gemv(
-                    xb,
-                    plane.qweight,
-                    plane.scales,
-                    plane.qzeros,
-                    bits=self.bits,
-                    group_size=getattr(plane, "group_size", group_size),
-                )
-            outs.append(acc)
+                plane_group = getattr(plane, "group_size", group_size)
+                if batch == 1:
+                    acc = acc + rrq_gemv(
+                        x2d,
+                        plane.qweight,
+                        plane.scales,
+                        plane.qzeros,
+                        bits=self.bits,
+                        group_size=plane_group,
+                    ).unsqueeze(0)
+                else:
+                    acc = acc + rrq_gemm(
+                        x2d,
+                        plane.qweight,
+                        plane.scales,
+                        plane.qzeros,
+                        bits=self.bits,
+                        group_size=plane_group,
+                    )
+        except Exception as exc:  # noqa: BLE001 - any kernel failure must fall back
+            # A kernel that cannot compile or run on this GPU (shared-memory
+            # limits, unsupported tile shape) must not break inference.  Disable
+            # it for this layer and let the caller use the dequant path.
+            logger.debug("RRQ fused decode unavailable (%s); falling back.", exc)
+            self._fused_decode = False
+            return None
 
-        out = torch.stack(outs, dim=0).to(x.dtype).unsqueeze(1)
+        out = acc.to(x.dtype).unsqueeze(1)
         # The base plane owns the bias; the residual planes never add it.
         if self.base.bias is not None:
             out = out + self.base.bias.to(out.dtype)
