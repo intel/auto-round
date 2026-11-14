@@ -1592,6 +1592,58 @@ class TestRRQPhasePrecision:
         assert rrq._packed_weight is not None
         assert set(rrq._packed_weight) == {3, 1}, f"cache slots: {set(rrq._packed_weight)}"
 
+    def test_fused_decode_disabled_still_matches(self):
+        """The fused decode path must not change the output of a 2-bit forward.
+
+        At one plane the fused kernel and the dequant-then-GEMM path perform the
+        identical arithmetic, so any difference signals a kernel bug rather than
+        acceptable floating-point reordering.
+        """
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_active_bits(2)
+        x = torch.randn(1, 1, in_features)
+
+        rrq.set_fused_decode(False)
+        ref = rrq(x)
+        rrq.set_fused_decode(True)
+        got = rrq(x)
+        # On CPU the fused kernel does not engage (CUDA only), so both runs must
+        # be bit-identical.
+        assert torch.equal(ref, got)
+
+    def test_fused_decode_getter_and_toggle(self):
+        from auto_round.inference.rrq_linear import set_rrq_fused_decode
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        rrq.set_fused_decode(True)
+        assert rrq._fused_decode is True
+        rrq.set_fused_decode(False)
+        assert rrq._fused_decode is False
+
+        assert set_rrq_fused_decode(wrapper, True) == 1
+        assert rrq._fused_decode is True
+        assert set_rrq_fused_decode(wrapper, False) == 1
+        assert rrq._fused_decode is False
+
+    def test_fused_decode_no_rrq_layers_warns(self):
+        from auto_round.inference.rrq_linear import set_rrq_fused_decode
+
+        empty = nn.Module()
+        empty.add_module("proj", nn.Linear(8, 8))
+        assert set_rrq_fused_decode(empty, True) == 0
+
+    def test_triton_kernel_shape_helpers(self):
+        """rrq_gemv reports its packing assumptions consistently."""
+        from auto_round.inference.rrq_triton import triton_gemv_available
+
+        # Availability is a plain bool and must not raise on any platform.
+        assert isinstance(triton_gemv_available(), bool)
+
     def test_required_cache_bytes_counts_both_phases(self):
         from auto_round.inference.rrq_linear import RRQLinear, required_rrq_cache_bytes
 

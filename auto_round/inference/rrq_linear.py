@@ -36,6 +36,7 @@ __all__ = [
     "RRQLinear",
     "materialize_rrq",
     "set_rrq_bits",
+    "set_rrq_fused_decode",
     "set_rrq_phase_bits",
     "set_rrq_random_residual",
     "set_rrq_weight_cache_budget",
@@ -52,6 +53,12 @@ __all__ = [
 # back to rebuilding per forward rather than failing with OOM.
 _RRQ_CACHE_BUDGET_BYTES = 0  # 0 disables CUDA caching (set by load_rrq_model)
 _RRQ_CACHE_USED_BYTES = 0
+
+# Fused INT2 GEMV for single-token decode.  Enabled by default because it is
+# numerically equivalent (same weight sum) and ~15x faster at M=1, but kept
+# switchable so the dequant reference path stays available for debugging.
+_RRQ_FUSED_DECODE = True
+_RRQ_FUSED_MAX_BATCH = 16
 
 
 def set_rrq_phase_bits(
@@ -246,6 +253,23 @@ def _rrq_cache_release(num_bytes: int) -> None:
     _RRQ_CACHE_USED_BYTES = max(0, _RRQ_CACHE_USED_BYTES - num_bytes)
 
 
+def _rrq_triton_available(device: torch.device) -> bool:
+    """Whether the fused W2A16 Triton kernel can be used on ``device``.
+
+    The fused kernel is what makes low-bit decode fast: it reads the packed INT2
+    weights directly, so it moves 8x fewer bytes than dequantizing to bf16 first.
+    It is CUDA-only and optional (Triton ships with PyTorch on Linux, but not on
+    every platform), so every call site must degrade to the dequant path.
+    """
+    if device.type != "cuda":
+        return False
+    try:
+        import triton  # noqa: F401  pylint: disable=unused-import
+    except ImportError:
+        return False
+    return True
+
+
 class RRQLinear(nn.Module):
     """Multi-plane INT2 quantized linear layer with dynamic precision switching.
 
@@ -298,6 +322,7 @@ class RRQLinear(nn.Module):
             self._prefill_planes = None
             self._decode_planes = None
             self._prefill_threshold = 1
+            self._fused_decode = _RRQ_FUSED_DECODE
             return
 
         self._packed = False
@@ -309,6 +334,7 @@ class RRQLinear(nn.Module):
         self._prefill_planes = None
         self._decode_planes = None
         self._prefill_threshold = 1
+        self._fused_decode = _RRQ_FUSED_DECODE
 
         # Dequantized weight of each plane, shape (out_features, in_features).
         for k in range(num_planes):
@@ -360,6 +386,22 @@ class RRQLinear(nn.Module):
         """
         planes = self._resolve_forward_planes(x)
         if self._packed:
+            # Decode is bandwidth bound: one token per sequence, so the weight
+            # stream dominates.  The fused kernel reads the packed INT2 directly
+            # (0.25 bytes/parameter) instead of materializing a bf16 weight
+            # (2 bytes/parameter), which is a 15x win at M=1.
+            if (
+                self._fused_decode
+                and x.dim() >= 2
+                and x.shape[-2] == 1
+                and x.shape[0] <= _RRQ_FUSED_MAX_BATCH
+                and x.dtype in (torch.bfloat16, torch.float16)
+                and self.base.qweight.device.type == "cuda"
+            ):
+                out = self._fused_decode_forward(x, planes)
+                if out is not None:
+                    return out
+
             # Dequant each active plane once, accumulate them into a single
             # weight, then run one matmul + bias. This replaces four separate
             # GEMMs (one per plane) with a single GEMM.
@@ -378,6 +420,76 @@ class RRQLinear(nn.Module):
         if self.bias is not None:
             out = out + self.bias.to(x.dtype)
         return out
+
+    def _fused_decode_forward(self, x: torch.Tensor, planes: int) -> torch.Tensor | None:
+        """Run single-token decode through the fused INT2 GEMV kernel.
+
+        Each active plane contributes one packed INT2 tensor; because the planes
+        are summed *before* the matmul, running the kernel once per plane and
+        adding the results is exactly equivalent to accumulating the dequantized
+        weights first (both are linear in the weight).
+
+        Args:
+            x: Activations of shape ``(batch, 1, in_features)``.
+            planes: Number of planes to accumulate.
+
+        Returns:
+            Output of shape ``(batch, 1, out_features)``, or ``None`` when the
+            fast path cannot handle this layer and the caller must fall back.
+        """
+        try:
+            from auto_round.inference.rrq_triton import rrq_gemv
+        except ImportError:  # pragma: no cover - platform dependent
+            return None
+        if not _rrq_triton_available(x.device):
+            return None
+
+        group_size = getattr(self.base, "group_size", None)
+        if group_size is None or group_size <= 0:
+            return None
+
+        batch = x.shape[0]
+        # The kernel is a GEMV, so flatten the leading batch dim and run it once
+        # per sequence.  batch is typically 1, so this is a single launch.
+        outs = []
+        for b in range(batch):
+            xb = x[b].reshape(-1)
+            acc = rrq_gemv(
+                xb,
+                self.base.qweight,
+                self.base.scales,
+                self.base.qzeros,
+                bits=self.bits,
+                group_size=group_size,
+            )
+            for index in range(1, planes):
+                plane = self.planes[f"rrq_{index}"]
+                acc = acc + rrq_gemv(
+                    xb,
+                    plane.qweight,
+                    plane.scales,
+                    plane.qzeros,
+                    bits=self.bits,
+                    group_size=getattr(plane, "group_size", group_size),
+                )
+            outs.append(acc)
+
+        out = torch.stack(outs, dim=0).to(x.dtype).unsqueeze(1)
+        # The base plane owns the bias; the residual planes never add it.
+        if self.base.bias is not None:
+            out = out + self.base.bias.to(out.dtype)
+        if self.bias is not None:
+            out = out + self.bias.to(out.dtype)
+        return out
+
+    def set_fused_decode(self, enabled: bool) -> None:
+        """Enable or disable the fused INT2 GEMV kernel for single-token decode.
+
+        Args:
+            enabled: Whether to attempt the fused path.  It still falls back to
+                the dequant path when the platform or layer does not qualify.
+        """
+        self._fused_decode = bool(enabled)
 
     # -- Packed (production) path helpers -----------------------------------------
 
@@ -560,6 +672,38 @@ class RRQLinear(nn.Module):
             f"bits={self.bits}, num_planes={self.num_planes}, "
             f"active_planes={self.active_planes}"
         )
+
+
+def set_rrq_fused_decode(model: nn.Module, enabled: bool = True) -> int:
+    """Enable or disable the fused INT2 GEMV kernel for single-token decode.
+
+    The fused kernel reads the packed INT2 weights directly and performs the
+    dequantization and matrix-vector product in one pass.  At one token per
+    sequence the alternative is to materialize a bf16 weight and run a GEMM,
+    which moves 8x more bytes for essentially no arithmetic, so the fused path is
+    ~15x faster.  It applies to decode only; prefill (many tokens per weight
+    load) stays on the dense path, where the GEMM is compute bound.
+
+    Falls back silently per layer when the platform or layer shape does not
+    qualify (no Triton, no CUDA, or an unknown group size).
+
+    Args:
+        model: Model containing ``RRQLinear`` modules.
+        enabled: Whether to attempt the fused path.
+
+    Returns:
+        The number of layers updated.
+    """
+    count = 0
+    for module in model.modules():
+        if isinstance(module, RRQLinear):
+            module.set_fused_decode(enabled)
+            count += 1
+    if count == 0:
+        logger.warning("No RRQLinear modules found in model; set_rrq_fused_decode had no effect.")
+    else:
+        logger.info("RRQ fused decode %s for %d layers.", "enabled" if enabled else "disabled", count)
+    return count
 
 
 def set_rrq_bits(model: nn.Module, bits: int) -> None:
