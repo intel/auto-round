@@ -196,7 +196,7 @@ lm-eval, full test sets, bf16 forward, identical evaluation harness.
 | 6-bit | **72.19** | 72.03 | −0.16 |
 | 8-bit | **71.85** | 71.79 | −0.06 |
 
-Detailed Group B numbers:
+Configuration B detail:
 
 | Precision | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge |
 |---|---|---|---|---|---|
@@ -204,6 +204,30 @@ Detailed Group B numbers:
 | 4-bit | 80.47 | 76.16 | 63.38 | 82.91 | 57.17 |
 | 6-bit | 81.18 | 74.90 | 63.67 | 83.16 | 57.25 |
 | 8-bit | 81.07 | 75.37 | 63.75 | 82.20 | 56.57 |
+
+Per-task delta (B − A):
+
+| Precision | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge | Avg. |
+|---|---|---|---|---|---|---|
+| 2-bit | +3.38 | +2.76 | **+4.91** | +3.41 | +4.27 | **+3.74** |
+| 4-bit | +0.38 | +0.23 | +0.25 | +0.38 | +0.51 | +0.35 |
+| 6-bit | −0.21 | −1.58 | −0.02 | +0.67 | +0.34 | −0.16 |
+| 8-bit | +0.22 | −0.24 | +0.17 | −0.46 | −0.00 | −0.06 |
+
+At 2-bit the gain is spread across every task, and the two weakest 2-bit tasks
+gain the most (HellaSwag +4.91, ARC-challenge +4.27). From 4-bit up the deltas
+are small and sign-inconsistent, i.e. noise.
+
+Configuration B precision ladder:
+
+| Step | Avg. delta |
+|---|---|
+| 2 → 4-bit | **+4.00** (decisive) |
+| 4 → 6-bit | +0.01 (saturated) |
+| 6 → 8-bit | −0.24 (not monotonic) |
+
+B saturates one step earlier than A: a better base plane means the first residual
+plane closes almost the whole gap, so planes 3 and 4 are pure noise.
 
 ### Observations
 
@@ -214,7 +238,12 @@ Detailed Group B numbers:
    i.e. evaluation noise). Once one residual plane is present the base plane is
    no longer the bottleneck, so the expensive tuning is wasted: the extra
    residual planes absorb the error the base leaves behind.
-3. **Practical guidance.** If the target deployment is 2-bit, tune the base with
+3. **A tuned 2-bit base is competitive with a 3-bit mixed-precision checkpoint.**
+   Compare B at 2-bit (68.02, 13.44 GB) with A at `residual_fraction=0.5`
+   (68.04, 19.95 GB): the averages are identical while B uses 6.5 GB less, at
+   the cost of a different capability profile — HellaSwag is 2.64 lower but
+   ARC-challenge is 2.05 higher.
+4. **Practical guidance.** If the target deployment is 2-bit, tune the base with
    AutoRound and generate the residuals incrementally. If the target is 4-bit or
    higher — or if the checkpoint must serve several widths — quantize everything
    with RTN (`--iters 0`) and get all four operating points in half an hour.
