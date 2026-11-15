@@ -66,6 +66,13 @@ class FakeTokenizer:
             attention_mask.append([1] * len(ids))
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
+    def apply_chat_template(self, conversation, tokenize=False, **kwargs):
+        if isinstance(conversation, list) and conversation and isinstance(conversation[0], list):
+            return [" ".join(m.get("content", "") for m in c if isinstance(m, dict)) for c in conversation]
+        if isinstance(conversation, list):
+            return " ".join(m.get("content", "") for m in conversation if isinstance(m, dict))
+        return str(conversation)
+
 
 class FakeIterableDataset:
     """Stand-in for a streaming ``IterableDataset``.
@@ -77,7 +84,7 @@ class FakeIterableDataset:
     def __init__(self, samples):
         self._samples = list(samples)
 
-    def shuffle(self, seed=None):  # order-preserving for deterministic asserts
+    def shuffle(self, seed=None, **kwargs):  # order-preserving for deterministic asserts
         return self
 
     def __iter__(self):
@@ -483,3 +490,137 @@ class TestGetDatasetIntegration:
 
         assert len(ds) >= 1
         assert "input_ids" in ds.column_names
+
+
+# ---------------------------------------------------------------------------
+# Config / subset forwarding and fallback
+# ---------------------------------------------------------------------------
+class TestConfigForwarding:
+    def test_config_name_forwarded_to_load_dataset(self, tokenizer, monkeypatch):
+        calls = []
+        table = Dataset.from_dict({"text": ["hello world foo", "bar baz qux text"]})
+        monkeypatch.setattr(cd, "load_dataset", _make_load_dataset(table, calls))
+
+        cd._get_generic_dataset(
+            tokenizer,
+            seqlen=4,
+            dataset_name="my/ds",
+            config_name="custom_config",
+            streaming=False,
+        )
+
+        assert calls, "load_dataset was never called"
+        assert calls[0]["kwargs"].get("name") == "custom_config"
+
+    def test_config_parsed_from_dataset_spec(self, tokenizer, monkeypatch):
+        calls = []
+        table = Dataset.from_dict({"text": ["hello world foo", "bar baz qux text"]})
+        monkeypatch.setattr(cd, "load_dataset", _make_load_dataset(table, calls))
+        monkeypatch.setenv("AR_DISABLE_DATASET_SUBPROCESS", "1")
+        monkeypatch.setenv("AR_CALIB_DATA_MULTIPLIER", "1")
+
+        cd.get_dataset(
+            tokenizer,
+            seqlen=4,
+            dataset_name="my/ds:config=code_subset:fields=text",
+            nsamples=2,
+        )
+
+        assert calls, "load_dataset was never called"
+        assert calls[0]["kwargs"].get("name") == "code_subset"
+
+    def test_subset_alias_parsed_from_dataset_spec(self, tokenizer, monkeypatch):
+        calls = []
+        table = Dataset.from_dict({"text": ["hello world foo", "bar baz qux text"]})
+        monkeypatch.setattr(cd, "load_dataset", _make_load_dataset(table, calls))
+        monkeypatch.setenv("AR_DISABLE_DATASET_SUBPROCESS", "1")
+        monkeypatch.setenv("AR_CALIB_DATA_MULTIPLIER", "1")
+
+        cd.get_dataset(
+            tokenizer,
+            seqlen=4,
+            dataset_name="my/ds:subset=agent_subset:fields=text",
+            nsamples=2,
+        )
+
+        assert calls, "load_dataset was never called"
+        assert calls[0]["kwargs"].get("name") == "agent_subset"
+
+    def test_config_name_auto_fallback_when_missing(self, tokenizer, monkeypatch):
+        calls = []
+        table = Dataset.from_dict({"text": ["hello world foo", "bar baz qux text"]})
+
+        def _mock_load_dataset(*args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+            if "name" not in kwargs or kwargs["name"] is None:
+                raise ValueError(
+                    "Config name is missing. Please pick one among the available configs: ['Code-Agent', 'General-Agent']"
+                )
+            return table
+
+        monkeypatch.setattr(cd, "load_dataset", _mock_load_dataset)
+        import datasets
+
+        monkeypatch.setattr(datasets, "get_dataset_config_names", lambda *a, **k: ["Code-Agent", "General-Agent"])
+
+        ds = cd._get_generic_dataset(
+            tokenizer,
+            seqlen=4,
+            dataset_name="openbmb/UltraData-SFT-Agent-2609",
+            streaming=False,
+        )
+
+        assert len(calls) == 2
+        assert "name" not in calls[0]["kwargs"]
+        assert calls[1]["kwargs"].get("name") == "Code-Agent"
+        assert len(ds) == 2
+
+
+# ---------------------------------------------------------------------------
+# UltraData Agent dataset config selection and error recovery
+# ---------------------------------------------------------------------------
+class TestUltraDataAgentDataset:
+    def test_ultradata_config_selection(self, tokenizer, monkeypatch):
+        calls = []
+
+        def _mock_load_dataset(repo, cfg, **kwargs):
+            calls.append(cfg)
+            return FakeIterableDataset([{"messages": [{"role": "user", "content": "hello world"}], "tools": None}])
+
+        monkeypatch.setattr(cd, "load_dataset", _mock_load_dataset)
+
+        cd.get_ultradata_agent_dataset(
+            tokenizer,
+            seqlen=32,
+            config_name="Code-Agent",
+            nsamples=2,
+        )
+
+        assert calls == ["Code-Agent"]
+
+    def test_ultradata_streaming_error_handling(self, tokenizer, monkeypatch):
+        class BrokenIterableDataset:
+            def shuffle(self, seed=None, **kwargs):
+                return self
+
+            def __iter__(self):
+                yield {"messages": [{"role": "user", "content": "sample 1"}], "tools": None}
+                raise TypeError("Couldn't cast array of type struct to string")
+
+        working_ds = FakeIterableDataset([{"messages": [{"role": "user", "content": "sample 2"}], "tools": None}])
+
+        def _mock_load_dataset(repo, cfg, **kwargs):
+            if cfg == "Code-Agent":
+                return BrokenIterableDataset()
+            return working_ds
+
+        monkeypatch.setattr(cd, "load_dataset", _mock_load_dataset)
+
+        # Should not raise TypeError; should catch the streaming error and proceed
+        ds = cd.get_ultradata_agent_dataset(
+            tokenizer,
+            seqlen=32,
+            nsamples=2,
+        )
+
+        assert len(ds) >= 1

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import itertools
 import json
 import logging
@@ -849,6 +850,7 @@ def get_ultradata_agent_dataset(
     apply_chat_template=True,
     system_prompt=None,
     nsamples=512,
+    config_name=None,
 ):
     """Agent/tool-calling calibration dataset.
 
@@ -860,7 +862,8 @@ def get_ultradata_agent_dataset(
 
     The dataset ships multiple configs (``Code-Agent``, ``Search-Agent``,
     ``General-Agent``, ``Tool-Use``); all of them are loaded and interleaved so
-    calibration covers the full range of agent behaviors.
+    calibration covers the full range of agent behaviors (or a single requested
+    config if ``config_name`` is specified).
 
     Length-aware sampling: conversations in this dataset can be very long. A
     sample whose *messages alone* already exceed ``seqlen`` would have its actual
@@ -883,13 +886,18 @@ def get_ultradata_agent_dataset(
     # which makes HF feature alignment fail. Since we only read ``messages`` and
     # ``tools`` and render them ourselves, we scan each config independently and
     # then balance the final selection across configs.
-    configs = ["Code-Agent", "Search-Agent", "General-Agent", "Tool-Use"]
+    if config_name is not None:
+        configs = [config_name] if isinstance(config_name, str) else list(config_name)
+    else:
+        configs = ["Code-Agent", "Search-Agent", "General-Agent", "Tool-Use"]
     sub_datasets = []
+    loaded_configs = []
     for cfg in configs:
         try:
             d = load_dataset(hub_repo_id, cfg, split=split, streaming=True)
             d = d.shuffle(seed=seed, buffer_size=1000)
             sub_datasets.append(d)
+            loaded_configs.append(cfg)
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to load config '%s' of %s: %s", cfg, hub_repo_id, e)
 
@@ -1002,24 +1010,35 @@ def get_ultradata_agent_dataset(
     for i, d in enumerate(sub_datasets):
         scanned = 0
         candidates = []  # (messages, tools) that passed the cheap word-count filter
-        for sample in d:
-            if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
-                break
-            scanned += 1
-            messages = sample["messages"]
-            tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
+        cfg_name = loaded_configs[i] if i < len(loaded_configs) else f"config_{i}"
+        try:
+            for sample in d:
+                if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
+                    break
+                scanned += 1
+                messages = sample["messages"]
+                tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
 
-            # Decide once (at read time) whether to drop the long system prompt,
-            # so word-count, length check and final render all stay consistent.
-            messages = _maybe_drop_system(messages)
+                # Decide once (at read time) whether to drop the long system prompt,
+                # so word-count, length check and final render all stay consistent.
+                messages = _maybe_drop_system(messages)
 
-            # Fast path: if even the raw whitespace word count exceeds seqlen, the
-            # sample is definitely too long -> skip rendering/tokenizing.
-            if _approx_word_count(messages) > seqlen:
-                if len(fallback_by_cfg[i]) < per_cfg_quota:
-                    fallback_by_cfg[i].append((messages, tools))
-                continue
-            candidates.append((messages, tools))
+                # Fast path: if even the raw whitespace word count exceeds seqlen, the
+                # sample is definitely too long -> skip rendering/tokenizing.
+                if _approx_word_count(messages) > seqlen:
+                    if len(fallback_by_cfg[i]) < per_cfg_quota:
+                        fallback_by_cfg[i].append((messages, tools))
+                    continue
+                candidates.append((messages, tools))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Error reading samples from config '%s' of %s after %d candidates (%d scanned): %s",
+                cfg_name,
+                hub_repo_id,
+                len(candidates),
+                scanned,
+                e,
+            )
 
         # Batched accurate length check for this config's candidates.
         lengths = _batch_msg_lengths([_build_length_conversation(m) for m, _ in candidates])
@@ -1055,6 +1074,9 @@ def get_ultradata_agent_dataset(
                 n_preferred,
                 len(selected) - n_preferred,
             )
+
+    if not selected:
+        raise ValueError(f"Could not load any valid samples from {hub_repo_id} across configs {configs}.")
 
     # Global shuffle so configs/tiers are mixed across the calibration set.
     random.Random(seed).shuffle(selected)
@@ -1541,6 +1563,7 @@ def _get_generic_dataset(
     timeout=300,
     concat=False,
     trust_remote_code=False,
+    config_name=None,
 ):
     """Generic dataset loader that works with any HuggingFace dataset.
 
@@ -1578,6 +1601,8 @@ def _get_generic_dataset(
         trust_remote_code: Passed through to ``datasets.load_dataset``. Controlled
             by the AutoRound interface so the user decides whether to execute
             remote dataset-loading scripts. Defaults to ``False``.
+        config_name: Optional configuration/subset name passed to
+            ``datasets.load_dataset``.
 
     Returns:
         A tokenized HuggingFace Dataset.
@@ -1603,16 +1628,43 @@ def _get_generic_dataset(
         elif dataset_name.endswith(".txt"):
             loaded = load_dataset("text", data_files=dataset_name, split=split_arg)
         else:
-            loaded = load_dataset(dataset_name, split=split_arg)
+            load_kwargs = dict(split=split_arg)
+            if config_name is not None:
+                load_kwargs["name"] = config_name
+            loaded = load_dataset(dataset_name, **load_kwargs)
     else:
         # HuggingFace dataset. ``trust_remote_code`` is passed through from the
         # AutoRound interface so the user controls whether remote code runs.
-        loaded = load_dataset(
-            dataset_name,
+        load_kwargs = dict(
             split=split_arg,
             trust_remote_code=trust_remote_code,
             streaming=use_streaming,
         )
+        if config_name is not None:
+            load_kwargs["name"] = config_name
+        try:
+            loaded = load_dataset(dataset_name, **load_kwargs)
+        except ValueError as e:
+            if "Config name is missing" in str(e) and config_name is None:
+                try:
+                    from datasets import get_dataset_config_names
+
+                    available_configs = get_dataset_config_names(dataset_name, trust_remote_code=trust_remote_code)
+                except Exception:
+                    available_configs = None
+                if available_configs:
+                    chosen_config = available_configs[0]
+                    logger.info(
+                        f"Config name is missing for dataset '{dataset_name}'. "
+                        f"Defaulting to '{chosen_config}' (available: {available_configs}). "
+                        f"Specify explicitly with '{dataset_name}:config=<config>'."
+                    )
+                    load_kwargs["name"] = chosen_config
+                    loaded = load_dataset(dataset_name, **load_kwargs)
+                else:
+                    raise
+            else:
+                raise
 
     # When no split was requested, ``load_dataset`` returns a split dictionary;
     # reduce it (and any list result) to a single dataset for extraction below.
@@ -1926,6 +1978,7 @@ def _get_dataset_impl(
         template = None
         separator = "\n\n"
         timeout = 300
+        config_name = None
 
         if ":" in name:
             # Split on unescaped ":" so values containing ":" (e.g. templates)
@@ -1946,6 +1999,8 @@ def _get_dataset_impl(
                 value = unescape_spec_value(raw_value if key == "separator" else raw_value.strip())
                 if key == "split":
                     split = value.split("+")
+                elif key in ("config", "subset"):
+                    config_name = value
                 elif key == "num":
                     data_lens[name] = int(value)
                 elif key == "concat":
@@ -2001,6 +2056,7 @@ def _get_dataset_impl(
                     timeout=timeout,
                     concat=do_concat,
                     trust_remote_code=trust_remote_code,
+                    config_name=config_name,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -2031,6 +2087,7 @@ def _get_dataset_impl(
                     timeout=timeout,
                     concat=do_concat,
                     trust_remote_code=trust_remote_code,
+                    config_name=config_name,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -2049,6 +2106,12 @@ def _get_dataset_impl(
                     apply_chat_template=apply_chat_template,
                     system_prompt=system_prompt,
                 )
+                if config_name is not None:
+                    params = inspect.signature(get_dataset).parameters
+                    if "config_name" in params:
+                        dataset_kwargs["config_name"] = config_name
+                    elif "config" in params:
+                        dataset_kwargs["config"] = config_name
                 if get_dataset is get_fineweb_edu_dataset:
                     # Scale the candidate pool with nsamples via AR_CALIB_DATA_MULTIPLIER
                     # (same knob the other streaming datasets use), keeping the
