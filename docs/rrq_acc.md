@@ -349,10 +349,12 @@ Decode throughput of each split, measured with the fused kernel at batch 16
 
 | Configuration | Decode | vs 2-bit |
 |---|---|---|
-| 2-bit | **121.0 tok/s** | 1.00× |
-| prefill 6 / decode 2 | **110.0 tok/s** | 0.91× |
-| **prefill 6 / decode 2+2×50%** | **84.3 tok/s** | **0.70×** |
-| 4-bit | 68.5 tok/s | 0.57× |
+| 2-bit | **121.2 tok/s** | 1.00× |
+| prefill 6 / decode 2 | **110.1 tok/s** | 0.91× |
+| **prefill 6 / decode 2+2×50%, MLP only (96/400)** | **92.6 tok/s** | **0.76×** |
+| prefill 6 / decode 2+2×50%, all layers (200/400) | 83.8 tok/s | 0.69× |
+| prefill 6 / decode 2+2×50%, MLP x100% (192/400) | 78.7 tok/s | 0.65× |
+| 4-bit | 68.8 tok/s | 0.57× |
 | prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
 | 6-bit | 48.8 tok/s | 0.40× |
 
@@ -381,7 +383,9 @@ an answer, which silently depresses every configuration (see
 |---|---|---|---|---|
 | full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
-| **prefill 6 / decode 2+2×50%** | **1213 / 1319** | **91.96%** | ±1.47 | 38 |
+| prefill 6 / decode 2+2×50%, MLP only (96/400) | 1206 / 1319 | 91.43% | ±1.51 | 35 |
+| **prefill 6 / decode 2+2×50%, all layers (200/400)** | **1213 / 1319** | **91.96%** | ±1.47 | 38 |
+| prefill 6 / decode 2+2×50%, MLP x100% (192/400) | 1213 / 1319 | 91.96% | ±1.47 | 43 |
 | full 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
@@ -391,45 +395,58 @@ Decode width is what the score tracks. Going from 2-bit to 4-bit decode is worth
 nothing. Decode carries nearly all of GSM8K's arithmetic, so accuracy saturates
 once decode reaches 4 bits.
 
-The mixed decode row is the useful new point. 91.96% at 0.70x decode speed sits
-well clear of both uniform neighbours on the accuracy-per-bandwidth frontier:
+The mixed decode rows are the useful new operating points, and **where the extra
+residual plane goes matters more than how many layers get it.** Every row
+spends the same per-layer widening (2 -> 4 bits) but distributes it differently:
 
-| Configuration | GSM8K | Decode | Gap closed | Speed cost |
+| Configuration | Layers at 4-bit | Effective decode | GSM8K | Decode |
 |---|---|---|---|---|
-| prefill 6 / decode 2 | 78.32% | 0.91x | 27% | -0.09x |
-| **prefill 6 / decode 2+2x50%** | **91.96%** | **0.70x** | **89%** | **-0.30x** |
-| full 4-bit | 94.39% | 0.57x | 100% | -0.43x |
-| prefill 6 / decode 4 | 95.60% | 0.56x | 105% | -0.44x |
+| prefill 6 / decode 2 | 0 | 2.00-bit | 78.32% | 0.91× |
+| **2+2×50%, MLP only** | **96** | **2.48-bit** | **91.43%** | **0.76×** |
+| 2+2×50%, all layers | 200 | 2.96-bit | 91.96% | 0.69× |
+| 2+2×50%, MLP x100% | 192 | 2.96-bit | 91.96% | 0.65× |
+| full 4-bit | 400 | 4.00-bit | 94.39% | 0.57× |
 
-The first step out of uniform 2-bit decode is cheap and steep: moving to a
-2+2x50% decode costs 0.21x of speed and buys **+13.65 points**, closing 89% of
-the 2-bit to 4-bit gap. The rest of the climb to full 4-bit costs another 0.13x
-and buys only **+2.43**. That is the diminishing-returns knee, and it is where
-the mixed point earns its place.
+Two findings:
+
+- **MLP-only is the best trade on this curve.** Spending the residual plane on
+  96 MLP projections reaches 91.43%, only **0.53 points** below the 200-layer
+  variant, while decoding **10% faster** (0.76× against 0.69×). Attention
+  projections (`linear_attn.*`, `self_attn.*`) are where the bandwidth budget is
+  tight, so leaving them at 2-bit is nearly free.
+- **Budget-matched comparison confirms the ordering.** Upgrading *all* 192 MLP
+  layers (2.96-bit, same plane count as the 200-layer draw) scores exactly the
+  same 91.96% as the random 50%-over-everything draw, but is slower (0.65×
+  against 0.69×). Random selection across module families wins on speed because
+  it upgrades fewer attention layers.
+
+Compared with the uniform neighbours, the MLP-only point buys **+13.11 points
+over 2-bit decode for 0.15× of speed**, and the remaining climb to full 4-bit
+costs another 0.19× for only **+2.96**. It is the knee of the curve.
 
 | Comparison | Delta | Significant? |
 |---|---|---|
 | full 4-bit - full 2-bit | +21.99 | yes |
-| prefill6/d2+2x50% - prefill6/decode2 | +13.65 | yes |
-| full 4-bit - prefill6/d2+2x50% | +2.43 | borderline |
+| MLP-only mixed - prefill6/decode2 | +13.11 | yes |
+| full 4-bit - MLP-only mixed | +2.96 | yes |
+| all-layers mixed - MLP-only mixed | +0.53 | no |
 | full 6-bit - full 4-bit | +0.15 | no |
 | prefill6/decode4 - full 4-bit | +1.21 | no (p ~ 0.15) |
-| prefill6/decode4 - full 6-bit | -1.06 | no (p ~ 0.21) |
 
 **Practical reading - pick the operating point by decode budget:**
 
-- Must decode at 2-bit for speed: `set_rrq_phase_bits(model, 6, 2)` is a free
-  win, +5.91 points for 0.91x decode speed and no extra storage.
-- Can spare about 0.2x more decode bandwidth: **use the mixed decode**,
-  `set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4,
-  low_bits=2, prefill_bits=6)`. It reaches 91.96% at 0.70x, recovering 89% of
-  the 2-bit to 4-bit gap for a third of the bandwidth cost of going fully 4-bit.
-- Need the last 2-3 points: uniform 4-bit (94.39%) at 0.57x, without the split.
-  Uniform 4-bit is statistically identical to prefill6/decode4 (95.60%) at the
-  same decode speed and with a cheaper prefill, so the phase machinery buys
-  nothing there.
+- Must decode at 2-bit for speed: `set_rrq_phase_bits(model, 6, 2)`, +5.91 points
+  for 0.91× and no extra storage.
+- Can spare about 0.15× more decode bandwidth: **MLP-only mixed decode**,
+  `set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2,
+  prefill_bits=6, only="mlp.")`. 91.43% at 0.76× is the best accuracy per unit of
+  decode bandwidth in this table, and it keeps every attention projection on a
+  single INT2 plane.
+- Need the last ~3 points: uniform 4-bit (94.39%) at 0.57×. It is statistically
+  identical to prefill6/decode4 (95.60%) at the same decode speed with a cheaper
+  prefill, so skip the split there.
 - Uniform 6-bit is not worth it for GSM8K: 94.54% sits inside the noise band of
-  uniform 4-bit, at 0.40x the decode speed of 2-bit.
+  uniform 4-bit, at 0.40× the decode speed of 2-bit.
 
 Mechanically, prefill touches only the first token while most of GSM8K's
 computation happens during decode — the chain of arithmetic is produced token by

@@ -613,6 +613,56 @@ class TestRRQLinear:
         with pytest.raises(ValueError):
             set_rrq_random_residual(model, fraction=0.5, prefill_bits=10)
 
+    def test_random_residual_only_matches_module_family(self):
+        """only= restricts the upgrade to one module family, e.g. MLP alone."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
+
+        names = [
+            "model.layers.0.mlp.down_proj",
+            "model.layers.0.mlp.gate_proj",
+            "model.layers.0.mlp.up_proj",
+            "model.layers.0.mlp.up_proj.x_proj",
+            "model.layers.0.linear_attn.in_proj_qkv",
+            "model.layers.0.linear_attn.in_proj_z",
+            "model.layers.0.linear_attn.out_proj",
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.self_attn.o_proj",
+        ]
+        model = nn.Module()
+        for name in names:
+            *prefix, leaf = name.split(".")
+            holder = model
+            for part in prefix:
+                if not hasattr(holder, part):
+                    setattr(holder, part, nn.Module())
+                holder = getattr(holder, part)
+            setattr(
+                holder,
+                leaf,
+                RRQLinear(in_features=64, out_features=32, num_planes=4, bits=2, bias=False),
+            )
+
+        # Only MLP projections are eligible: 4 of the 9 layers.
+        n_high = set_rrq_random_residual(
+            model, fraction=0.5, seed=0, high_bits=4, low_bits=2, prefill_bits=6, only="mlp."
+        )
+        assert n_high == 2
+
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            prefill_bits, decode_bits = module.phase_bits
+            assert prefill_bits == 6, name  # prefill stays uniform
+            if "mlp." in name:
+                assert decode_bits in (2, 4), name
+            else:
+                # Attention never pays for a residual plane at decode.
+                assert decode_bits == 2, name
+
+        # A filter that matches nothing is a usage error, not a silent no-op.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=0.5, only="does_not_exist")
+
     def test_materialize_rrq_replaces_layers_and_preserves_output(self):
         """materialize_rrq converts to dense nn.Linear with the same numerics."""
         from auto_round.inference.rrq_linear import RRQLinear, materialize_rrq

@@ -787,6 +787,7 @@ def set_rrq_random_residual(
     low_bits: int = 2,
     prefill_bits: int | None = None,
     prefill_threshold: int = 1,
+    only: str | tuple[str, ...] | None = None,
 ) -> int:
     """Randomly give a fraction of RRQLinear layers the higher precision.
 
@@ -802,9 +803,16 @@ def set_rrq_random_residual(
     prefill over a ~3-bit decode, which is what a deployment that can afford
     6-bit prompt encoding but only ~3-bit decode bandwidth would want.
 
+    ``only`` restricts *which* layers may be upgraded.  Layers whose name
+    contains none of the given substrings stay at ``low_bits``, so the widened
+    planes are spent on a single module family.  For instance
+    ``only="mlp."`` upgrades only MLP projections and leaves every attention
+    projection at ``low_bits`` -- useful when the attention module is the
+    bandwidth-critical one and must not pay for an extra residual plane.
+
     Args:
         model: Model containing ``RRQLinear`` modules.
-        fraction: Fraction of layers assigned ``high_bits`` (0.0 <= f <= 1.0).
+        fraction: Fraction of the *eligible* layers assigned ``high_bits``.
         seed: RNG seed for the layer selection (reproducible).
         high_bits: Effective bit-width for the selected layers (2/4/6/8).
         low_bits: Effective bit-width for the rest (2/4/6/8).
@@ -813,13 +821,15 @@ def set_rrq_random_residual(
             mixed precision for both phases.
         prefill_threshold: Sequence length above which a forward counts as
             prefill (only used when ``prefill_bits`` is set).
+        only: Substring(s) a layer name must contain to be eligible for the
+            random upgrade.  ``None`` makes every layer eligible.
 
     Returns:
         The number of layers assigned ``high_bits``.
 
     Raises:
         ValueError: If ``fraction`` is out of range, bit-widths are invalid,
-            or no RRQLinear modules exist.
+            ``only`` matches no layer, or no RRQLinear modules exist.
     """
     import random
 
@@ -835,6 +845,14 @@ def set_rrq_random_residual(
     if not layers:
         raise ValueError("No RRQLinear modules found in model.")
 
+    patterns = None
+    if only is not None:
+        patterns = (only,) if isinstance(only, str) else tuple(only)
+        patterns = tuple(p for p in patterns if p)
+    eligible = [name for name, _ in layers if patterns is None or any(p in name for p in patterns)]
+    if patterns is not None and not eligible:
+        raise ValueError(f"only={patterns!r} matched none of the {len(layers)} RRQLinear layers.")
+
     high_planes = high_bits // 2
     low_planes = low_bits // 2
     requested = max(high_bits, low_bits) if prefill_bits is None else max(high_bits, low_bits, prefill_bits)
@@ -845,9 +863,8 @@ def set_rrq_random_residual(
                 f"{m.num_planes * m.bits} bits ({m.num_planes} planes of {m.bits} bits)."
             )
 
-    names = [name for name, _ in layers]
-    n_high = round(fraction * len(names))
-    keep = set(random.Random(seed).sample(names, n_high))
+    n_high = round(fraction * len(eligible))
+    keep = set(random.Random(seed).sample(eligible, n_high))
     for name, m in layers:
         if m.phase_bits is not None:
             m.disable_phase_bits()
@@ -856,15 +873,16 @@ def set_rrq_random_residual(
             # Random draw governs decode only; prefill is uniform across layers.
             m.set_phase_bits(prefill_bits, high_bits if name in keep else low_bits, prefill_threshold)
 
+    scope = "" if patterns is None else f" within {patterns!r} ({len(eligible)} eligible)"
     if prefill_bits is None:
         logger.info(
-            f"RRQ random residual: {n_high}/{len(names)} layers at {high_bits}-bit, "
+            f"RRQ random residual: {n_high}/{len(eligible)} layers{scope} at {high_bits}-bit, "
             f"rest at {low_bits}-bit (fraction={fraction}, seed={seed})."
         )
     else:
         logger.info(
-            f"RRQ random residual: prefill {prefill_bits}-bit for all layers; decode "
-            f"{n_high}/{len(names)} layers at {high_bits}-bit, rest at {low_bits}-bit "
+            f"RRQ random residual: prefill {prefill_bits}-bit for all {len(layers)} layers; decode "
+            f"{n_high}/{len(eligible)} layers{scope} at {high_bits}-bit, rest at {low_bits}-bit "
             f"(fraction={fraction}, seed={seed})."
         )
     return n_high
