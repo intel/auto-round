@@ -591,6 +591,28 @@ class TestRRQLinear:
         with pytest.raises(ValueError):
             set_rrq_random_residual(nn.Module())
 
+    def test_random_residual_with_prefill_bits(self):
+        """prefill_bits keeps prefill uniform while the random draw governs decode."""
+        from auto_round.inference.rrq_linear import set_rrq_random_residual
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([self._build_rrq_layer(64, 32, group_size=32, num_residual=3) for _ in range(10)])
+
+        # 6-bit prefill everywhere, decode split 50/50 between 4-bit and 2-bit.
+        n_high = set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2, prefill_bits=6)
+        assert n_high == 5
+        assert {m.phase_bits for m in model.layers} == {(6, 4), (6, 2)}
+
+        prefill = torch.randn(1, 7, 32, dtype=torch.float16)
+        decode = torch.randn(1, 1, 32, dtype=torch.float16)
+        # Prefill is 3 planes (6-bit) for every layer, decode is 2 or 1.
+        assert {m._resolve_forward_planes(prefill) for m in model.layers} == {3}
+        assert {m._resolve_forward_planes(decode) for m in model.layers} == {1, 2}
+
+        # prefill_bits beyond the available planes must be rejected.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=0.5, prefill_bits=10)
+
     def test_materialize_rrq_replaces_layers_and_preserves_output(self):
         """materialize_rrq converts to dense nn.Linear with the same numerics."""
         from auto_round.inference.rrq_linear import RRQLinear, materialize_rrq

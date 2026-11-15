@@ -582,9 +582,15 @@ class RRQLinear(nn.Module):
         return _rrq_cache_acquire(nbytes)
 
     def _release_cached_weight(self) -> None:
-        """Drop the cached weights and return their bytes to the budget."""
-        if self._packed_weight:
-            for stored in self._packed_weight.values():
+        """Drop the cached weights and return their bytes to the budget.
+
+        The cache attributes only exist on the packed path, so a layer built
+        from dense planes has never set them; ``getattr`` keeps this callable
+        before the first packed forward.
+        """
+        cached = getattr(self, "_packed_weight", None)
+        if cached:
+            for stored in cached.values():
                 _rrq_cache_release(stored.numel() * stored.element_size())
         self._packed_weight = None
         self._packed_weight_planes = None
@@ -779,6 +785,8 @@ def set_rrq_random_residual(
     seed: int = 0,
     high_bits: int = 4,
     low_bits: int = 2,
+    prefill_bits: int | None = None,
+    prefill_threshold: int = 1,
 ) -> int:
     """Randomly give a fraction of RRQLinear layers the higher precision.
 
@@ -787,12 +795,24 @@ def set_rrq_random_residual(
     This yields a mixed operating point between the two levels (e.g. ``0.5`` of
     the layers at 4-bit and the rest at 2-bit is an effective ~3-bit model).
 
+    Passing ``prefill_bits`` combines the mixed precision with
+    :func:`set_rrq_phase_bits`: the random draw only governs *decode*, and every
+    layer still uses ``prefill_bits`` during prefill.  For example
+    ``fraction=0.5, high_bits=4, low_bits=2, prefill_bits=6`` gives a 6-bit
+    prefill over a ~3-bit decode, which is what a deployment that can afford
+    6-bit prompt encoding but only ~3-bit decode bandwidth would want.
+
     Args:
         model: Model containing ``RRQLinear`` modules.
         fraction: Fraction of layers assigned ``high_bits`` (0.0 <= f <= 1.0).
         seed: RNG seed for the layer selection (reproducible).
         high_bits: Effective bit-width for the selected layers (2/4/6/8).
         low_bits: Effective bit-width for the rest (2/4/6/8).
+        prefill_bits: If set, apply this bit-width to *every* layer during
+            prefill via phase precision (2/4/6/8).  ``None`` keeps a single
+            mixed precision for both phases.
+        prefill_threshold: Sequence length above which a forward counts as
+            prefill (only used when ``prefill_bits`` is set).
 
     Returns:
         The number of layers assigned ``high_bits``.
@@ -808,6 +828,8 @@ def set_rrq_random_residual(
     valid_bits = {2, 4, 6, 8}
     if high_bits not in valid_bits or low_bits not in valid_bits:
         raise ValueError(f"high_bits/low_bits must be in {valid_bits}, got {high_bits}/{low_bits}")
+    if prefill_bits is not None and prefill_bits not in valid_bits:
+        raise ValueError(f"prefill_bits must be in {valid_bits} or None, got {prefill_bits}")
 
     layers = [(name, m) for name, m in model.named_modules() if isinstance(m, RRQLinear)]
     if not layers:
@@ -815,10 +837,12 @@ def set_rrq_random_residual(
 
     high_planes = high_bits // 2
     low_planes = low_bits // 2
+    requested = max(high_bits, low_bits) if prefill_bits is None else max(high_bits, low_bits, prefill_bits)
     for name, m in layers:
-        if max(high_planes, low_planes) > m.num_planes:
+        if requested > m.num_planes * m.bits:
             raise ValueError(
-                f"Requested {max(high_bits, low_bits)}-bit but {name!r} only has " f"{m.num_planes} planes."
+                f"Requested {requested}-bit but {name!r} only holds "
+                f"{m.num_planes * m.bits} bits ({m.num_planes} planes of {m.bits} bits)."
             )
 
     names = [name for name, _ in layers]
@@ -828,11 +852,21 @@ def set_rrq_random_residual(
         if m.phase_bits is not None:
             m.disable_phase_bits()
         m.active_planes = high_planes if name in keep else low_planes
+        if prefill_bits is not None:
+            # Random draw governs decode only; prefill is uniform across layers.
+            m.set_phase_bits(prefill_bits, high_bits if name in keep else low_bits, prefill_threshold)
 
-    logger.info(
-        f"RRQ random residual: {n_high}/{len(names)} layers at {high_bits}-bit, "
-        f"rest at {low_bits}-bit (fraction={fraction}, seed={seed})."
-    )
+    if prefill_bits is None:
+        logger.info(
+            f"RRQ random residual: {n_high}/{len(names)} layers at {high_bits}-bit, "
+            f"rest at {low_bits}-bit (fraction={fraction}, seed={seed})."
+        )
+    else:
+        logger.info(
+            f"RRQ random residual: prefill {prefill_bits}-bit for all layers; decode "
+            f"{n_high}/{len(names)} layers at {high_bits}-bit, rest at {low_bits}-bit "
+            f"(fraction={fraction}, seed={seed})."
+        )
     return n_high
 
 

@@ -322,10 +322,11 @@ model.generate(**inputs)  # prefill 走 6-bit，随后每个生成的 token 走 
 | 配置 | Decode | 相对 2-bit |
 |---|---|---|
 | 2-bit | **121.0 tok/s** | 1.00× |
-| 4-bit | 68.5 tok/s | 0.57× |
-| 6-bit | 48.8 tok/s | 0.40× |
 | prefill 6 / decode 2 | **110.0 tok/s** | 0.91× |
+| **prefill 6 / decode 2+2×50%** | **84.3 tok/s** | **0.70×** |
+| 4-bit | 68.5 tok/s | 0.57× |
 | prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
+| 6-bit | 48.8 tok/s | 0.40× |
 
 batch 必须不超过 `_RRQ_FUSED_MAX_BATCH`（16）。一旦超过，`RRQLinear` 会完全跳过融合
 kernel 并退化为 dequant + matmul：2-bit decode 从 batch 16 的 113 tok/s 掉到 batch
@@ -347,38 +348,52 @@ GSM8K 是一个合适的探针，因为推理过程发生在生成阶段，而�
 |---|---|---|---|---|
 | 全部 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| **prefill 6 / decode 2+2×50%** | **1213 / 1319** | **91.96%** | ±1.47 | 38 |
 | 全部 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | 全部 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-有两点结论，且它们对分阶段方案指向不同方向：
+decode 位宽是主导因素。从 2-bit 到 4-bit decode 值 **+21.99 分**；从 4-bit 到
+6-bit decode 只值 **+0.15**，等于没有。GSM8K 的算术几乎全部发生在 decode 阶段，
+因此精度在 decode 达到 4-bit 后就饱和了。
 
-- **decode 位宽是主导因素。** 从 2-bit 到 4-bit decode 值 **+21.99 分**；从 4-bit
-  到 6-bit decode 只值 **+0.15**，等于没有。GSM8K 的算术几乎全部发生在 decode
-  阶段，因此分数跟随 decode 权重宽度，并在 4-bit 处饱和。
-- **6-bit prefill 只在 decode 位宽很窄时才有收益。** 在 2-bit decode 下它带来
-  **+5.91 分**（z = 3.5，显著），挽回了 2-bit → 6-bit 差距的 27%。在 4-bit
-  decode 下只有 **+1.21 分**，不显著（z = 1.4，p ≈ 0.15），与噪声一致。
+混合 decode 这一行是本轮新增的有用工作点：**91.96% 对应 0.70× decode 速度**，在
+“精度 / 带宽”前沿上明显优于两侧的均匀配置：
+
+| 配置 | GSM8K | Decode | 挽回差距 | 速度代价 |
+|---|---|---|---|---|
+| prefill 6 / decode 2 | 78.32% | 0.91× | 27% | -0.09× |
+| **prefill 6 / decode 2+2×50%** | **91.96%** | **0.70×** | **89%** | **-0.30×** |
+| 全部 4-bit | 94.39% | 0.57× | 100% | -0.43× |
+| prefill 6 / decode 4 | 95.60% | 0.56× | 105% | -0.44× |
+
+从 2-bit decode 迈出的第一步既便宜又陡峭：切到 2+2×50% decode 只花 0.21× 速度就
+换来 **+13.65 分**，直接挽回 2-bit → 4-bit 差距的 89%。而剩下的到全部 4-bit 的
+爬升还要再花 0.13× 速度，却只买到 **+2.43 分**。这就是收益递减的拐点，也正是混合
+工作点的价值所在。
 
 | 对比 | 差值 | 是否显著 |
 |---|---|---|
 | 全部 4-bit − 全部 2-bit | +21.99 | 是 |
-| prefill6/decode4 − prefill6/decode2 | +17.29 | 是 |
-| prefill6/decode2 − 全部 2-bit | +5.91 | 是 |
-| prefill6/decode4 − 全部 4-bit | +1.21 | 否（p ≈ 0.15） |
+| prefill6/d2+2×50% − prefill6/decode2 | +13.65 | 是 |
+| 全部 4-bit − prefill6/d2+2×50% | +2.43 | 边界显著 |
 | 全部 6-bit − 全部 4-bit | +0.15 | 否 |
+| prefill6/decode4 − 全部 4-bit | +1.21 | 否（p ≈ 0.15） |
 | prefill6/decode4 − 全部 6-bit | −1.06 | 否（p ≈ 0.21） |
 
-**实践建议——按 decode 预算选工作点，而不是按 prefill：**
+**实践建议——按 decode 预算选工作点：**
 
-- 如果 decode 为了速度必须走 2-bit，`set_rrq_phase_bits(model, 6, 2)` 是免费的
-  收益：decode 开销无可测量增加（110.0 tok/s 对 121.0 tok/s，即 0.91×）就换来
-  5.91 分，且不需要额外存储。
-- 如果 decode 用得起 4-bit，**直接用均匀 4-bit，跳过拆分**。它得到 94.39%，与
-  prefill6/decode4 的 95.60% 在统计上相同，decode 速度也一样是 68.5 tok/s，而
-  prefill 比 6-bit 更便宜。分阶段方案在这里只是多了机制，没有收益。
-- 均匀 6-bit 对 GSM8K 不值得：94.54% 落在均匀 4-bit 的噪声区间内，decode 速度却
-  只有 2-bit 的 0.40×。
+- decode 必须走 2-bit：`set_rrq_phase_bits(model, 6, 2)` 是免费的收益，0.91×
+  decode 速度换 +5.91 分，且不需要额外存储。
+- 还能再让出约 0.2× decode 带宽：**用混合 decode**，
+  `set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4,
+  low_bits=2, prefill_bits=6)`。它以 0.70× 达到 91.96%，用全部 4-bit 三分之一
+  的带宽代价就挽回 2-bit → 4-bit 差距的 89%。
+- 需要最后那 2–3 分：全部 4-bit（94.39%，0.57×），无需拆分。它与
+  prefill6/decode4（95.60%）在统计上相同、decode 速度相同，而 prefill 更便宜，
+  因此在那里分阶段机制买不到任何东西。
+- 全部 6-bit 对 GSM8K 不值得：94.54% 落在全部 4-bit 的噪声区间内，而 decode
+  速度只有 2-bit 的 0.40×。
 
 机制上，prefill 只影响第一个 token，而 GSM8K 的大部分计算发生在 decode 阶段——
 算术链是一个 token 一个 token 生成的。更好的 prefill 能让模型有个正确的起点，这

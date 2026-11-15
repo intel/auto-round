@@ -350,10 +350,11 @@ Decode throughput of each split, measured with the fused kernel at batch 16
 | Configuration | Decode | vs 2-bit |
 |---|---|---|
 | 2-bit | **121.0 tok/s** | 1.00× |
-| 4-bit | 68.5 tok/s | 0.57× |
-| 6-bit | 48.8 tok/s | 0.40× |
 | prefill 6 / decode 2 | **110.0 tok/s** | 0.91× |
+| **prefill 6 / decode 2+2×50%** | **84.3 tok/s** | **0.70×** |
+| 4-bit | 68.5 tok/s | 0.57× |
 | prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
+| 6-bit | 48.8 tok/s | 0.40× |
 
 Batch must stay at or below `_RRQ_FUSED_MAX_BATCH` (16). Above that cutoff
 `RRQLinear` skips the fused kernel entirely and falls back to dequant + matmul:
@@ -380,42 +381,55 @@ an answer, which silently depresses every configuration (see
 |---|---|---|---|---|
 | full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
 | **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| **prefill 6 / decode 2+2×50%** | **1213 / 1319** | **91.96%** | ±1.47 | 38 |
 | full 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
 
-Two facts stand out, and they point in opposite directions for the phase trick:
+Decode width is what the score tracks. Going from 2-bit to 4-bit decode is worth
+**+21.99 points**; going from 4-bit to 6-bit decode is worth **+0.15**, i.e.
+nothing. Decode carries nearly all of GSM8K's arithmetic, so accuracy saturates
+once decode reaches 4 bits.
 
-- **Decode width dominates.** Going from 2-bit to 4-bit decode is worth
-  **+21.99 points**; going from 4-bit to 6-bit decode is worth **+0.15**, i.e.
-  nothing. Decode carries nearly all of GSM8K's arithmetic, so the score tracks
-  the decode weight width and saturates once that width is 4 bits.
-- **The 6-bit prefill only pays off when decode is starved.** At 2-bit decode it
-  adds **+5.91 points** (z = 3.5, significant), recovering 27% of the
-  2-bit → 6-bit gap. At 4-bit decode it adds **+1.21 points**, which is not
-  significant (z = 1.4, p ≈ 0.15) and is consistent with noise.
+The mixed decode row is the useful new point. 91.96% at 0.70x decode speed sits
+well clear of both uniform neighbours on the accuracy-per-bandwidth frontier:
+
+| Configuration | GSM8K | Decode | Gap closed | Speed cost |
+|---|---|---|---|---|
+| prefill 6 / decode 2 | 78.32% | 0.91x | 27% | -0.09x |
+| **prefill 6 / decode 2+2x50%** | **91.96%** | **0.70x** | **89%** | **-0.30x** |
+| full 4-bit | 94.39% | 0.57x | 100% | -0.43x |
+| prefill 6 / decode 4 | 95.60% | 0.56x | 105% | -0.44x |
+
+The first step out of uniform 2-bit decode is cheap and steep: moving to a
+2+2x50% decode costs 0.21x of speed and buys **+13.65 points**, closing 89% of
+the 2-bit to 4-bit gap. The rest of the climb to full 4-bit costs another 0.13x
+and buys only **+2.43**. That is the diminishing-returns knee, and it is where
+the mixed point earns its place.
 
 | Comparison | Delta | Significant? |
 |---|---|---|
-| full 4-bit − full 2-bit | +21.99 | yes |
-| prefill6/decode4 − prefill6/decode2 | +17.29 | yes |
-| prefill6/decode2 − full 2-bit | +5.91 | yes |
-| prefill6/decode4 − full 4-bit | +1.21 | no (p ≈ 0.15) |
-| full 6-bit − full 4-bit | +0.15 | no |
-| prefill6/decode4 − full 6-bit | −1.06 | no (p ≈ 0.21) |
+| full 4-bit - full 2-bit | +21.99 | yes |
+| prefill6/d2+2x50% - prefill6/decode2 | +13.65 | yes |
+| full 4-bit - prefill6/d2+2x50% | +2.43 | borderline |
+| full 6-bit - full 4-bit | +0.15 | no |
+| prefill6/decode4 - full 4-bit | +1.21 | no (p ~ 0.15) |
+| prefill6/decode4 - full 6-bit | -1.06 | no (p ~ 0.21) |
 
-**Practical reading — pick the operating point by decode budget, not by
-prefill:**
+**Practical reading - pick the operating point by decode budget:**
 
-- If decode must run at 2-bit for speed, `set_rrq_phase_bits(model, 6, 2)` is a
-  free win: it adds 5.91 points for no measurable decode cost (110.0 tok/s
-  against 121.0 tok/s, i.e. 0.91×) and needs no extra storage.
-- If decode can afford 4-bit, **use uniform 4-bit and skip the split.** It scores
- 94.39% against prefill6/decode4's 95.60% — statistically identical — while
-  decoding at the same 68.5 tok/s, and its prefill is cheaper than 6-bit. The
-  phase configuration is strictly more machinery for no gain.
-- Uniform 6-bit is not worth it for GSM8K: 94.54% is inside the noise band of
-  uniform 4-bit, at 0.40× the decode speed of 2-bit.
+- Must decode at 2-bit for speed: `set_rrq_phase_bits(model, 6, 2)` is a free
+  win, +5.91 points for 0.91x decode speed and no extra storage.
+- Can spare about 0.2x more decode bandwidth: **use the mixed decode**,
+  `set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4,
+  low_bits=2, prefill_bits=6)`. It reaches 91.96% at 0.70x, recovering 89% of
+  the 2-bit to 4-bit gap for a third of the bandwidth cost of going fully 4-bit.
+- Need the last 2-3 points: uniform 4-bit (94.39%) at 0.57x, without the split.
+  Uniform 4-bit is statistically identical to prefill6/decode4 (95.60%) at the
+  same decode speed and with a cheaper prefill, so the phase machinery buys
+  nothing there.
+- Uniform 6-bit is not worth it for GSM8K: 94.54% sits inside the noise band of
+  uniform 4-bit, at 0.40x the decode speed of 2-bit.
 
 Mechanically, prefill touches only the first token while most of GSM8K's
 computation happens during decode — the chain of arithmetic is produced token by
