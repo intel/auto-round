@@ -969,6 +969,22 @@ class TestMXFP8HandlerDetectLayer:
         assert result is True
 
 
+class TestMXHandlerConvertLayerValidation:
+    """MX handlers must reject layers without ``weight_scale`` with a clear ValueError."""
+
+    @pytest.mark.parametrize(
+        "weight_type, match", [("MXFP4", "weight_packed and weight_scale"), ("MXFP8", "weight_scale")]
+    )
+    def test_missing_weight_scale_raises_value_error(self, weight_type, match):
+        from auto_round.utils.weight_handler import ModuleWeightType, get_handler
+
+        handler = get_handler(getattr(ModuleWeightType, weight_type))
+        layer = torch.nn.Linear(64, 8, bias=False)
+
+        with pytest.raises(ValueError, match=match):
+            handler.convert_layer(layer, dtype=torch.float32, device="cpu")
+
+
 class TestNVFP4HandlerDetectLayer:
     """Tests for NVFP4Handler.detect_layer method."""
 

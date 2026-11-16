@@ -220,3 +220,53 @@ class TestGetCpuManufacturer:
         ):
             # "intel" is in the brand_raw, so should return intel
             assert get_cpu_manufacturer() == "intel"
+
+
+# ---------------------------------------------------------------------------
+# find_backend
+# ---------------------------------------------------------------------------
+class TestFindBackend:
+    @pytest.fixture
+    def infos(self):
+        from auto_round.inference.backend import BackendInfo
+
+        def _info(packing_format, alias=None):
+            return BackendInfo(device=["cpu"], sym=[True], packing_format=packing_format, bits=[4], alias=alias)
+
+        fake = {
+            "orig": _info(["fmt_a", "fmt_b"]),
+            "same": _info(["fmt_a", "fmt_b"], alias=["same_alias"]),
+            "overlap": _info(["fmt_b", "fmt_c"]),
+            "disjoint": _info(["fmt_c"], alias=["shared_alias"]),
+            "disjoint_2": _info(["fmt_a"], alias=["shared_alias"]),
+        }
+        with patch.dict("auto_round.inference.backend.BackendInfos", fake, clear=True):
+            yield fake
+
+    def test_without_orig_backend(self, infos):
+        from auto_round.inference.backend import find_backend
+
+        assert find_backend("missing") is None
+        assert find_backend("same") == "same"
+        assert find_backend("same_alias") == "same"
+
+    def test_same_packing_format(self, infos):
+        from auto_round.inference.backend import find_backend
+
+        assert find_backend("same", orig_backend="orig") == "same"
+
+    def test_overlapping_packing_format(self, infos):
+        from auto_round.inference.backend import find_backend
+
+        assert find_backend("overlap", orig_backend="orig") == "overlap"
+
+    def test_skips_incompatible_alias_match(self, infos):
+        from auto_round.inference.backend import find_backend
+
+        assert find_backend("shared_alias", orig_backend="orig") == "disjoint_2"
+
+    def test_disjoint_packing_format_raises(self, infos):
+        from auto_round.inference.backend import find_backend
+
+        with pytest.raises(ValueError, match="not compatible"):
+            find_backend("disjoint", orig_backend="orig")
