@@ -543,6 +543,13 @@ class _PatternMatcher:
         self._ignore_cache[tensor_name] = result
         return result
 
+    def matches_ignore_pattern(self, tensor_name: str) -> bool:
+        """Check configured ignore patterns without applying source-only filtering."""
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        if self._matches_layer_config(layer_name):
+            return False
+        return bool(self._ignore_re and self._ignore_re.search(layer_name))
+
     def _matches_layer_config(self, layer_name: str) -> bool:
         return any(
             (compiled is not None and compiled.search(layer_name)) or (plain is not None and plain in layer_name)
@@ -629,6 +636,70 @@ def _collect_nvfp4_source_layers(raw_tensors: dict[str, torch.Tensor]) -> set[st
         elif f"{name}.scale" in raw_tensors and f"{name}.scale2" in raw_tensors:
             layers.add(name)
     return layers
+
+
+def _collect_quantized_source_layers(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None = None,
+) -> set[str]:
+    """Return source layers whose weights are stored in a supported quantized format."""
+    layers = {entry[0] for entry in _collect_mxfp_source_entries(raw_tensors)}
+    layers.update(_collect_nvfp4_source_layers(raw_tensors))
+
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        layer_name = name[: -len(".weight")]
+        if (
+            tensor.dtype == torch.float8_e4m3fn
+            and any(f"{layer_name}.{suffix}" in raw_tensors for suffix in ("weight_scale_inv", "weight_scale", "scale"))
+            or (
+                (model_type or "").lower() == "deepseek_v4"
+                and tensor.dtype in (torch.int8, torch.uint8)
+                and f"{layer_name}.scale" in raw_tensors
+            )
+            or (
+                tensor.dtype in (torch.int8, torch.uint8)
+                and f"{layer_name}.weight_scale" in raw_tensors
+                and any(
+                    f"{layer_name}.{suffix}" in raw_tensors
+                    for suffix in ("weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale")
+                )
+            )
+        ):
+            layers.add(layer_name)
+
+    if (model_type or "").lower() == "kimi_k25":
+        layers.update(entry[0] for entry in _collect_kimi_k25_int4_source_entries(raw_tensors))
+
+    return layers
+
+
+def _raise_if_ignored_quantized_source(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: _PatternMatcher,
+    model_type: str | None = None,
+    shard_name: str | None = None,
+) -> None:
+    """Reject ignored source layers that would otherwise be silently dequantized."""
+    ignored_quantized = sorted(
+        layer_name
+        for layer_name in _collect_quantized_source_layers(raw_tensors, model_type=model_type)
+        if matcher.matches_ignore_pattern(f"{layer_name}.weight")
+    )
+    if not ignored_quantized:
+        return
+
+    examples = ", ".join(ignored_quantized[:10])
+    if len(ignored_quantized) > 10:
+        examples += f", ... ({len(ignored_quantized)} total)"
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+    raise ValueError(
+        f"{shard_prefix}ignore_layers matches already-quantized source layer(s): {examples}. "
+        "Model-free cannot ignore quantized source weights. Remove these layers from --ignore_layers and set "
+        "--layer_config to a target quantization scheme (for example, '{layer_name: W4A16}') to convert them, "
+        "or use '{layer_name: BF16}' to dequantize and keep them in BF16."
+    )
 
 
 def _normalize_nvfp4_source_tensors(
@@ -886,6 +957,7 @@ def _handle_nvfp4_source_tensors(
 
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
         if scheme is None:
+            dequant_layers.append(layer_name)
             continue
         scheme_bits = scheme.get("bits")
         scheme_data_type = (scheme.get("data_type") or "").lower()
@@ -2503,6 +2575,13 @@ def _process_shard(
             index_dir=index_dir,
             donor_shard_dir=donor_shard_dir,
         )
+
+    _raise_if_ignored_quantized_source(
+        raw_tensors,
+        matcher,
+        model_type=model_type,
+        shard_name=shard_name,
+    )
 
     # Snapshot candidate weight layer names *before* any preprocessing. 1D
     # weights (for example LayerNorm) are not quantization targets, while 3D

@@ -2035,10 +2035,23 @@ class TestNVFP4ToMXFP4:
     # ------------------------------------------------------------------
 
     @require_compressed_tensors
-    def test_ignored_nvfp4_layer_is_dequantized_and_added_to_ignore(self, tmp_path):
+    def test_ignoring_quantized_nvfp4_layer_requires_layer_config(self, tmp_path):
         source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
         model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
-        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+        with pytest.raises(ValueError, match=r"already-quantized source layer.*layer_config.*BF16"):
+            _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+    @require_compressed_tensors
+    def test_quantized_nvfp4_layer_can_be_explicitly_kept_in_bf16(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(
+            model_dir,
+            str(tmp_path / "out"),
+            ignore_layers="down_proj",
+            layer_config={"down_proj": "BF16"},
+        )
 
         _assert_mxfp4_layer(tensors, _NV_MLP_UP)
         assert tensors[f"{_NV_MLP}.weight"].dtype == torch.bfloat16
