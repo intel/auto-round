@@ -130,6 +130,7 @@ class QuantizedKVParameterCache(DynamicCache):
             self.k_amax: list[torch.Tensor | float | None] = []
             self.v_amax: list[torch.Tensor | float | None] = []
             self._qdq_enabled = False
+            self.shared_scale_layers: set[int] = set()
             self._initialized = True
 
     def update(
@@ -146,6 +147,28 @@ class QuantizedKVParameterCache(DynamicCache):
             self._observe(key_states, KVCacheScaleType.KEY, layer_idx)
             self._observe(value_states, KVCacheScaleType.VALUE, layer_idx)
             return key_states, value_states
+
+        if layer_idx in self.shared_scale_layers:
+            key_states = key_states.contiguous()
+            value_states = value_states.contiguous()
+            if self.granularity == FP8_GRANULARITY_HEAD:
+                dims = (0, 2, 3)
+            else:
+                dims = None
+            key_max = key_states.abs().amax(dim=dims)
+            value_max = value_states.abs().amax(dim=dims)
+            tensor_max = torch.maximum(key_max, value_max)
+            scale = calculate_fp8_e4m3_scale(tensor_max).reshape(-1)
+            for scales in (self.k_scales, self.v_scales):
+                if layer_idx < len(scales) and scales[layer_idx] is not None:
+                    scale = torch.maximum(scales[layer_idx], scale)
+            scale = scale.detach()
+            tensor_max = scale * torch.finfo(torch.float8_e4m3fn).max
+            qdq_key_states, _ = fp8_qdq(key_states, tensor_max=tensor_max, granularity=self.granularity)
+            qdq_value_states, _ = fp8_qdq(value_states, tensor_max=tensor_max, granularity=self.granularity)
+            for scales in (self.k_scales, self.v_scales):
+                _pad_and_append_at_idx_(scales, layer_idx, scale)
+            return qdq_key_states, qdq_value_states
 
         return (
             self._quant_dequant(key_states, KVCacheScaleType.KEY, layer_idx),
@@ -287,6 +310,8 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
 
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
     module.kv_cache = quantized_kv_cache
+    if not quantized_kv_cache.is_nvfp4 and all(hasattr(module, name) for name in ("kv_lora_rank", "qk_rope_head_dim")):
+        quantized_kv_cache.shared_scale_layers.add(module.layer_idx)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     if quantized_kv_cache.is_nvfp4:
         # Global scales are only registered once calibration has observed KV
