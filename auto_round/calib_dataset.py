@@ -2261,8 +2261,10 @@ def _get_dataset_impl(
         lens = [item[1] for item in res]
 
         configured_sum = sum(n for n in spec_target_nums if n is not None)
-        cnt = configured_sum if (configured_sum > 0 and configured_sum <= nsamples) else (
-            0 if not data_lens else sum(data_lens.values())
+        cnt = (
+            configured_sum
+            if (configured_sum > 0 and configured_sum <= nsamples)
+            else (0 if not data_lens else sum(data_lens.values()))
         )
         dataset_cnt_info = {}
         if cnt > nsamples:

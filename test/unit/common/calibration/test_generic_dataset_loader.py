@@ -626,7 +626,9 @@ class TestUltraDataAgentDataset:
                 raise TypeError("Couldn't cast array of type struct to string")
 
         fallback_called = []
-        working_ds = FakeIterableDataset([{"messages": [{"role": "user", "content": "recovered sample"}], "tools": None}])
+        working_ds = FakeIterableDataset(
+            [{"messages": [{"role": "user", "content": "recovered sample"}], "tools": None}]
+        )
 
         def _mock_load_dataset(repo, cfg=None, **kwargs):
             if "data_files" in kwargs:
@@ -656,10 +658,12 @@ class TestUltraDataAgentDataset:
             cfg = kwargs.get("config_name")
             loaded_configs.append(cfg)
             # Emit a dummy dataset of size 10
-            return Dataset.from_dict({
-                "input_ids": [[10, 11, 12, 13]] * 10,
-                "attention_mask": [[1, 1, 1, 1]] * 10,
-            })
+            return Dataset.from_dict(
+                {
+                    "input_ids": [[10, 11, 12, 13]] * 10,
+                    "attention_mask": [[1, 1, 1, 1]] * 10,
+                }
+            )
 
         monkeypatch.setattr(cd, "_get_generic_dataset", _mock_generic_loader)
         monkeypatch.setenv("AR_DISABLE_DATASET_SUBPROCESS", "1")
