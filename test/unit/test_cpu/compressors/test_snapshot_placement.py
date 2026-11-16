@@ -174,7 +174,7 @@ class TestBestParamsReleaseBeforeReclone:
         # (refine_best_params / second_ar_best_params) whose ``= None`` lines
         # would otherwise count as releases of the weight-sized best_params
         releases = [m.start() for m in _re.finditer(r"(?<![A-Za-z_])best_params = None", src)]
-        clones = [m.start() for m in _re.finditer(r"snapshot_best_params\(", src)]
+        clones = [m.start() for m in _re.finditer(r"tuning\.collect_best_params\(", src)]
         assert len(releases) == 2  # improving-iteration site + last-iteration site
         assert len(clones) >= 2  # teq stages carry additional (separate) snapshots
         r0, r1 = releases
@@ -184,3 +184,9 @@ class TestBestParamsReleaseBeforeReclone:
         c1 = min(c for c in clones if c > r1)
         assert r0 < c0
         assert r1 < c1
+        # Both best-params replacements must release immediately before the
+        # session snapshot, regardless of its cache or fallback backend.
+        guarded_clones = _re.findall(
+            r"(?<![A-Za-z_])best_params = None\s+best_params = tuning\.collect_best_params\(\)", src
+        )
+        assert len(guarded_clones) == 2
