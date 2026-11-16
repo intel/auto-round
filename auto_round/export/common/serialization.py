@@ -476,6 +476,11 @@ def save_model(
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)
+
     apply_post_save_source_fixes(model, save_dir)
 
     config_path = os.path.join(save_dir, "config.json")
@@ -490,38 +495,11 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
-
 
 def filter_quantization_config(quantization_config):
-    default_dict = {
-        "amp": True,
-        "batch_size": 8,
-        "data_type": int,
-        "dataset": "NeelNanda/pile-10k",
-        "enable_minmax_tuning": True,
-        "enable_norm_bias_tuning": False,
-        "enable_quanted_input": True,
-        "gradient_accumulate_steps": 1,
-        "iters": 200,
-        "low_gpu_mem_usage": False,
-        "nsamples": 128,
-        "scale_dtype": "torch.float16",
-        "seqlen": 2048,
-    }
-    iters = quantization_config.get("iters")
-    if iters is None:
-        iters = 0
-
-    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
-    default_dict["minmax_lr"] = default_dict["lr"]
-
-    for key, default_value in default_dict.items():
-        if key in quantization_config and default_value == quantization_config[key]:
-            quantization_config.pop(key)
+    # Values are no longer pruned when they equal the defaults: every serialized key (including
+    # tuning hyper-parameters such as iters/nsamples/seqlen/lr) is kept so a checkpoint always
+    # records how it was produced. Only None values and the inert entries below are dropped.
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)

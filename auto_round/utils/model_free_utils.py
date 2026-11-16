@@ -1299,6 +1299,7 @@ def _quantize_weight_nvfp4_e5m3(
     group_size: int = 16,
     device: str = "cpu",
     disable_opt_rtn: bool = False,
+    enable_torch_compile: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
     from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
@@ -1317,7 +1318,7 @@ def _quantize_weight_nvfp4_e5m3(
     max_scale = 1.0
     if not disable_opt_rtn:
         grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
-        max_scale = search_nvfp4_v2_scale(grouped)
+        max_scale = search_nvfp4_v2_scale(grouped, enable_torch_compile=enable_torch_compile)
     qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
@@ -1329,6 +1330,7 @@ def _qdq_weight_nvfp4_e5m3_gs(
     device: str,
     disable_opt_rtn: bool,
     global_scale_override: torch.Tensor | float | None = None,
+    enable_torch_compile: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return (fp32 weight, qdq weight, encoded-domain block scale, weight global scale) for NVFP4_E5M3_GS."""
     from auto_round.data_type.nvfp import calculate_gparam_e5m3, nvfp4_v2_gs, opt_rtn_nvfp4_v2_gs
@@ -1347,7 +1349,13 @@ def _qdq_weight_nvfp4_e5m3_gs(
         if not torch.isfinite(global_scale).all() or (global_scale <= 0).any():
             raise ValueError(f"Invalid NVFP4_E5M3_GS global scale override for '{layer_name}': {global_scale}.")
     quant_func = nvfp4_v2_gs if disable_opt_rtn else opt_rtn_nvfp4_v2_gs
-    qdq_weight, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, global_scale=global_scale)
+    qdq_weight, scale, _ = quant_func(
+        weight_dev,
+        bits=4,
+        group_size=group_size,
+        global_scale=global_scale,
+        enable_torch_compile=enable_torch_compile,
+    )
     return weight_dev, qdq_weight, scale, global_scale
 
 
@@ -1358,10 +1366,11 @@ def _quantize_weight_nvfp4_e5m3_gs(
     device: str = "cpu",
     disable_opt_rtn: bool = False,
     global_scale_override: torch.Tensor | float | None = None,
+    enable_torch_compile: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4_E5M3_GS; model-free uses a fixed input global scale of 1."""
     _, qdq_weight, _, _ = _qdq_weight_nvfp4_e5m3_gs(
-        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override
+        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override, enable_torch_compile
     )
     return {
         f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
@@ -1376,13 +1385,14 @@ def _pack_weight_nvfp4_e5m3_gs(
     device: str = "cpu",
     disable_opt_rtn: bool = False,
     global_scale_override: torch.Tensor | float | None = None,
+    enable_torch_compile: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with UE5M3 block scales and a per-tensor weight global scale."""
     from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
     weight_dev, _, scale, global_scale = _qdq_weight_nvfp4_e5m3_gs(
-        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override
+        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override, enable_torch_compile
     )
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     with torch.device("meta"):
@@ -1445,6 +1455,7 @@ def _pack_weight_nvfp4_e5m3(
     group_size: int = 16,
     device: str = "cpu",
     disable_opt_rtn: bool = False,
+    enable_torch_compile: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
     from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
@@ -1460,7 +1471,7 @@ def _pack_weight_nvfp4_e5m3(
     max_scale = 1.0
     if not disable_opt_rtn:
         grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
-        max_scale = search_nvfp4_v2_scale(grouped)
+        max_scale = search_nvfp4_v2_scale(grouped, enable_torch_compile=enable_torch_compile)
     _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
@@ -1507,6 +1518,7 @@ def _quantize_single_tensor(
     quantize_func: Callable = quantize_weight_rtn,
     disable_opt_rtn: bool = False,
     global_scale_override: torch.Tensor | float | None = None,
+    enable_torch_compile: bool = False,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
@@ -1573,6 +1585,7 @@ def _quantize_single_tensor(
                 group_size=group_size,
                 device=device,
                 disable_opt_rtn=disable_opt_rtn,
+                enable_torch_compile=enable_torch_compile,
             )
             logger.debug(f"Quantized (NVFP4_E5M3): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -1592,6 +1605,7 @@ def _quantize_single_tensor(
                 device=device,
                 disable_opt_rtn=disable_opt_rtn,
                 global_scale_override=global_scale_override,
+                enable_torch_compile=enable_torch_compile,
             )
             logger.debug(f"Quantized (NVFP4_E5M3_GS): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -2622,6 +2636,7 @@ def _process_shard(
             quantize_func,
             disable_opt_rtn,
             global_scale_override=global_scale_overrides.get(tensor_name),
+            enable_torch_compile=enable_torch_compile,
         )
         # Cross-shard hydrated FP8 scale_inv tensors are FP32 sources, not dequantized weights.
         if (

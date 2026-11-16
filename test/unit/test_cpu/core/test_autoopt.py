@@ -32,12 +32,10 @@ class TestAutoRound:
         adamround = AutoRound(
             tiny_opt_model,
             opt_tokenizer,
-            alg_configs=AdamRoundConfig(
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                iters=2,
-            ),
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            alg_configs=AdamRoundConfig(iters=2),
             seqlen=2,
             batch_size=batch_size,
             dataset=dataloader,

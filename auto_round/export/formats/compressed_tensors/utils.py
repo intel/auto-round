@@ -197,10 +197,18 @@ def generate_ignore_regex_list(regex_config: dict[str, dict], layer_config: dict
 # Tuning hyper-parameters worth recording so a llm-compressor checkpoint can be
 # traced back to (and re-created with) the AutoRound command that produced it.
 AUTOROUND_CONFIG_KEY = "autoround_config"
-# Prefer the shared compressor serialization allowlist so new hyper-parameters
-# land here automatically. ``autoround_version`` is injected into
-# ``serialization_dict`` at export time and is not a SerializedCompressorConfig field.
-_AUTOROUND_CONFIG_FIELDS = ("autoround_version",) + tuple(SERIALIZATION_KEYS)
+
+
+def _autoround_config_fields() -> tuple[str, ...]:
+    """Shared compressor fields plus every algorithm-declared export field.
+
+    ``autoround_version`` is injected into ``serialization_dict`` at export time and
+    is not a SerializedCompressorConfig field. Algorithm fields are resolved lazily
+    so configs registered after import are still covered.
+    """
+    from auto_round.algorithms.config import all_algorithm_serialized_fields
+
+    return ("autoround_version",) + tuple(SERIALIZATION_KEYS) + tuple(sorted(all_algorithm_serialized_fields()))
 
 
 def _to_json_value(value):
@@ -237,7 +245,7 @@ def add_autoround_config(quantization_config: dict, serialization_dict: dict | N
     if quantization_config.get("provider") != "auto-round":
         return quantization_config
     autoround_config = {}
-    for key in _AUTOROUND_CONFIG_FIELDS:
+    for key in _autoround_config_fields():
         value = serialization_dict.get(key)
         if value is None:
             continue

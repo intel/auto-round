@@ -130,8 +130,8 @@ def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
 
     original_scheme = _resolved_scheme("W4A16")
     corrected_scheme = _resolved_scheme("GGUF:Q4_K_M")
-    quantize_config = QuantizationConfig(scheme=original_scheme.copy())
-    alg_config = QuantizationConfig(scheme=original_scheme.copy())
+    quantize_config = QuantizationConfig()
+    alg_config = QuantizationConfig()
     resolved_format = SimpleNamespace(
         is_gguf=lambda: True,
         output_format="gguf",
@@ -173,11 +173,11 @@ def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
     assert ar.scheme.lower() == "gguf:q4_k_m"
     assert get_gguf_scheme(ar.scheme) == ar.scheme  # short-circuit preserved
     assert ar.scheme_context == corrected_scheme
-    assert alg_config.scheme is ar.scheme_context
-    assert quantize_config.scheme is ar.scheme_context
-    assert ar.scheme_context.bits == ar.quantize_config.bits
-    assert ar.scheme_context.data_type == ar.quantize_config.data_type
-    assert ar.scheme_context.sym == ar.quantize_config.sym
+    assert not hasattr(alg_config, "scheme")
+    assert not hasattr(quantize_config, "scheme")
+    assert ar.scheme_context.bits == corrected_scheme.bits
+    assert ar.scheme_context.data_type == corrected_scheme.data_type
+    assert ar.scheme_context.sym == corrected_scheme.sym
     assert ar.layer_config == {"layer": {"bits": 4}}
     assert ar.scale_dtype is torch.float32
     assert ar.quant_block_list == [["model.layers.0"]]

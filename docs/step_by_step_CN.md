@@ -204,7 +204,7 @@ AutoRound 支持多种量化配置：
 
 **MLX 格式(实验性功能)**：面向 Apple Silicon (M1/M2/M3/...)，可直接被 [`mlx-lm`](https://github.com/ml-explore/mlx-lm)（纯文本 LLM）或 [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm)（多模态 VLM）加载推理。
 - 支持 **2、3、4、5、6、8 bits**（其中 5/6 bits 是 MLX 独有，GPTQ/AWQ 没有标准打包格式）。
-- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--schemes "..." --bits 3.5`），按层覆盖会写入 `config.json["quantization"]`，
+- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--scheme "..." --bits 3.5`），按层覆盖会写入 `config.json["quantization"]`，
 - `--format mlx` 导出原生 MLX checkpoint；`--format auto_round:mlx` 则让 HuggingFace `transformers` + AutoRound 加载它（在 Darwin 上 post-init 会把每层重新打包成 MLX 的 `QuantLinear`）。
 - 已经问题: 没有支持嵌入层的量化
 
@@ -232,6 +232,20 @@ AutoRound 支持多种量化配置：
 ### 环境参数配置
 
 为优化运行性能，量化前建议配置 AutoRound 的环境变量。关于日志级别、ModelScope 集成、工作区设置等可用的环境变量等更多细节，可参考[环境变量指南](./environments.md)。
+
+### 加载包含自定义代码的模型（`trust_remote_code`）
+
+出于安全考虑，AutoRound 默认**不会**执行模型仓库中附带的自定义 Python 代码（`trust_remote_code=False`，与 Hugging Face Transformers 保持一致）。依赖自定义建模/分词器代码的模型（即 `config.json`、`tokenizer_config.json` 等文件中包含 `auto_map` 字段）需要显式开启：
+
+```bash
+auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
+```
+
+```python
+ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
+```
+
+> **警告：** 开启 `trust_remote_code` 会在当前进程中执行模型仓库内的任意代码。请仅对来源可信且代码已审查的模型开启。旧参数 `--disable_trust_remote_code` 已弃用，不再生效。GGUF 导出使用 llama.cpp 转换器，无论该设置如何，都可能加载模型仓库中的分词器代码；请仅对可信模型进行 GGUF 导出。
 
 ### 命令行用法
 
@@ -294,6 +308,8 @@ output_dir = "./tmp_autoround"
 # 可指定导出格式，支持auto_round（默认）、auto_gptq、auto_awq，多格式用英文逗号分隔
 ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
+
+量化规格参数（如 `bits`、`group_size`、`sym` 和 `act_bits`）由 `AutoRound` 统一管理，算法配置只接受算法自身的参数。例如使用 `AutoRound(model, group_size=16, sym=True, alg_configs=SignRoundConfig(iters=200))`；`SignRoundConfig(group_size=16)` 和 `SignRoundConfig(scheme="W4A16")` 会报错。所有阶段使用同一运行级量化方案。
 
 #### 混合精度量化
 自 0.8 版本起，AutoRound 提供了 AutoScheme 功能，可自动生成混合精度方案，详情请参阅 [Auto Scheme自动方案](#autoscheme-自动混合精度量化方案)章节。

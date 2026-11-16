@@ -20,7 +20,7 @@ def merge_layer_defaults(defaults: dict, overrides: dict | None) -> dict:
 
 
 def resolve_recipe(
-    recipe: str | Recipe = "auto-round", *, scheme="W4A16", model=None, model_config=None, trust_remote_code=True
+    recipe: str | Recipe = "auto-round", *, scheme="W4A16", model=None, model_config=None, trust_remote_code=False
 ) -> Recipe:
     """Apply a recipe's processing function to an isolated copy of its defaults."""
     definition = get_recipe(recipe) if isinstance(recipe, str) else copy.deepcopy(recipe)

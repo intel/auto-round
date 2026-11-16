@@ -202,6 +202,21 @@ def test_preserve_original_visual_block_name():
         preserve_original_visual_block_name("model.language_model.layers", "model.layers")
         == "model.language_model.layers,model.layers"
     )
+    # Qwen-Omni renames ``thinker.model.layers`` to
+    # ``thinker.model.language_model.layers`` in newer Transformers releases;
+    # keep both forms for the runtime and checkpoint namespaces.
+    assert (
+        preserve_original_visual_block_name("thinker.model.language_model.layers", "thinker.model.layers")
+        == "thinker.model.language_model.layers,thinker.model.layers"
+    )
+    assert (
+        preserve_original_visual_block_name(
+            "thinker.model.visual.blocks,thinker.model.audio_tower.layers",
+            "thinker.visual.blocks,thinker.audio_tower.layers",
+        )
+        == "thinker.model.visual.blocks,thinker.visual.blocks,"
+        "thinker.model.audio_tower.layers,thinker.audio_tower.layers"
+    )
 
 
 def test_preserve_original_mllm_language_block_name():

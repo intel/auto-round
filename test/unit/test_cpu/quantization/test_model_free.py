@@ -706,6 +706,10 @@ def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
     assert quantization_config["provider"] == "auto-round"
     assert group["weights"]["group_size"] == 16
     assert group["input_activations"]["dynamic"] == "local"
+    autoround_config = quantization_config["autoround_config"]
+    assert autoround_config["iters"] == 0
+    assert "autoround_version" in autoround_config
+    assert "data_type" in autoround_config
 
 
 def test_nvfp4_e5m3_gs_model_free_fake_quantization():

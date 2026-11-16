@@ -419,10 +419,25 @@ def monkey_patch_transformers():
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
     _patch_nvfp4_e5m3_compressed_tensors_quantizer()
+    _patch_qwen4_exp_qsa_indexer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_qwen4_exp_qsa_indexer():
+    """Vectorize the Qwen4-Exp / Qwen3.8-Flash-Next QSA indexer.
+
+    The upstream indexer walks every (batch, query) pair in Python and issues a
+    handful of tiny kernels per token, so the full-attention blocks of
+    Qwen3.8-Flash-Next take minutes each during tuning. See
+    ``auto_round/modeling/qwen4_exp_qsa.py`` and intel/auto-round#2323.
+    """
+    from auto_round.modeling.qwen4_exp_qsa import patch_qwen4_exp_indexer
+
+    if patch_qwen4_exp_indexer():
+        logger.debug("Applied vectorized QSA indexer patch for Qwen4-Exp.")
 
 
 def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
@@ -450,7 +465,9 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
         from auto_round.inference.convert_model import convert_hf_model
 
         model.config.quantization_config = self.compressor.quantization_config
-        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        from auto_round.utils.device_manager import get_major_device
+
+        target_device = get_major_device()
         model, _ = convert_hf_model(model, target_device=target_device)
         self.run_compressed = True
         return model
@@ -1527,6 +1544,21 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
         if original_part.startswith("model.visual.") and reverted_part == original_part[len("model.") :]:
             preserved_parts.append(original_part)
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.language_model.") and reverted_part.startswith(
+            "thinker.model.layers"
+        ):
+            # Qwen-Omni checkpoints use ``thinker.model.layers`` while newer
+            # Transformers exposes them as ``thinker.model.language_model.layers``.
+            # Keep both so runtimes can match either layout.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.") and reverted_part == original_part.replace(
+            "thinker.model.", "thinker.", 1
+        ):
+            # Vision/audio towers move between ``thinker.<tower>`` and
+            # ``thinker.model.<tower>`` across Transformers releases.
             preserved_parts.append(original_part)
             preserved_parts.append(reverted_part)
         else:

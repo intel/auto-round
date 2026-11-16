@@ -371,6 +371,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             limit=args.limit,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             mllm=getattr(autoround, "mllm", False),
+            trust_remote_code=not getattr(args, "disable_trust_remote_code", True),
             add_bos_token=args.add_bos_token,
             num_fewshot=getattr(args, "num_fewshot", None),
             gen_kwargs=getattr(args, "eval_gen_kwargs", None),
@@ -480,7 +481,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         vllm_args.mllm = getattr(args, "mllm", None)
         vllm_args.limit = getattr(args, "limit", None)
         vllm_args.eval_model_dtype = getattr(args, "eval_model_dtype", None)
-        vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", False)
+        vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", True)
         vllm_args.add_bos_token = getattr(args, "add_bos_token", False)
         vllm_args.seed = getattr(args, "seed", 42)
         vllm_args.num_fewshot = getattr(args, "num_fewshot", None)

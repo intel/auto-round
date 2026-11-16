@@ -229,7 +229,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
-- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`);
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--scheme "..." --bits 3.5`);
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
 - Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
@@ -255,6 +255,20 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference. The **MLX form
 ### Environment Configuration
 
 Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
+
+### Loading Models with Custom Code (`trust_remote_code`)
+
+For security, AutoRound does **not** execute custom Python code shipped inside a model repository by default (`trust_remote_code=False`, consistent with Hugging Face Transformers). Models that rely on custom modeling/tokenizer code (i.e. `auto_map` entries in `config.json`, `tokenizer_config.json`, etc.) must be explicitly opted in:
+
+```bash
+auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
+```
+
+```python
+ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
+```
+
+> **Warning:** Enabling `trust_remote_code` runs arbitrary code from the model repository in your process. Only enable it for models from sources you trust and whose code you have reviewed. The legacy `--disable_trust_remote_code` flag is deprecated and has no effect. GGUF export uses llama.cpp converters, which may load tokenizer code from the model repository regardless of this setting; only export trusted models to GGUF.
 
 ### Command Line Usage
 
@@ -317,6 +331,8 @@ output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
 ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
+
+Quantization scheme fields such as `bits`, `group_size`, `sym`, and `act_bits` belong to `AutoRound`, not algorithm configs. Use `AutoRound(model, group_size=16, sym=True, alg_configs=SignRoundConfig(iters=200))`; `SignRoundConfig(group_size=16)` and `SignRoundConfig(scheme="W4A16")` raise an error. All stages use the shared run scheme.
 
 #### Mixed Bits Usage
 AutoRound(>0.8) offers auto-scheme to generate mixed bits recipe autocially, please refer to [AutoScheme](#autoscheme) section for more details.

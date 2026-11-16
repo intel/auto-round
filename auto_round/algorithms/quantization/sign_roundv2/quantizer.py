@@ -24,6 +24,7 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.transforms.teq.protocol import apply_teq_equivalent_input_transform
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
@@ -159,6 +160,8 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         # wrap phase -- N x weight bytes -- while the batched call needs it
         # only transiently per chunk (bounded by the batch cap)
         imatrix_raw = getattr(layer, "imatrix", None)
+        # The imatrix hook records the activation after the complete input
+        # equivalence transform, so no channel-wise correction belongs here.
         imatrix = None if defer_search else reshape_imatrix_for_weight(imatrix_raw, weight_reshape, layer.group_size)
 
         self.weight_quant_func = get_optimized_quant_func(data_type)
@@ -249,6 +252,8 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
         if isinstance(layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
 
         clip_min = getattr(layer, "awq_clip_min", None)
@@ -433,7 +438,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             return super()._qdq_weight(value, min_scale, max_scale)
 
         if self.orig_layer.bits >= 16:
-            return self.orig_layer.weight, None, None
+            return super()._qdq_weight(value, min_scale, max_scale)
         min_bound, max_bound = self.minmax_scale_bound
         min_scale.data.clamp_(min_bound, max_bound)
         max_scale.data.clamp_(min_bound, max_bound)
@@ -442,6 +447,8 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
 
         iter_v = getattr(self, "cur_iter", 0)
         need_search = (iter_v == 0) or (iter_v == -1) or (self.prev_scale is None)
@@ -610,6 +617,9 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
             input = self.parallel.replicated(input)
+            # Match the final optimized QDQ activation basis without changing
+            # the FP block reference: rotate after x / alpha, never before it.
+            input = apply_teq_equivalent_input_transform(module, input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 

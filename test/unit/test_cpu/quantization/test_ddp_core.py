@@ -2161,11 +2161,14 @@ class TestHomeQuantizeMirrorParity:
     def _quantizer(self, cls, config, model):
         from types import SimpleNamespace
 
+        from auto_round.schemes import QuantizationScheme
+
         q_cls = type(
             f"_ParityQ_{cls.__name__}",
             (cls,),
             {
                 "config": config,
+                "scheme": QuantizationScheme(bits=4, group_size=32, sym=True, data_type="int"),
                 "model": model,
                 "model_context": SimpleNamespace(amp_dtype=torch.float32, is_moe_model=False),
                 "compress_context": SimpleNamespace(enable_torch_compile=False),
@@ -2214,12 +2217,12 @@ class TestHomeQuantizeMirrorParity:
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
         from auto_round.algorithms.quantization.rtn.quantizer import OptimizedRTNQuantizer
 
-        cfg = OptimizedRTNConfig(bits=4, group_size=32, sym=True, disable_opt_rtn=False, enable_neuqi=False)
+        cfg = OptimizedRTNConfig(disable_opt_rtn=False, enable_neuqi=False)
         self._run_parity(OptimizedRTNQuantizer, cfg)
 
     def test_plain_rtn_home_and_mirrors_match_serial(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
         from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 
-        cfg = RTNConfig(bits=4, group_size=32, sym=True, disable_opt_rtn=True)
+        cfg = RTNConfig(disable_opt_rtn=True)
         self._run_parity(RTNQuantizer, cfg)

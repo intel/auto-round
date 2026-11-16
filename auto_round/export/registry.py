@@ -45,6 +45,7 @@ def load_builtin_formats():
         "mlx.format",
         "compressed_tensors.format",
         "autoround.format",
+        "autoround.rrq",
         "fp8",
         "fake",
         "gguf.format",

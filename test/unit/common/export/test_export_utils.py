@@ -526,12 +526,11 @@ class TestGetAutogptqPackingQlinear:
 class TestFilterQuantizationConfig:
     """Test filter_quantization_config function."""
 
-    def test_basic_filtering(self):
-        cfg = {"amp": True, "batch_size": 8, "data_type": int, "custom_key": "value"}
-        result = filter_quantization_config(cfg)
-        # Defaults should be removed
-        assert "amp" not in result
-        assert "custom_key" in result
+    def test_default_hyperparams_kept(self):
+        cfg = {"amp": True, "batch_size": 8, "iters": 200, "nsamples": 128, "seqlen": 2048, "lr": 0.005}
+        result = filter_quantization_config(dict(cfg))
+        # Default-valued tuning hyper-parameters must still be recorded (issue #2154)
+        assert result == cfg
 
     def test_none_values_removed(self):
         cfg = {"amp": None, "custom": "value"}
@@ -585,11 +584,10 @@ class TestFilterQuantizationConfig:
         assert "supported_types" not in result
 
     def test_iters_based_lr(self):
-        cfg = {"iters": 100, "custom": "value"}
+        cfg = {"iters": 100, "lr": 0.01, "custom": "value"}
         result = filter_quantization_config(cfg)
-        # Iters with lr may or may not be in result based on defaults
-        # The function modifies in place so check
-        assert "custom" in result
+        assert result["iters"] == 100
+        assert result["lr"] == 0.01
 
 
 # ==============================================================================

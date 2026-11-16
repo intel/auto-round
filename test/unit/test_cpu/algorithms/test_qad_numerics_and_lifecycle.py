@@ -365,9 +365,10 @@ def test_signround_then_qad_uses_independent_sample_counts(
         model,
         tokenizer=tokenizer,
         scheme="W4A16",
+        group_size=8,
         alg_configs=[
-            SignRoundConfig(iters=2, group_size=8),
-            QADConfig(qad_nsamples=qad_nsamples, qad_workspace=str(tmp_path), group_size=8),
+            SignRoundConfig(iters=2),
+            QADConfig(qad_nsamples=qad_nsamples, qad_workspace=str(tmp_path)),
         ],
         dataset=dataset,
         nsamples=128,
@@ -401,18 +402,18 @@ def test_whole_model_and_rtn_qad_without_downloads(
 
     model, tokenizer = tiny_qad_model_and_tokenizer
     original = model.model.layers[0].self_attn.q_proj.weight.detach().clone()
-    kwargs = dict(iters=2, bits=4, group_size=8, nsamples=2, gradient_checkpointing=False, qad_lora_rank=lora_rank)
+    kwargs = dict(iters=2, nsamples=2, gradient_checkpointing=False, qad_lora_rank=lora_rank)
     configs = [QATConfig(**kwargs)] if algorithm == "qat" else [QADConfig(qad_workspace=str(tmp_path), **kwargs)]
     if algorithm == "rtn_qad":
-        configs.insert(0, RTNConfig(bits=4, group_size=8, act_bits=8, act_data_type="int", act_dynamic=True))
-        configs[-1].act_bits = 8
-        configs[-1].act_data_type = "int"
-        configs[-1].act_dynamic = True
+        configs.insert(0, RTNConfig())
     tokens = torch.randint(3, 32, (2, 4))
     compressor = AutoRound(
         model,
         tokenizer=tokenizer,
         alg_configs=configs,
+        bits=4,
+        group_size=8,
+        **({"act_bits": 8, "act_data_type": "int", "act_dynamic": True} if algorithm == "rtn_qad" else {}),
         dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
         nsamples=2,
         seqlen=4,
