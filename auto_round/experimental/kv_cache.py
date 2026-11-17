@@ -393,6 +393,12 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
         return
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]
+    if module.layer_idx in kv_cache.shared_scale_layers:
+        shared_scale = torch.maximum(k_scale, v_scale)
+        kv_cache.k_scales[module.layer_idx] = shared_scale
+        kv_cache.v_scales[module.layer_idx] = shared_scale
+        k_scale = shared_scale
+        v_scale = shared_scale
     update_parameter_data(module, k_scale, KVCacheScaleType.KEY.value)
     update_parameter_data(module, v_scale, KVCacheScaleType.VALUE.value)
 
