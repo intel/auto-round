@@ -534,6 +534,28 @@ class TestBuildIgnorePatterns:
             assert layer_name in quantized and layer_name not in ignored
             assert layer_name + ".qweight" in output
 
+    @pytest.mark.parametrize("scheme", ["W4A16", "MXFP4", "NVFP4_E5M3"])
+    @pytest.mark.parametrize("override", ["quant_lm_head", "layer_config"])
+    def test_quantized_proj_out_in_extra_config(self, scheme, override):
+        core = self._make_core(scheme=scheme, quant_lm_head=override == "quant_lm_head")
+        if override == "layer_config":
+            core.layer_config["proj_out"] = dict(core.default_scheme)
+        core._build_ignore_patterns()
+        assert not _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme).should_ignore(
+            "proj_out.weight"
+        )
+        qconfig = _build_quantization_config(
+            core.default_scheme,
+            core.layer_config,
+            core.ignore_patterns,
+            quantized_layers=["blocks.0.fc1", "proj_out"],
+            ignored_layers=[],
+            block_name_to_quantize="blocks",
+        )
+        assert qconfig["extra_config"]["proj_out"] == {
+            key: value for key, value in core.default_scheme.items() if value is not None and not key.startswith("_")
+        }
+
 
 # ===========================================================================
 #  _process_shard
