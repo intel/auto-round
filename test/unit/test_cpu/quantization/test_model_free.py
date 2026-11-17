@@ -502,7 +502,9 @@ class TestBuildIgnorePatterns:
         core._build_ignore_patterns()
         assert "output" not in core.ignore_patterns
 
-    @pytest.mark.parametrize("layer_name", ["proj_out", "single_transformer_blocks.0.proj_out", "blocks.0.attn.proj_out"])
+    @pytest.mark.parametrize(
+        "layer_name", ["proj_out", "single_transformer_blocks.0.proj_out", "blocks.0.attn.proj_out"]
+    )
     @pytest.mark.parametrize("override", [None, "quant_lm_head", "layer_config"])
     def test_proj_out(self, tmp_path, layer_name, override):
         # Only the component output is excluded; Flux block projections remain quantized.
@@ -519,7 +521,10 @@ class TestBuildIgnorePatterns:
         shard_path = str(tmp_path / "shard.safetensors")
         save_file({layer_name + ".weight": weight}, shard_path)
         output, quantized, ignored = _process_shard(
-            shard_path, core.default_scheme, core.layer_config, core.ignore_patterns,
+            shard_path,
+            core.default_scheme,
+            core.layer_config,
+            core.ignore_patterns,
             enable_torch_compile=False,
         )
         if excluded:
