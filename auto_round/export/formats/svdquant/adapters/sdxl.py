@@ -25,7 +25,7 @@ from typing import Any
 
 import torch
 
-from auto_round.export.formats.svdquant.nunchaku import SourceLinearRecord, SVDQuantExportRecord
+from auto_round.export.formats.svdquant.common import SourceLinearRecord, SVDQuantExportRecord
 
 _BLOCK_RE = re.compile(r"^(.*\.transformer_blocks\.\d+)\.(.+)$")
 _QKV_SOURCES = ("attn1.to_q", "attn1.to_k", "attn1.to_v")
