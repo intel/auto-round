@@ -502,6 +502,33 @@ class TestBuildIgnorePatterns:
         core._build_ignore_patterns()
         assert "output" not in core.ignore_patterns
 
+    @pytest.mark.parametrize("layer_name", ["proj_out", "single_transformer_blocks.0.proj_out", "blocks.0.attn.proj_out"])
+    @pytest.mark.parametrize("override", [None, "quant_lm_head", "layer_config"])
+    def test_proj_out(self, tmp_path, layer_name, override):
+        # Only the component output is excluded; Flux block projections remain quantized.
+        core = self._make_core(
+            quant_lm_head=override == "quant_lm_head",
+            layer_config={layer_name: {"bits": 4}} if override == "layer_config" else None,
+        )
+        core._build_ignore_patterns()
+        matcher = _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme)
+        excluded = layer_name == "proj_out" and override is None
+        assert matcher.should_ignore(layer_name + ".weight") == excluded
+        assert not matcher.should_skip(layer_name + ".weight")
+        weight = torch.randn(32, 128)
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({layer_name + ".weight": weight}, shard_path)
+        output, quantized, ignored = _process_shard(
+            shard_path, core.default_scheme, core.layer_config, core.ignore_patterns,
+            enable_torch_compile=False,
+        )
+        if excluded:
+            assert layer_name in ignored and layer_name not in quantized
+            assert torch.equal(output[layer_name + ".weight"], weight)
+        else:
+            assert layer_name in quantized and layer_name not in ignored
+            assert layer_name + ".qweight" in output
+
 
 # ===========================================================================
 #  _process_shard
