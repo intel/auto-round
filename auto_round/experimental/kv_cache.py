@@ -283,6 +283,10 @@ def active_kv_qdq_context():
         yield
 
 
+def is_mla(module: torch.nn.Module) -> bool:
+    return all(hasattr(module, name) for name in ("kv_lora_rank", "qk_rope_head_dim"))
+
+
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
     """
     Initialize a quantized kv_cache on a module (analogous to initializing an observer)
@@ -310,7 +314,7 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
 
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
     module.kv_cache = quantized_kv_cache
-    if not quantized_kv_cache.is_nvfp4 and all(hasattr(module, name) for name in ("kv_lora_rank", "qk_rope_head_dim")):
+    if not quantized_kv_cache.is_nvfp4 and is_mla(module):
         quantized_kv_cache.shared_scale_layers.add(module.layer_idx)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     if quantized_kv_cache.is_nvfp4:
