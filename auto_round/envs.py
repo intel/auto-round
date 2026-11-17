@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     AR_DISABLE_DEFAULT_SHARED_LAYERS: bool = False
     AR_CALIB_DATA_MULTIPLIER: int = 100
     AR_DISABLE_BATCHED_SEARCH: bool = False
+    AR_SEARCH_SCALE_TOP_K: int = 1
     AR_PERF_COUNTERS: bool = False
     AR_SEARCH_BATCH_GB: float | None = None
     AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
@@ -187,6 +188,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
     "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
     in ("1", "true", "yes"),
+    # Number of lowest-loss scale candidates sampled by symmetric INT opt-RTN.
+    "AR_SEARCH_SCALE_TOP_K": lambda: _get_optional_positive_int_env("AR_SEARCH_SCALE_TOP_K") or 1,
     # Emit [perf] phase-breakdown log lines (per-block load/tune/pack/write/clean/offload
     # in the data-driven loop; the sharded collection breakdown for --data_parallel).
     "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),

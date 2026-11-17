@@ -19,8 +19,12 @@ from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.utils import get_reciprocal
 
+_OPT_RTN_CANDIDATE_SEED = 42
 
-def search_scales(data: torch.Tensor, bits: int, qw: None | torch.Tensor | float = None) -> torch.Tensor:
+
+def search_scales(
+    data: torch.Tensor, bits: int, qw: None | torch.Tensor | float = None, candidate_count: int = 1
+) -> torch.Tensor:
     # Maximum absolute value for symmetric quantization
     nmax = int(2.0 ** (bits - 1))
 
@@ -45,6 +49,13 @@ def search_scales(data: torch.Tensor, bits: int, qw: None | torch.Tensor | float
     if isinstance(qw, torch.Tensor):
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
+    if candidate_count > 1:
+        candidate_losses = torch.full(
+            (candidate_count, *best_loss.shape), float("inf"), device=best_loss.device, dtype=best_loss.dtype
+        )
+        candidate_scales = torch.empty((candidate_count, *scales.shape), device=scales.device, dtype=scales.dtype)
+        candidate_losses[0] = best_loss
+        candidate_scales[0] = scales
     if bits == 2:
         search_min = 18 * 5
         step = 0.01
@@ -76,11 +87,31 @@ def search_scales(data: torch.Tensor, bits: int, qw: None | torch.Tensor | float
             loss.mul_(qw)
         loss = torch.sum(loss, dim=-1)
 
-        # Replace scales where loss improves (in-place)
-        replace_id = loss < best_loss
-        if replace_id.any():
-            scales[replace_id] = tmp_scales[replace_id]
-            best_loss[replace_id] = loss[replace_id]
+        if candidate_count > 1:
+            insert_at = (loss.unsqueeze(0) >= candidate_losses).sum(dim=0).clamp(max=candidate_count)
+            for rank in range(candidate_count - 1, 0, -1):
+                shift = insert_at < rank
+                candidate_losses[rank] = torch.where(shift, candidate_losses[rank - 1], candidate_losses[rank])
+                candidate_scales[rank] = torch.where(
+                    shift.unsqueeze(-1), candidate_scales[rank - 1], candidate_scales[rank]
+                )
+            for rank in range(candidate_count):
+                insert = insert_at == rank
+                candidate_losses[rank] = torch.where(insert, loss, candidate_losses[rank])
+                candidate_scales[rank] = torch.where(insert.unsqueeze(-1), tmp_scales, candidate_scales[rank])
+        else:
+            # Replace scales where loss improves (in-place)
+            replace_id = loss < best_loss
+            if replace_id.any():
+                scales[replace_id] = tmp_scales[replace_id]
+                best_loss[replace_id] = loss[replace_id]
+
+    if candidate_count > 1:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(_OPT_RTN_CANDIDATE_SEED)
+        selected = torch.randint(candidate_count, best_loss.shape, generator=generator, device="cpu")
+        selected = selected.to(device=best_loss.device).unsqueeze(0).unsqueeze(-1)
+        return torch.gather(candidate_scales, dim=0, index=selected).squeeze(0)
 
     return scales
 
@@ -113,7 +144,7 @@ def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=
 
         imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
 
-    scale = search_scales(tensor, bits, qw=imatrix)
+    scale = search_scales(tensor, bits, qw=imatrix, candidate_count=3)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
     int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
