@@ -1605,15 +1605,19 @@ def expand_layer_config_for_weight_renames(
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
     if to_model_names:
-        # get_reverse_checkpoint_conversion_mapping is intended.
-        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
-        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
-        key_mapping = {}
-        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
-            if isinstance(target_patterns, str):
-                target_patterns = [target_patterns]
-            for target_pattern in target_patterns:
-                key_mapping.setdefault(target_pattern, []).append(source_pattern)
+        # A regex replacement is not a regex: swapping a reverse rule's sides
+        # turns backreferences into invalid patterns (DeepSeek V4 uses \1/\2).
+        # Prefer the original forward rules, which preserve the capture groups.
+        key_mapping = get_checkpoint_conversion_mapping(model)
+        if not key_mapping:
+            # Retain the legacy fallback for models exposing only reverse rules.
+            reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+            key_mapping = {}
+            for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+                if isinstance(target_patterns, str):
+                    target_patterns = [target_patterns]
+                for target_pattern in target_patterns:
+                    key_mapping.setdefault(target_pattern, []).append(source_pattern)
         convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
     else:
         key_mapping = get_reverse_checkpoint_conversion_mapping(model)

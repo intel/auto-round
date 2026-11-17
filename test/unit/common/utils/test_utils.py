@@ -167,6 +167,25 @@ def test_expand_layer_config_for_weight_renames_to_model_names(monkeypatch):
     assert expanded[model_name]["bits"] == 4
 
 
+def test_expand_layer_config_for_deepseek_v4_actual_forward_mapping():
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+
+    if not tf_mapping("deepseek_v4"):
+        pytest.skip("installed transformers has no DeepSeek V4 mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
+    config = {
+        "mlp.experts": {"scheme": "NVFP4"},
+        "layers.3.attn.wq_a.weight": {"bits": 8},
+        "layers.3.attn.compressor.wkv.weight": {"bits": 16},
+    }
+    expanded = expand_layer_config_for_weight_renames(config, model=model, to_model_names=True)
+    assert expanded["mlp.experts"] == {"scheme": "NVFP4"}
+    assert expanded["layers.3.self_attn.q_a_proj.weight"] == {"bits": 8}
+    assert expanded["layers.3.self_attn.compressor.kv_proj.weight"] == {"bits": 16}
+    assert all(expanded[k] == v for k, v in config.items())
+
+
 def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):
     model_name = "model.layers.0.attn_hc.base"
     checkpoint_name = "model.layers.0.hc_attn_base"
