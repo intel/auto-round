@@ -36,10 +36,18 @@ def _parse_optional_int_env(name: str) -> int | None:
     return None if parsed == 0 else parsed
 
 
-def ensure_ark_sparse_binding() -> None:
+def ensure_ark_sparse_binding(
+    *, required_symbols: tuple[str, ...] = ("sage_sparse", "sage_dynamic_quant_layout")
+) -> None:
     ensure_xpu_lib(
-        required_symbols=("sage_sparse", "sage_dynamic_quant_layout"),
-        search_roots=(KERNEL_DIR, KERNEL_DIR / "xbuild", KERNEL_DIR / "xbuild_diffuser"),
+        required_symbols=required_symbols,
+        search_roots=(
+            KERNEL_DIR,
+            KERNEL_DIR / "xbuild_diffuser",
+            KERNEL_DIR / "xbuild",
+            KERNEL_DIR / "xbuild_bf16_v2",
+            KERNEL_DIR / "ark-xbuild",
+        ),
     )
 
 

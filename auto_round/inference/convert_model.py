@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import itertools
 import os
 import re
 from types import SimpleNamespace
-from typing import Union
 
 import torch
 import torch.nn as nn
@@ -44,7 +44,6 @@ from auto_round.utils import (
     get_block_names,
     get_checkpoint_conversion_mapping,
     get_module,
-    is_hpex_available,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
@@ -70,7 +69,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
-            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
+            if any(re.search(re.compile(n), layer_name) for n in modules_to_not_convert):
                 layer_configs[layer_name] = {"bits": 16, "act_bits": 16}
     return layer_configs
 
@@ -101,9 +100,9 @@ def get_keys_to_not_convert(model):
     tied_params = find_tied_parameters(tied_model)
     # For compatibility with Accelerate < 0.18
     if isinstance(tied_params, dict):
-        tied_keys = sum(list(tied_params.values()), []) + list(tied_params.keys())
+        tied_keys = list(itertools.chain.from_iterable(tied_params.values())) + list(tied_params.keys())
     else:
-        tied_keys = sum(tied_params, [])
+        tied_keys = list(itertools.chain.from_iterable(tied_params))
     has_tied_params = len(tied_keys) > 0
 
     # If there is not tied weights, we want to keep the lm_head（output_embedding) in full precision
@@ -164,26 +163,15 @@ def get_available_devices():
     """
     Returns a list of available devices in the current environment.
 
+    Any backend PyTorch exposes (cuda/xpu/hpu/mps/npu/...) is discovered by the
+    device manager, so no per-device probing is needed here.
+
     Returns:
         List[str]: A list of device identifiers like "cuda", "hpu", "xpu", "cpu".
     """
-    devices = []
+    from auto_round.utils.device_manager import get_available_device_types
 
-    if torch.cuda.is_available():
-        devices.append("cuda")
-
-    if is_hpex_available():
-        devices.append("hpu")
-
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        devices.append("xpu")
-
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        devices.append("mps")
-
-    devices.append("cpu")  # Always available
-
-    return devices
+    return [*get_available_device_types(), "cpu"]  # CPU is always available
 
 
 def _remap_paths_for_text_model(model, quant_block_list, extra_config):
@@ -369,12 +357,12 @@ def get_layer_config(model, quantization_config):
             quantization_config.modules_in_block_to_quantize
         )  # Flatten the list
         for layer_name in layer_names:
-            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
+            if not any(re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Expand GPTQ 'dynamic' config (regex-based)
     dynamic_config = getattr(quantization_config, "dynamic", None)
-    from auto_round.export.export_to_autogptq.export import convert_from_autogptq_dynamic
+    from auto_round.export.formats.gptq.config import convert_from_autogptq_dynamic
 
     if dynamic_config and isinstance(dynamic_config, dict):
         extra_config = _expand_regex_config(
@@ -408,7 +396,7 @@ def get_layer_config(model, quantization_config):
     return layer_configs
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
+def get_device(obj: torch.Tensor | nn.Module) -> torch.device:
     if isinstance(obj, torch.Tensor):
         return obj.device
     return next(obj.parameters()).device
@@ -586,6 +574,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXINT4.value in layer_backend
         or layer_backend == "auto_round:torch_nvfp4_e5m3"
         or layer_backend == "auto_round:cute_nvfp4_e5m3"
+        or layer_backend == "auto_round:torch_nvfp4_e5m3_gs"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3_gs"
         or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
@@ -601,7 +591,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
     )
 
 
-def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
+def infer_target_device(device_map: dict | int | str | None = None) -> str:
     """Infers the target device from a device_map.
 
     Args:
@@ -870,21 +860,26 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         if isinstance(quantization_config, dict)
         else getattr(quantization_config, "format", None)
     )
-    if config_format == "nvfp4-e5m3-pack-quantized":
+    if config_format in ("nvfp4-e5m3-pack-quantized", "nvfp4-e5m3-gs-pack-quantized"):
+        with_global_scale = config_format == "nvfp4-e5m3-gs-pack-quantized"
         config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
         ignored = config_dict.get("ignore") or []
         # TODO: For experimental purpose, will delete when it's not necessary.
         quantization_config = SimpleNamespace(
             quant_method="auto-round",
-            packing_format="auto_round:llm_compressor_nvfp4_e5m3",
+            packing_format=(
+                "auto_round:llm_compressor_nvfp4_e5m3_gs"
+                if with_global_scale
+                else "auto_round:llm_compressor_nvfp4_e5m3"
+            ),
             bits=4,
             group_size=16,
             sym=True,
-            data_type="nvfp4_v2",
+            data_type="nvfp4_v2_gs" if with_global_scale else "nvfp4_v2",
             act_bits=4,
             act_group_size=16,
             act_sym=True,
-            act_data_type="nvfp4_v2",
+            act_data_type="nvfp4_v2_with_static_gs" if with_global_scale else "nvfp4_v2",
             act_dynamic=True,
             extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
         )

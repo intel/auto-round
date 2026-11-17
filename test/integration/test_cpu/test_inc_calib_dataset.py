@@ -72,7 +72,8 @@ class TestLocalCalibDataset:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_json(self, tiny_opt_model_path):
+    @pytest.mark.parametrize("concat", ["", ":concat"])
+    def test_json(self, tiny_opt_model_path, concat):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -81,7 +82,7 @@ class TestLocalCalibDataset:
             sym=sym,
             iters=2,
             seqlen=5,
-            dataset=self.json_file,
+            dataset=self.json_file + concat,
         )
         autoround.quantize()
 
@@ -98,7 +99,6 @@ class TestLocalCalibDataset:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(60)
     def test_apply_chat_template(self, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -118,7 +118,6 @@ class TestLocalCalibDataset:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(180)
     def test_combine_dataset(self, tiny_qwen_model_path):
         dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp" + "," + "opencode-instruct"
         bits, group_size, sym = 4, 128, True
@@ -134,7 +133,6 @@ class TestLocalCalibDataset:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(60)
     def test_combine_dataset2(self, tiny_opt_model_path):
         dataset = "NeelNanda/pile-10k:num=256,mbpp:num=256"
         bits, group_size, sym = 4, 128, True

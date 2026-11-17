@@ -23,10 +23,12 @@ from auto_round.algorithms.registry import resolve_pipeline_member
 if TYPE_CHECKING:
     from auto_round.algorithms.block_runner import BlockForwardRunner
     from auto_round.algorithms.composer import AlgorithmComposer
+    from auto_round.algorithms.config import AlgorithmConfig
     from auto_round.calibration.state import CalibrationContext
     from auto_round.compressors import BaseOrchestrator
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
+    from auto_round.parallel.execution import ParallelCapabilities, ParallelExecution
     from auto_round.schemes import QuantizationScheme
 
 
@@ -57,6 +59,7 @@ class QuantizationRunContext:
     calibration_context: "CalibrationContext | None" = None
     scale_dtype: "torch.dtype | None" = None
     scheme: "QuantizationScheme | None" = None
+    parallel_execution: "ParallelExecution | None" = None
 
 
 class BaseAlgorithm:
@@ -72,7 +75,7 @@ class BaseAlgorithm:
         self.config = config
         # Name-mangled so subclasses cannot accidentally overwrite the run context.
         self.__run_ctx: QuantizationRunContext | None = None
-        self.__block_forward_runner: "BlockForwardRunner | None" = None
+        self.__block_forward_runner: BlockForwardRunner | None = None
 
     @classmethod
     def from_config(cls, config: Any) -> "BaseAlgorithm":
@@ -82,17 +85,71 @@ class BaseAlgorithm:
             return cls(config)
         return alg_cls(config)
 
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare supported parallel modes for this algorithm.
+
+        Subclasses should opt in only after their tensor math satisfies the TP contract.
+
+        Returns:
+            ParallelCapabilities: Default capabilities with TP disabled and pipeline placement enabled.
+        """
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities()
+
+    @classmethod
+    def validate_parallel_config(cls, config: "AlgorithmConfig", execution: "ParallelExecution") -> None:
+        """Provide an override point for early parallel-option validation.
+
+        Args:
+            config (AlgorithmConfig): Algorithm configuration to inspect.
+            execution (ParallelExecution): Parallel execution policy selected for the algorithm.
+        """
+        return
+
+    @classmethod
+    def validate_parallel_scheme(cls, scheme: "QuantizationScheme", execution: "ParallelExecution") -> None:
+        """Validate run-owned scheme constraints before parallel model loading."""
+        return
+
+    @classmethod
+    def create_parallel_execution(
+        cls, config: "AlgorithmConfig", default_execution: "ParallelExecution"
+    ) -> "ParallelExecution":
+        """Select this algorithm's TP/PP execution policy on the loaded topology.
+
+        Return a ParallelExecution subclass to customize block placement,
+        streaming or the exception-safe algorithm_stage() context. The default
+        shares the compressor's service; no algorithm-name dispatch is needed.
+
+        Args:
+            config (AlgorithmConfig): Algorithm configuration available to specialized policies.
+            default_execution (ParallelExecution): Compressor-owned service for the loaded topology.
+
+        Returns:
+            ParallelExecution: Default service unless a subclass supplies a specialized policy.
+        """
+        return default_execution
+
     def bind(self, orchestrator: "BaseOrchestrator") -> None:
         """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
         Called once before block iteration starts.  Fields not present on the
         compressor (e.g. ``calibration_context`` for preprocessors) default to ``None``.
         """
+        execution = getattr(orchestrator, "parallel_execution", None)
+        if execution is not None:
+            execution = execution.for_algorithm(type(self), self.config)
+            scheme = getattr(orchestrator, "scheme_context", None)
+            if scheme is not None:
+                type(self).validate_parallel_scheme(scheme, execution)
         self.__run_ctx = QuantizationRunContext(
             model_context=orchestrator.model_context,
             compress_context=orchestrator.compress_context,
             calibration_context=getattr(orchestrator, "calibration_context", None),
             scale_dtype=getattr(orchestrator, "scale_dtype", None),
             scheme=getattr(orchestrator, "scheme_context", None),
+            parallel_execution=execution,
         )
 
     def bind_block_forward_runner(self, block_forward_runner: "type[BlockForwardRunner]") -> None:
@@ -102,6 +159,15 @@ class BaseAlgorithm:
         self.__block_forward_runner = block_forward_runner
 
     # ── Read-only context accessors ───────────────────────────────────────────
+    @property
+    def parallel(self) -> "ParallelExecution":
+        """ParallelExecution: Bound execution services, or local defaults when unbound."""
+        from auto_round.parallel.execution import ParallelExecution
+
+        if self.__run_ctx is not None and self.__run_ctx.parallel_execution is not None:
+            return self.__run_ctx.parallel_execution
+        return ParallelExecution()
+
     @property
     def model_context(self) -> "ModelContext | None":
         return self.__run_ctx.model_context if self.__run_ctx is not None else None

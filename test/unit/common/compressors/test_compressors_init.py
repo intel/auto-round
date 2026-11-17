@@ -17,7 +17,7 @@ class TestCompressorsLazyImports:
 
     def test_auto_round_lazy_import(self):
         with pytest.raises(AttributeError, match="has no attribute"):
-            getattr(compressors, "AutoRound")
+            _ = compressors.AutoRound
 
     def test_base_compressor_lazy_import(self):
         BaseCompressor = compressors.BaseCompressor
@@ -41,7 +41,7 @@ class TestCompressorsLazyImports:
 
     def test_unknown_attribute_raises(self):
         with pytest.raises(AttributeError, match="has no attribute"):
-            getattr(compressors, "UnknownClass123")
+            _ = compressors.UnknownClass123
 
     def test_all_contains_expected(self):
         assert "BaseOrchestrator" in compressors.__all__

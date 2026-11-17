@@ -26,7 +26,7 @@ import pytest
 import torch
 from torch import nn
 
-from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.export.formats.awq.utils import WQLinear_GEMM
 from auto_round_extension.torch.qlinear_torch import QuantLinear as QuantLinearDirect
 from auto_round_extension.torch.qlinear_torch_zp import QuantLinear as QuantLinearMinusOne
 
@@ -194,7 +194,7 @@ def test_missing_tensors_gptq_pack_clamps_zero_zero_point():
     """quantize_weight_rtn packs zp with the same (zp-1) convention; an
     all-positive weight yields zp=0 everywhere, which must clamp instead of
     smearing -1 across the packed zero-point words."""
-    from auto_round.utils.missing_tensors import quantize_weight_rtn
+    from auto_round.utils.model_free_utils import quantize_weight_rtn
 
     torch.manual_seed(0)
     bits, group = 4, 32

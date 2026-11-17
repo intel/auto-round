@@ -36,6 +36,26 @@ _CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 
 
+from auto_round.schemes import QuantizationScheme
+
+
+def _make_awq_transform(config, *, scheme=None):
+    """Bind isolated AWQ tests to the run-owned quantization scheme."""
+    from types import SimpleNamespace
+
+    from auto_round.algorithms.transforms.awq.base import AWQTransform
+    from auto_round.algorithms.transforms.awq.qdq import QDQTool
+    from auto_round.schemes import QuantizationScheme
+
+    scheme = scheme or QuantizationScheme()
+    transform = config if isinstance(config, AWQTransform) else AWQTransform(config)
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
+    transform._qdq_tool = QDQTool(
+        bits=scheme.bits, group_size=scheme.group_size, sym=scheme.sym, data_type=scheme.data_type
+    )
+    return transform
+
+
 class TestAWQNormalLLM:
     """AWQ W4A16 quantization on a plain (non-MoE) tiny LLM."""
 
@@ -51,8 +71,7 @@ class TestAWQNormalLLM:
 
         assert cfg.awq_seqlen == 128
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ algorithm smoke; run in common/nightly coverage")
-    @pytest.mark.timeout(90)
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ algorithm smoke; run in common/nightly coverage")
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization produces valid layer_config and the model can generate.
 
@@ -81,7 +100,7 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Model should produce non-empty output"
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ export smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ export smoke; run in common/nightly coverage")
     def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path):
         """Default W4A16 scheme export: quantization_config has bits=4, group_size=128."""
         ar = AutoRound(
@@ -103,7 +122,7 @@ class TestAWQNormalLLM:
         assert qconfig["group_size"] == 128
         assert "auto-round" in qconfig["quant_method"]
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ export smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ export smoke; run in common/nightly coverage")
     def test_awq_w4a16_export_args_check(self, tiny_opt_model_path):
         """Saved quantization_config (bits/group_size/sym/quant_method) matches the input parameters.
 
@@ -132,7 +151,6 @@ class TestAWQNormalLLM:
         assert qconfig["sym"] == sym
         assert "auto-round" in qconfig["quant_method"]
 
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     def test_awq_w4a16_round_trip(self, tiny_opt_model_path, device):
         """Quantize, save, reload on `device`, and generate -- exercises the full save/load round trip.
@@ -164,8 +182,7 @@ class TestAWQNonIntegerSchemes:
     MXFP/NVFP scheme.
     """
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ datatype smoke; run in common/nightly coverage")
-    @pytest.mark.timeout(60)
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ datatype smoke; run in common/nightly coverage")
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
         """Algorithm/config correctness (bits/act_bits assignment) -- runs once on cpu.
@@ -204,7 +221,7 @@ class TestAWQW8A8LLMCompressor:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="LLM-Compressor export is covered by integration CI")
+    @pytest.mark.skip_ci(reason="Coverage: LLM-Compressor export is covered by integration CI")
     def test_awq_w8a8_llmc_export(self, tiny_opt_model_path):
         """W8A8 AWQ -> llm_compressor: verify compressed-tensors metadata and int8 saved weights.
 
@@ -256,7 +273,7 @@ class TestAWQMoE:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_dynamic_smoothing(self, micro_qwen_moe_model_path):
         """AWQ dynamic smoothing should resolve mappings on a MoE model without error.
 
         Pure mapping-resolution logic, no inference -- runs once on cpu.
@@ -265,7 +282,7 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             torch_dtype=torch.bfloat16,
             device_map=device,
             trust_remote_code=True,
@@ -407,7 +424,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=128, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -443,7 +462,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=128, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -509,7 +530,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=8, sym=True, data_type="int", duo_scaling=False))
+        transform = _make_awq_transform(
+            AWQConfig(duo_scaling=False), scheme=QuantizationScheme(bits=4, group_size=8, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -534,7 +557,7 @@ class TestAWQMoE:
         def fake_resolve_quant_funcs(params):
             return f"{params['data_type']}_{params['bits']}", None
 
-        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None):
+        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None, init_scale=None):
             records.append((params["data_type"], params["bits"], quant_func))
             return weight
 
@@ -574,8 +597,9 @@ class TestAWQMoE:
 
         torch.manual_seed(0)
         model = TinyModel()
-        transform = AWQTransform(
-            AWQConfig(bits=4, group_size=2, sym=True, data_type="int", apply_clip=True, clip_n_sample_token=32)
+        transform = _make_awq_transform(
+            AWQConfig(apply_clip=True, clip_n_sample_token=32),
+            scheme=QuantizationScheme(bits=4, group_size=2, sym=True, data_type="int"),
         )
         mapping = ResolvedMapping(
             smooth_name="block.up_proj",
@@ -631,7 +655,9 @@ class TestAWQMoE:
                 return self.block(items=items, payload=payload)
 
         model = TinyModel()
-        transform = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
         mapping = ResolvedMapping(
             smooth_name="block.smooth",
             smooth_layer=model.block.smooth,
@@ -689,8 +715,12 @@ class TestAWQMoE:
             ((hidden_states,), {"position_ids": position_ids, "cache_position": cache_position, "payload": payload})
         ]
 
-        full = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
-        micro = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int", smooth_batch_size=2))
+        full = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
+        micro = _make_awq_transform(
+            AWQConfig(smooth_batch_size=2), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
 
         full_outputs = full._run_parent_samples(parent, kwargs_list)
         parent.batch_sizes.clear()
@@ -740,8 +770,7 @@ class TestAWQMoE:
         assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
 
     @requires_cuda
-    @pytest.mark.timeout(420)
-    def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_quantized_layers_check(self, micro_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP.
 
         Algorithm/config correctness, but MoE quantization is slow enough (real tuning over
@@ -750,7 +779,7 @@ class TestAWQMoE:
         """
         device = "cuda"
         ar = AutoRound(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             scheme="W4A16",
             alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
@@ -784,8 +813,7 @@ class TestAWQMoE:
 
     # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
     @requires_cuda
-    @pytest.mark.timeout(400)
-    def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_save_quant_config(self, micro_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable.
 
         Same rationale as test_awq_moe_quantized_layers_check: config correctness, but MoE
@@ -793,7 +821,7 @@ class TestAWQMoE:
         """
         device = "cuda"
         ar = AutoRound(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             scheme="W4A16",
             alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
@@ -840,16 +868,13 @@ class TestAWQWeightClip:
 
         layer = nn.Linear(4, 2, bias=False)
         layer.weight.data = torch.tensor([[-8.0, -2.0, 1.0, 2.0], [-1.0, 3.0, 4.0, 5.0]])
-        transform = AWQTransform(
+        transform = _make_awq_transform(
             AWQConfig(
-                bits=4,
-                group_size=4,
-                sym=False,
-                data_type="int",
                 apply_clip=True,
                 clip_n_grid=2,
                 clip_n_sample_token=32,
-            )
+            ),
+            scheme=QuantizationScheme(bits=4, group_size=4, sym=False, data_type="int"),
         )
 
         input_feat = torch.randn(32, 4)
@@ -882,15 +907,16 @@ class TestAWQWeightClip:
         ar = AutoRound(
             tiny_opt_model_path,
             alg_configs=[
-                AWQConfig(
-                    bits=4, group_size=128, sym=True, apply_clip=True, n_grid=2, clip_n_grid=2, clip_n_sample_token=8
-                ),
+                AWQConfig(apply_clip=True, n_grid=2, clip_n_grid=2, clip_n_sample_token=8),
                 RTNConfig(disable_opt_rtn=True),
             ],
             nsamples=2,
             seqlen=8,
             batch_size=2,
             device_map=device,
+            bits=4,
+            group_size=128,
+            sym=True,
         )
         model, layer_config = ar.quantize()
 
@@ -903,7 +929,7 @@ class TestAWQWeightClip:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Clipped model should produce non-empty output"
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ clip/SignRound smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ clip/SignRound smoke; run in common/nightly coverage")
     def test_awq_clip_as_init_signround(self, tiny_opt_model_path):
         """clip_as_init: clip is kept on the model context and initializes SignRound's range.
 
@@ -917,9 +943,6 @@ class TestAWQWeightClip:
             tiny_opt_model_path,
             alg_configs=[
                 AWQConfig(
-                    bits=4,
-                    group_size=128,
-                    sym=True,
                     apply_clip=True,
                     clip_as_init=True,
                     n_grid=2,
@@ -933,6 +956,9 @@ class TestAWQWeightClip:
             batch_size=2,
             device_map=device,
             enable_torch_compile=False,  # disable torch.compile to keep this deterministic in CI.
+            bits=4,
+            group_size=128,
+            sym=True,
         )
         model, layer_config = ar.quantize()
 
@@ -971,7 +997,7 @@ class TestAWQUseV2ScaleSearch:
         from auto_round.algorithms.transforms.awq.base import AWQTransform
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
-        return AWQTransform(AWQConfig(n_grid=1, apply_smooth=True))
+        return _make_awq_transform(AWQConfig(n_grid=1, apply_smooth=True))
 
     def test_rtn_block_is_not_v2(self):
         """An RTN block quantizer must NOT be detected as V2."""
@@ -979,7 +1005,7 @@ class TestAWQUseV2ScaleSearch:
 
         q = self._awq_transform()
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
 
     def test_use_v2_false_for_non_v2_block(self):
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""
@@ -989,7 +1015,7 @@ class TestAWQUseV2ScaleSearch:
         block = SignRoundConfig(iters=1)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
 
     def test_init_scale_dispatch_by_data_type(self):
         """``search_optimized_init_scale`` injects only for sym int/mx/nv."""

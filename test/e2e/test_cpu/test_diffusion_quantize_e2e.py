@@ -36,7 +36,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     record,
 )
-from typing import Optional
 
 import pytest
 import torch

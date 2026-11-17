@@ -12,20 +12,47 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time as _ptime
+from typing import TYPE_CHECKING
+
 import torch
+import torch.nn as nn
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.logger import logger
+
+
+def _rtn_phase_line(norm: float, quant: float, n: int, mean: float, max_: float) -> str:
+    """Format the zero-shot RTN phase breakdown for AR_PERF_COUNTERS."""
+    return f"[perf] rtn phases: norm={norm:.2f}s quant={quant:.2f}s (n={n}, mean={mean:.3f}s, max={max_:.3f}s)"
+
+
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
 )
+from auto_round.utils.device_manager import device_manager
+from auto_round.utils.perf_counters import _PerfCounters
+
+if TYPE_CHECKING:
+    from auto_round.parallel.execution import ParallelCapabilities
 
 
-@register_pipeline_member(RTNConfig)
+@register_quantizer(RTNConfig)
 class RTNQuantizer(BaseQuantizer):
+
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare support for shard-local RTN quantization.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True)
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
@@ -68,8 +95,22 @@ class RTNQuantizer(BaseQuantizer):
         return {}
 
 
-@register_pipeline_member(OptimizedRTNConfig)
+@register_quantizer(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
+
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Retain RTN's parallel contract for statistics-assisted quantization.
+
+        Returns:
+            ParallelCapabilities: The parallel capabilities inherited from RTN.
+        """
+        return super().parallel_capabilities()
+
+    # imatrix_cnt (a python int row count) must co-travel with imatrix: a cold
+    # expert can collect zero routed rows on the home shard and receive only
+    # the merged tensor, and the normalize step (imatrix /= imatrix_cnt) needs both
+    calibration_stats = {"imatrix": "sum", "imatrix_cnt": "sum"}
 
     def __init__(self, config: RTNConfig) -> None:
         super().__init__(config)
@@ -86,6 +127,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            input = self.parallel.replicated(input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
@@ -132,9 +174,66 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
-        # Normalize imatrix and quantize layers
-        for name, m in block.named_modules():
+        # Normalize imatrix first (cheap, serial), then quantize layers. The
+        # optimized RTN scale search is weight-local (weight + imatrix), so on a
+        # block whose layers sit on several devices the searches run in
+        # parallel, one worker per device.
+        import auto_round.envs as _envs
+        from auto_round.algorithms.quantization import search_dispatch
+
+        _perf = _PerfCounters()
+        _perf.start("norm")
+        for _name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer_outside_block(m)
+        _perf.stop("norm")
+        _perf.start("quant")
+        work = [m for _name, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
+
+        def _quantize_counted(m):
+            _l0 = _ptime.perf_counter()
+            self.quantize_layer_outside_block(m)
+            _perf.observe("quant_mod", _ptime.perf_counter() - _l0)
+
+        def _quantize_staged(name, m):
+            _l0 = _ptime.perf_counter()
+            w = self._quantize_layer_via_rtn(m, defer_search=True)
+            _perf.observe("quant_mod", _ptime.perf_counter() - _l0)
+            return name, w
+
+        _batching_off = search_dispatch.batched_search_disabled()
+        if not _batching_off or not search_dispatch.cross_device_search_disabled():
+            from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+            staged = []
+            for m in work:
+                name, w = _quantize_staged(getattr(m, "global_name", None) or "", m)
+                if w is not None:  # None = OOM fallback already finished it serially
+                    staged.append((name, w))
+            if _batching_off:
+                # batching disabled but idle-device spreading on: execute the
+                # searches PER-MODULE on borrowed workers (max_batch=1 ->
+                # singleton chunks, zero stacking -- same search per module as
+                # the serial lane, placed on any viable device). The strict
+                # serial baseline for A/B is AR_DISABLE_CROSS_DEVICE_SEARCH=1.
+                run_batched_rtn_search(self.model, staged, max_batch=1)
+                search_dispatch.log_engaged_once("per-module rtn search (batching disabled, idle devices)")
+            else:
+                run_batched_rtn_search(self.model, staged)
+                search_dispatch.log_engaged_once("batched rtn search")
+        else:
+            for m in work:
+                _quantize_counted(m)
+        _perf.stop("quant")
+        if _perf.enabled:
+            _n = _perf.counts.get("quant_mod", 0)
+            logger.info(
+                "%s",
+                _rtn_phase_line(
+                    _perf.get("norm"),
+                    _perf.get("quant"),
+                    _n,
+                    _perf.get("quant") / max(_n, 1),
+                    _perf.maxima.get("quant_mod", 0.0),
+                ),
+            )

@@ -25,6 +25,10 @@
 #include "sycl_tla_common.hpp"
 #endif
 
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+#include "sycl_tla_dense_woq_s4_dpas_helpers.hpp"
+#endif
+
 #if ARK_XPU
 #include "sycl_s8_wrapper.hpp"
 #endif
@@ -62,6 +66,20 @@ class XpuWrapper {
     return p->blks() * p->n * bestla_dtype_bytes(p->scale_type);
   }
 
+  static inline bool use_dpas_scale_layout(QuantParam* p) {
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+    return p->weight_type == BTLA_DTYPE::S4 && p->scale_type == BTLA_DTYPE::F16 && !p->asym &&
+           dense_woq_s4_dpas::is_supported_group_size(p->blocksize) &&
+           p->blocksize <= dense_woq_s4_dpas::kPackedScaleMaxGroupSize;
+#else
+    return false;
+#endif
+  }
+
+  static inline size_t get_dpas_scale_size(QuantParam* p) {
+    return use_dpas_scale_layout(p) ? get_scale_size(p) : 0;
+  }
+
   static inline size_t get_zp_size(QuantParam* p) {
     using namespace bestla::utils;
     if (!p->asym) return 0;
@@ -78,13 +96,15 @@ class XpuWrapper {
     return nblk * p->n * bestla_dtype_bytes(p->scale_type);
   }
 
-  static inline size_t get_packw_size(QuantParam* p) {
+  static inline size_t get_packw_base_size(QuantParam* p) {
     size_t size = get_packw_qsize(p);
     size += get_scale_size(p);
     size += get_zp_size(p);
     size += get_scalext_size(p);
     return size;
   }
+
+  static inline size_t get_packw_size(QuantParam* p) { return get_packw_base_size(p) + get_dpas_scale_size(p); }
 
   static inline size_t get_scale_offset(QuantParam* p) {
     size_t size = get_packw_qsize(p);
@@ -101,6 +121,14 @@ class XpuWrapper {
     size_t size = get_zp_offset(p);
     size += get_zp_size(p);
     return size;
+  }
+
+  static inline size_t get_dpas_scale_offset(QuantParam* p) { return get_packw_base_size(p); }
+
+  static inline bool has_dpas_scale_layout(QuantParam* p, size_t blob_count) {
+    if (!use_dpas_scale_layout(p)) return false;
+    if (blob_count == 0) return false;
+    return blob_count >= get_dpas_scale_offset(p) + get_dpas_scale_size(p);
   }
 
   static bool can_comps8(QuantParam* p) {
@@ -237,6 +265,9 @@ class XpuWrapper {
                        });
     };
     q->submit(ker);
+    if (use_dpas_scale_layout(p)) {
+      q->memcpy(blobptr + get_dpas_scale_offset(p), scaleptr, get_dpas_scale_size(p));
+    }
     if (rescale(p)) {
 #ifdef ARK_RESCALE
       auto scalext_ptr = (int8_t*)blobptr + get_scalext_offset(p);
@@ -359,7 +390,7 @@ class XpuWrapper {
   static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p, sycl::queue* q,
                       size_t blob_count = 0) {
     if (blob_count > 0) {
-      auto expected = get_packw_size(p);
+      auto expected = get_packw_base_size(p);
       if (blob_count < expected) {
         throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
                                  ") less than expected (" + std::to_string(expected) + ")");
@@ -526,9 +557,91 @@ class XpuWrapper {
     }
   }
 
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+  static constexpr size_t kWoqS4DpasMaxM = 128;
+
+  static inline bool woq_s4_dpas_group_size_ok(int group_size) {
+    return dense_woq_s4_dpas::is_supported_group_size(group_size);
+  }
+
+  static inline int woq_s4_dpas_tile_n(size_t m, QuantParam* p) {
+    if (m <= 16) return 128;
+    if (m <= 32) return p->blocksize == p->k ? 256 : 128;
+    return 256;
+  }
+
+  static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
+    if (m <= 1 || m > kWoqS4DpasMaxM) return false;
+    if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+    if (p->blocksize <= 0 || p->n % woq_s4_dpas_tile_n(m, p) != 0 || (p->k & 1) != 0) return false;
+    if (p->k % p->blocksize != 0) return false;
+    return woq_s4_dpas_group_size_ok(p->blocksize);
+  }
+
+  static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
+                              void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
+    if (p->weight_type != BTLA_DTYPE::S4 || p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
+      return false;
+    }
+    if (!woq_s4_dpas_shape_ok(m, p)) {
+      return false;
+    }
+    const bool use_dpas_scales = has_dpas_scale_layout(p, blob_count);
+    const auto scale_offset = use_dpas_scales ? get_dpas_scale_offset(p) : get_scale_offset(p);
+    const auto* scales_ptr = reinterpret_cast<const int8_t*>(blobB) + scale_offset;
+
+#define ARK_WOQ_S4_DPAS_LAUNCH(route, policy_name)                                 \
+    do {                                                                           \
+      if (env_params::Instance()->verbose <= 1) {                                  \
+        std::fprintf(stdout,                                                       \
+                     "[ARK_WOQ_S4_DPAS] launch:%s m=%zu n=%d k=%d blocksize=%d scale_layout=%s\n", \
+                     policy_name, m, p->n, p->k, p->blocksize,                    \
+                     use_dpas_scales ? "group_n" : "n_group");                   \
+      }                                                                            \
+      if (use_dpas_scales) {                                                       \
+        ark::dense_woq_s4_dpas::detail::route##_group_n(                           \
+            q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
+            p->k, p->blocksize);                                                   \
+      } else {                                                                     \
+        ark::dense_woq_s4_dpas::detail::route##_n_group(                           \
+            q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
+            p->k, p->blocksize);                                                   \
+      }                                                                            \
+    } while (false);
+
+    if (m <= 4) {
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
+    }  else if (m <= 8) {
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
+    } else if (m <= 16) {
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m16, "dpas_w4a16_dense_policy_m_16")
+    } else if (m <= 32) {
+      if (p->blocksize == p->k) {
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m32_n256, "dpas_w4a16_dense_policy_m_32_n256")
+      } else {
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m32, "dpas_w4a16_dense_policy_m_32")
+      }
+    } else if (m <= 64) {
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m64_n256, "dpas_w4a16_dense_policy_m_64_n256")
+    } else if (m <= 128) {
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m128, "dpas_w4a16_dense_policy_m_128")
+    } else {
+      return false;
+    }
+#undef ARK_WOQ_S4_DPAS_LAUNCH
+    return true;
+  }
+#endif
+
   static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
-                      const void* bias, BTLA_DTYPE outt) {
-    if (m > 1) return -2;
+                      const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
+    if (m > 1) {
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+      return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
+#else
+      return -1;
+#endif
+    }
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blobB;
@@ -703,15 +816,15 @@ class XpuWrapper {
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
                        sycl::queue* q, size_t blob_count = 0) {
     if (blob_count > 0) {
-      auto expected = get_packw_size(p);
+      auto expected = get_packw_base_size(p);
       if (blob_count < expected) {
         throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
                                  ") less than expected (" + std::to_string(expected) + ")");
       }
     }
-    auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
+    auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {
-      
+
       check_compute_type(p);
       if (p->compute_type != BTLA_DTYPE::S8) {
         size_t elesize = bestla::utils::bestla_dtype_bytes(acdt);

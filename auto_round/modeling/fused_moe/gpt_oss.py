@@ -28,8 +28,32 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, grouped_or_sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
+
+
+class GPTOssExperts(torch.nn.ModuleList):
+    """Per-expert ``GPTOssSingleExpert`` container with the GPT-OSS gating exposed for the
+    grouped experts forward.
+
+    GPT-OSS does not use the generic ``act_fn(gate) * up`` gate, so it provides ``_apply_gate``
+    (the hook the grouped path prefers): the ``[gate; up]`` clamp, the ``glu = gate * sigmoid(
+    gate * alpha)`` GLU, and the ``(up + 1) * glu`` scaling -- byte-for-byte what
+    ``GPTOssSingleExpert.forward`` does, so the grouped result matches the per-expert loop.
+    """
+
+    def __init__(self, experts: list[nn.Module], num_experts: int, alpha: float, limit: float):
+        super().__init__(experts)
+        self.num_experts = num_experts
+        self.alpha = alpha
+        self.limit = limit
+
+    def _apply_gate(self, gate_up_out: torch.Tensor) -> torch.Tensor:
+        gate, up = gate_up_out.chunk(2, dim=-1)
+        gate = gate.clamp(max=self.limit)
+        up = up.clamp(min=-self.limit, max=self.limit)
+        glu = gate * torch.sigmoid(gate * self.alpha)
+        return (up + 1) * glu
 
 
 class GPTOssSingleExpert(nn.Module):
@@ -80,11 +104,11 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         self.num_experts = E
 
         # Build per-expert MLPs
-        self.experts = nn.ModuleList()
         target_device = next(original.experts.parameters()).device
         with no_init_weights(), torch.device("meta"):
-            for _ in range(E):
-                self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
+            expert_mlps = [GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype) for _ in range(E)]
+        # Expose num_experts + the GPT-OSS gating so the grouped experts forward can run.
+        self.experts = GPTOssExperts(expert_mlps, num_experts=E, alpha=expert_mlps[0].alpha, limit=expert_mlps[0].limit)
         register_moe_fusion_spec(
             self.experts,
             build_standard_moe_fusion_spec(
@@ -123,33 +147,16 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         else:
             router_scores, router_indices = router_out
 
-        final_hidden_states = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
-        num_all_tokens, total_num_experts = x.size(0), self.num_experts
-        mask_weights = torch.zeros((num_all_tokens, total_num_experts), dtype=x.dtype, device=x.device)
-        topk_ids = router_indices.to(torch.int64)
+        shared = self.shared_expert(x) if self.shared_expert is not None else torch.zeros_like(x)
 
-        mask_weights.scatter_(-1, topk_ids, 1)
-
-        # Build per-expert routing score matrix: shape (num_experts, num_tokens)
-        # experts_mask[e, t] = router score of expert e for token t (0 if not selected)
-        expert_score_matrix = torch.zeros_like(mask_weights)
-        expert_score_matrix.scatter_(-1, topk_ids, router_scores)
-        expert_score_matrix = expert_score_matrix.transpose(0, 1)  # (num_experts, num_tokens)
-
-        mask_weights = mask_weights[:num_all_tokens, :total_num_experts]
-        mask_weights = mask_weights.transpose(0, 1)
-
-        # Only process experts that actually received tokens (expert_hit pattern),
-        # skipping experts with zero routing weight to save compute during calibration.
-        with torch.no_grad():
-            expert_hit = torch.greater(mask_weights.sum(dim=-1), 0).nonzero()
-        for expert_idx in expert_hit:
-            expert_idx = expert_idx[0]
-            mask_weight = mask_weights[expert_idx].unsqueeze(1)
-            current_state_static = x * mask_weight
-            expert_output = self.experts[expert_idx](current_state_static)
-            expert_output = expert_output * expert_score_matrix[expert_idx].unsqueeze(1)
-            final_hidden_states += expert_output
+        # ``router_indices``/``router_scores`` are the gathered (token, top_k) ids and weights
+        # (the original built its per-expert score matrix by scattering exactly these). Feeding
+        # them to the grouped experts forward reproduces the old ``sum_e expert(x) * score[e]``
+        # dense-mask loop -- routed pairs only, weighted then reduced over top_k.
+        expert_output = grouped_or_sequential_moe_forward(
+            x, router_indices, router_scores, self.experts, self.num_experts
+        )
+        final_hidden_states = shared + expert_output
 
         return final_hidden_states.view(B, T, H), router_scores.view(B * T, -1)
 

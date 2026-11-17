@@ -39,13 +39,11 @@ class TestFp8SchemesGpu:
                 break
         assert found_fp8, "No fp8 weight found in the compressed model"
 
-    @pytest.mark.timeout(180)
     def test_fp8_block_export(self, tiny_qwen_model_path):
         autoround = AutoRound(tiny_qwen_model_path, scheme="FP8_BLOCK", iters=0, disable_opt_rtn=True, seqlen=2)
         compressed_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         self._assert_fp8_weight(compressed_model)
 
-    @pytest.mark.timeout(180)
     def test_fp8_static_export(self, tiny_qwen_model_path):
         autoround = AutoRound(tiny_qwen_model_path, scheme="FP8_STATIC", iters=0, disable_opt_rtn=True, seqlen=2)
         compressed_model, quantized_model_path = autoround.quantize_and_save(
@@ -55,7 +53,6 @@ class TestFp8SchemesGpu:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
         assert isinstance(model, torch.nn.Module)
 
-    @pytest.mark.timeout(180)
     def test_fp8_block_forward(self, tiny_qwen_model_path):
         """Reloaded FP8_BLOCK model must run a forward pass on GPU."""
         autoround = AutoRound(tiny_qwen_model_path, scheme="FP8_BLOCK", iters=0, disable_opt_rtn=True, seqlen=2)
@@ -74,7 +71,6 @@ class TestFp8SchemesGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_fp8_plain_export(self, tiny_qwen_model_path):
         """Weight-only FP8 (FPW8A16, per-channel scale) export."""
         autoround = AutoRound(

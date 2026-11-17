@@ -33,6 +33,7 @@ from transformers import AutoTokenizer, PretrainedConfig
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2MLP, Qwen2RMSNorm
 
 from auto_round.logger import logger
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 
 class BagelConfig(PretrainedConfig):
@@ -133,7 +134,7 @@ def _load_safetensors_weights(model_path):
         with open(index_path, "r", encoding="utf-8") as f:
             index = json.load(f)
 
-        weight_map = index.get("weight_map", {})
+        weight_map = validate_weight_map(index.get("weight_map", {}), model_path, index_path=index_path)
 
         # Determine which shard files contain non-VAE weights
         # VAE weights: decoder.*, encoder.* (in ae.safetensors)
@@ -150,7 +151,7 @@ def _load_safetensors_weights(model_path):
         for shard_file in lm_shard_files:
             if shard_file in loaded_files:
                 continue
-            sf_path = os.path.join(model_path, shard_file)
+            sf_path = str(resolve_within_directory(model_path, shard_file))
             if os.path.exists(sf_path):
                 weights = load_file(sf_path, device="cpu")
                 # Only keep non-VAE weights from this file
@@ -363,7 +364,7 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
     model.config._name_or_path = model_path
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
 
     logger.info(
         f"BAGEL model loaded: {sum(p.numel() for p in model.parameters()) / 1e9:.2f}B parameters, "

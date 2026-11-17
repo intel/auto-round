@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import inspect
 import math
-from typing import Any, Callable, Dict
+from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -34,14 +35,14 @@ from auto_round.algorithms.transforms.hadamard.utils.math import (
 from auto_round.algorithms.transforms.hadamard.utils.matrix import apply_transform_weight
 
 __all__ = [
+    "HADAMARDS",
     "HadamardTransform",
     "RandomHadamardTransform",
-    "HADAMARDS",
     "build_hadamard_transform",
 ]
 
 
-def _filter_kwargs(fn: Callable, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _filter_kwargs(fn: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Return only the keyword arguments accepted by *fn*."""
     accepted = inspect.signature(fn).parameters.keys()
     return {k: v for k, v in kwargs.items() if k in accepted}

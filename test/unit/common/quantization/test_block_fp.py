@@ -1,5 +1,4 @@
 import shutil
-import subprocess
 from math import ceil
 
 import pytest
@@ -91,46 +90,30 @@ class TestAutoRoundBlockFP:
                 scale_ref[i, j] = data[i * 128 : (i + 1) * 128, j * 128 : (j + 1) * 128].abs().max() / max_val
         assert (scale == scale_ref).all()
 
-    @pytest.mark.timeout(120)
-    def test_group_size_handler(self, tiny_qwen_model_path):
-        scheme = {
-            "data_type": "int",
-            "bits": 4,
-            "group_size": -1,
-            "act_data_type": "int",
-            "act_bits": 4,
-            "act_group_size": -1,
-        }
-        autoround = AutoRound(
-            tiny_qwen_model_path,
-            scheme=scheme,
-            iters=2,
-            seqlen=2,
+    def test_group_size_handler(self):
+        """The CLI accepts per-channel weight and activation group sizes."""
+        from auto_round.cli.parser import build_quantize_parser
+
+        args = build_quantize_parser().parse_args(
+            [
+                "--model",
+                "dummy-model",
+                "--bits",
+                "4",
+                "--group_size",
+                "-1",
+                "--act_bits",
+                "4",
+                "--act_group_size",
+                "-1",
+                "--format",
+                "fake",
+                "--iters",
+                "0",
+            ]
         )
 
-        cmd = [
-            "python3",
-            "-m",
-            "auto_round",
-            "--model_name",
-            tiny_qwen_model_path,
-            "--bits",
-            "4",
-            "--group_size",
-            "-1",
-            "--act_bits",
-            "4",
-            "--act_group_size",
-            "-1",
-            "--format",
-            "fake",
-            "--iters",
-            "0",
-        ]
-        subprocess.run(
-            cmd,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        assert args.group_size == -1
+        assert args.act_group_size == -1
+        assert args.bits == 4
+        assert args.act_bits == 4

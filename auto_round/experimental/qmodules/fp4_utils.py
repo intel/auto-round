@@ -27,7 +27,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 
@@ -45,9 +44,20 @@ def get_e2m1_tensor(device):
     return _DEVICE_E2M1_TENSORS[device_str]
 
 
-def unpack_fp4_from_uint8(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
-) -> torch.Tensor:
+def pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
+    """Pack pairs of E2M1 values into uint8, with the first value in the low nibble."""
+    rows, columns = x.shape
+    assert columns % 2 == 0, f"Expected an even number of columns, got {columns}"
+
+    values = get_e2m1_tensor(x.device)
+    magnitude = torch.argmin(torch.abs(torch.abs(x).unsqueeze(-1) - values), dim=-1)
+    indices = magnitude + (torch.signbit(x).to(torch.long) << 3)
+    pairs = indices.reshape(-1, 2)
+    packed = (pairs[:, 0] | (pairs[:, 1] << 4)).to(torch.uint8)
+    return packed.reshape(rows, columns // 2)
+
+
+def unpack_fp4_from_uint8(a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16) -> torch.Tensor:
     """
     Unpacks uint8 values into FP4. Each uint8 contains two FP4 values
     (low nibble first). The 4-bit indices are mapped to FP4 values using kE2M1ToFloat.
@@ -60,22 +70,20 @@ def unpack_fp4_from_uint8(
 
 @torch.compiler.disable()
 def _unpack_fp4_from_uint8_cpu(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+    a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
     return _unpack_fp4_from_uint8(a, m, n, dtype)
 
 
 # @torch.compile(fullgraph=True, dynamic=True)
 def _unpack_fp4_from_uint8_cuda(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+    a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
     return _unpack_fp4_from_uint8(a, m, n, dtype)
 
 
 # reference: : https://github.com/vllm-project/vllm/pull/16362
-def _unpack_fp4_from_uint8(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
-) -> torch.Tensor:
+def _unpack_fp4_from_uint8(a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16) -> torch.Tensor:
     """
     Unpacks uint8 values into fp4. Each uint8 consists of two fp4 values
     (i.e. first four bits correspond to one fp4 value, last four correspond to a

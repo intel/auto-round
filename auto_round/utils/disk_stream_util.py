@@ -13,14 +13,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
-from typing import Dict
 
 import torch
 import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
-from safetensors import safe_open
+from safetensors import SafetensorError, safe_open
+
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,12 @@ class SafetensorsIndex:
         index_path = self.checkpoint_dir / "model.safetensors.index.json"
         if index_path.exists():
             with open(index_path) as f:
-                self.weight_map: Dict[str, str] = json.load(f)["weight_map"]
+                # The shard names come from the checkpoint's own index, i.e. from the
+                # artifact being loaded -- validate them against the directory before
+                # anything downstream gets a chance to join and open them.
+                self.weight_map: dict[str, str] = validate_weight_map(
+                    json.load(f)["weight_map"], self.checkpoint_dir, index_path=index_path
+                )
         else:
             # Small, unsharded checkpoint: one model.safetensors file.
             single_file = self.checkpoint_dir / "model.safetensors"
@@ -56,16 +62,24 @@ class SafetensorsIndex:
     def read_tensor(self, name: str, device: str = "cpu") -> torch.Tensor:
         return self.read_tensors([name], device=device)[name]
 
-    def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
+    def tensor_shape(self, name: str) -> tuple[int, ...]:
+        """Return a tensor's shape from its safetensors header without reading its payload."""
+        shard_name = self.weight_map[name]
+        shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+        with safe_open(str(shard_path), framework="pt") as f:
+            return tuple(f.get_slice(name).get_shape())
+
+    def read_tensors(self, names: list[str], device: str = "cpu") -> dict[str, torch.Tensor]:
         """Read several tensors, grouped by shard file so each shard is opened and
         closed (unmapped) once regardless of how many tensors are pulled from it."""
-        by_shard: Dict[str, list[str]] = {}
+        by_shard: dict[str, list[str]] = {}
         for name in names:
             by_shard.setdefault(self.weight_map[name], []).append(name)
 
-        result: Dict[str, torch.Tensor] = {}
+        result: dict[str, torch.Tensor] = {}
         for shard_name, shard_tensor_names in by_shard.items():
-            with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+            shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+            with safe_open(str(shard_path), framework="pt") as f:
                 for name in shard_tensor_names:
                     tensor = f.get_tensor(name)
                     if device != "cpu":
@@ -79,7 +93,7 @@ class SafetensorsIndex:
 
 
 @lru_cache(maxsize=8)
-def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
+def get_safetensors_index(checkpoint_dir: str) -> SafetensorsIndex:
     """Shared ``SafetensorsIndex`` per checkpoint directory.
 
     Only the (cheap) name->shard map is cached; no ``safe_open`` handle is kept, so this
@@ -87,6 +101,45 @@ def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
     used to build a fresh index for every block, re-reading the index JSON 40+ times.
     """
     return SafetensorsIndex(str(checkpoint_dir))
+
+
+def checkpoint_has_native_fused_moe_experts(checkpoint_dir: str) -> bool:
+    """Whether a checkpoint directly stores supported fused 3D expert tensors.
+
+    Unlike :func:`config_has_fused_moe_experts`, which detects experts fused by a
+    Transformers checkpoint converter, this inspects the checkpoint layout itself.
+    Only the ``gate_up_proj`` + ``down_proj`` layout understood by
+    :func:`materialize_module` is accepted. Tensor shapes come from safetensors
+    headers, so this check never maps or copies the weight payloads.
+    """
+    try:
+        index = get_safetensors_index(str(checkpoint_dir))
+    except (OSError, ValueError, KeyError, SafetensorError):
+        return False
+
+    gate_up_suffix = ".experts.gate_up_proj"
+    for gate_up_name in index.weight_map:
+        if not gate_up_name.endswith(gate_up_suffix):
+            continue
+        prefix = gate_up_name[: -len(gate_up_suffix)]
+        down_name = f"{prefix}.experts.down_proj"
+        if not index.has_tensor(down_name):
+            continue
+        try:
+            gate_up_shape = index.tensor_shape(gate_up_name)
+            down_shape = index.tensor_shape(down_name)
+        except (OSError, ValueError, KeyError, SafetensorError):
+            continue
+        if len(gate_up_shape) == 3 and len(down_shape) == 3 and gate_up_shape[0] == down_shape[0] > 1:
+            logger.debug(
+                "Native fused-MoE checkpoint tensors detected: %s %s and %s %s",
+                gate_up_name,
+                gate_up_shape,
+                down_name,
+                down_shape,
+            )
+            return True
+    return False
 
 
 # Model-side module names sometimes differ from the checkpoint-side tensor
@@ -98,7 +151,7 @@ def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
 # whose names already match the model are untouched.
 
 
-@lru_cache(maxsize=None)
+@cache
 def _reverse_renamings_for(model_type):
     """Invert the checkpoint-conversion WeightRenaming entries for one family.
 
@@ -134,7 +187,7 @@ def _reverse_renamings_for(model_type):
     return tuple(reversed_transforms)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _model_types_for_dir(checkpoint_dir: str):
     """Every model_type in the checkpoint's config, including nested sub-configs.
 
@@ -187,6 +240,29 @@ _MODEL_PROJ_TO_FUSED = {
     "up_proj": ("gate_up_proj", 1),
     "down_proj": ("down_proj", 0),
 }
+
+
+def _renamed_expert_candidates(index, full_name: str):
+    """Checkpoint-name candidates for an unfused per-expert parameter."""
+    match = _MODEL_SIDE_EXPERT_RE.match(full_name)
+    if match is None:
+        return
+
+    fused_position = _MODEL_PROJ_TO_FUSED.get(match["proj"])
+    if fused_position is None:
+        return
+    prefix, expert = match["prefix"], match["expert"]
+
+    for model_type in _index_model_types(index):
+        for key, suffix in _expert_projection_renames_for(model_type):
+            if key != fused_position:
+                continue
+            # "w1.weight" keeps the checkpoint's own attribute name; drop it for a bias.
+            suffix_attr = suffix.rsplit(".", 1)
+            if len(suffix_attr) == 2:
+                suffix = f"{suffix_attr[0]}.{match['attr']}"
+            yield f"{prefix}.{expert}.{suffix}"
+
 
 # On-disk layout of fused expert tensors, keyed by checkpoint ``model_type``.
 # Two axes vary between families:
@@ -283,7 +359,7 @@ _MODEL_SIDE_EXPERT_RE = re.compile(
 )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _expert_projection_renames_for(model_type):
     """Map a fused projection to the checkpoint-side per-expert projection names.
 
@@ -330,7 +406,7 @@ def _expert_projection_renames_for(model_type):
     return tuple(renames.items())
 
 
-@lru_cache(maxsize=None)
+@cache
 def _concat_converters_for(model_type):
     """Model-side params assembled by concatenating several checkpoint tensors.
 
@@ -378,28 +454,6 @@ def _concat_converters_for(model_type):
     return tuple(converters)
 
 
-def _renamed_expert_candidates(index, full_name: str):
-    """Checkpoint-name candidates for an unfused per-expert parameter."""
-    match = _MODEL_SIDE_EXPERT_RE.match(full_name)
-    if match is None:
-        return
-
-    fused_position = _MODEL_PROJ_TO_FUSED.get(match["proj"])
-    if fused_position is None:
-        return
-    prefix, expert = match["prefix"], match["expert"]
-
-    for model_type in _index_model_types(index):
-        for key, suffix in _expert_projection_renames_for(model_type):
-            if key != fused_position:
-                continue
-            # "w1.weight" keeps the checkpoint's own attribute name; drop it for a bias.
-            suffix_attr = suffix.rsplit(".", 1)
-            if len(suffix_attr) == 2:
-                suffix = f"{suffix_attr[0]}.{match['attr']}"
-            yield f"{prefix}.{expert}.{suffix}"
-
-
 def _resolve_checkpoint_name(index, full_name: str):
     """Map a model-side parameter name to its checkpoint-side tensor name."""
     if index.has_tensor(full_name):
@@ -410,7 +464,8 @@ def _resolve_checkpoint_name(index, full_name: str):
         if index.has_tensor(candidate):
             return candidate
     for model_type in _index_model_types(index):
-        for transform in _reverse_renamings_for(model_type):
+        transforms = _reverse_renamings_for(model_type)
+        for transform in transforms:
             try:
                 candidate, _ = transform.rename_source_key(full_name)
             except Exception as exc:  # pragma: no cover - defensive, never fail a load here
@@ -418,7 +473,426 @@ def _resolve_checkpoint_name(index, full_name: str):
                 continue
             if candidate != full_name and index.has_tensor(candidate):
                 return candidate
+        # Some names need several of a family's renames at once, e.g. RADIO's
+        # ``encoder.layer.N.attention.output.dense`` <- ``radio_model.model.blocks.N.attn.proj``.
+        candidate = full_name
+        for transform in transforms:
+            try:
+                candidate, _ = transform.rename_source_key(candidate)
+            except Exception as exc:  # pragma: no cover - defensive, never fail a load here
+                logger.debug("chained rename %s via %s failed: %s", candidate, transform, exc)
+                continue
+        if candidate != full_name and index.has_tensor(candidate):
+            return candidate
     return None
+
+
+def _dot_natural_key(name: str):
+    """Natural-sort key matching transformers' ``dot_natural_key``.
+
+    Falls back to a local reimplementation when the transformers symbol is
+    unavailable, so shards sort as ``shard_2`` < ``shard_11`` (numeric), exactly
+    like ``from_pretrained`` orders them before concatenating.
+    """
+    try:
+        from transformers.core_model_loading import dot_natural_key
+
+        return dot_natural_key(name)
+    except Exception:  # pragma: no cover - transformers < 5 / API drift
+        parts: list = []
+        for part in name.split("."):
+            if part.isdigit():
+                parts.append((0, int(part)))
+            else:
+                text = part.rstrip("0123456789")
+                trailing = part[len(text) :]
+                parts.append((1, text, int(trailing)) if trailing else (1, text))
+        return parts
+
+
+@cache
+def _wildcard_concat_converters_for(model_type):
+    """Wildcard shard-concat converters registered for one family.
+
+    Mirrors :func:`_concat_converters_for` but keeps the *wildcard* converters it
+    intentionally skips: a single-source ``source_patterns`` containing ``*`` whose
+    only operation is a ``Concatenate``. Qwen3-Next "Flash" (``qwen4_exp_text``) is
+    the motivating case -- its per-layer PLE n-gram embedding is stored as
+    ``...ngram_embedding.shard_<i>.weight`` and merged into a single
+    ``...ngram_embedding.weight`` via
+    ``Concatenate(dim=0, num_shards_attribute="split_ngram_parts")`` with
+    ``force_cpu=True`` (the assembled embedding is far too large to concatenate on
+    an accelerator).
+
+    Returns a tuple of ``(target_suffix, source_suffix, concat_dim, force_cpu)``
+    tuples; ``source_suffix`` still contains the ``*`` shard wildcard.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        if len(entry.source_patterns) != 1 or len(entry.target_patterns) != 1:
+            continue
+        # Only a single Concatenate op (no MergeModulelist -> that is expert fusion,
+        # no Chunk/Transpose/etc. -> not a plain shard merge).
+        if len(entry.operations) != 1 or not isinstance(entry.operations[0], Concatenate):
+            continue
+        source = entry.source_patterns[0].rstrip("$")
+        target = entry.target_patterns[0].rstrip("$")
+        if "*" not in source or "*" in target:
+            continue
+
+        converters.append((target, source, getattr(entry.operations[0], "dim", 0), getattr(entry, "force_cpu", False)))
+    return tuple(converters)
+
+
+@cache
+def _wildcard_split_converters_for(model_type):
+    """Save-side inverse of :func:`_wildcard_concat_converters_for`.
+
+    Returns the same wildcard shard-concat converters, but also surfaces the
+    ``Concatenate`` op's ``num_shards_attribute`` so the merged model-side
+    parameter can be split back into the exact number of checkpoint shards at
+    save time.
+
+    Returns a tuple of ``(target_suffix, source_suffix, concat_dim,
+    num_shards_attribute)`` tuples; ``source_suffix`` still contains the ``*``
+    shard wildcard and ``num_shards_attribute`` may be ``None`` when the op does
+    not declare one (the caller then infers the count another way).
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        if len(entry.source_patterns) != 1 or len(entry.target_patterns) != 1:
+            continue
+        if len(entry.operations) != 1 or not isinstance(entry.operations[0], Concatenate):
+            continue
+        source = entry.source_patterns[0].rstrip("$")
+        target = entry.target_patterns[0].rstrip("$")
+        if "*" not in source or "*" in target:
+            continue
+
+        op = entry.operations[0]
+        converters.append((target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None)))
+    return tuple(converters)
+
+
+def _config_model_types(config):
+    """Collect ``model_type`` values from a config and its ``text_config`` (if any)."""
+    model_types = []
+    for candidate in (config, getattr(config, "text_config", None)):
+        model_type = getattr(candidate, "model_type", None)
+        if model_type and model_type not in model_types:
+            model_types.append(model_type)
+    return model_types
+
+
+def _resolve_num_shards(config, num_shards_attribute):
+    """Read the shard count declared by a ``Concatenate`` converter from the config."""
+    if not num_shards_attribute:
+        return None
+    for candidate in (config, getattr(config, "text_config", None)):
+        value = getattr(candidate, num_shards_attribute, None)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def split_merged_concat_tensor(config, full_name: str, tensor: torch.Tensor):
+    """Split a merged model-side concat parameter back into its checkpoint shards.
+
+    Inverse of the load-time :func:`_assemble_sharded_tensor`. Qwen3-Next "Flash"
+    (``qwen4_exp_text``) merges the per-layer PLE n-gram embedding shards
+    (``...ngram_embedding.shard_<i>.weight``) into a single
+    ``...ngram_embedding.weight`` on load; at save time (immediate ShardWriter
+    path, which does not go through ``save_pretrained``) that merge must be
+    reversed so the checkpoint keeps its original numbered shards -- otherwise a
+    single, unusable ``[sum_rows, dim]`` blob is written and reload fails.
+
+    Args:
+        config: The model config (used for ``model_type`` and the shard count).
+        full_name: The model-side parameter name (e.g. ``....ngram_embedding.weight``).
+        tensor: The merged tensor.
+
+    Returns:
+        A list of ``(shard_name, shard_tensor)`` pairs, or ``None`` when
+        *full_name* is not a wildcard-concat target (nothing to split).
+    """
+    if config is None:
+        return None
+    for model_type in _config_model_types(config):
+        for target_suffix, source_suffix, dim, num_shards_attribute in _wildcard_split_converters_for(model_type):
+            if not full_name.endswith(target_suffix):
+                continue
+            prefix = full_name[: -len(target_suffix)]
+            # Require a clean path boundary so a suffix does not match mid-token.
+            if prefix and not prefix.endswith("."):
+                continue
+            num_shards = _resolve_num_shards(config, num_shards_attribute)
+            if not num_shards:
+                # Fall back to an even split by the merged size if the row count is
+                # divisible by a plausible shard count declared elsewhere; without a
+                # count we cannot safely reconstruct shards, so leave the tensor as-is.
+                logger.warning(
+                    "Cannot split merged concat tensor %r: shard count "
+                    "(config.%s) is unavailable; leaving it merged.",
+                    full_name,
+                    num_shards_attribute,
+                )
+                return None
+            if tensor.shape[dim] % num_shards != 0:
+                logger.warning(
+                    "Cannot evenly split merged concat tensor %r (dim %d size %d) "
+                    "into %d shards; leaving it merged.",
+                    full_name,
+                    dim,
+                    tensor.shape[dim],
+                    num_shards,
+                )
+                return None
+            chunks = torch.chunk(tensor, num_shards, dim=dim)
+            source_prefix = prefix + source_suffix  # still contains the '*' wildcard
+            return [(source_prefix.replace("*", str(i)), chunk) for i, chunk in enumerate(chunks)]
+    return None
+
+
+def _assemble_sharded_tensor(index, full_name: str, device: str):
+    """Reconstruct a fused model-side param stored on disk as numbered shards.
+
+    Follows the transformers checkpoint converter for the checkpoint's family: it
+    finds a wildcard ``Concatenate`` converter whose target suffix matches
+    ``full_name``, expands the ``shard_*`` source glob against the checkpoint index,
+    orders the shards with transformers' natural-sort key, and concatenates them
+    along the converter's declared ``dim`` (honoring its ``force_cpu`` flag so a
+    huge embedding is never assembled on an accelerator).
+
+    Returns ``(tensor, dst_device)`` -- ``dst_device`` is ``"cpu"`` when the
+    converter sets ``force_cpu`` -- or ``None`` when no converter matches (the
+    caller then leaves the param on meta and surfaces an actionable error).
+    """
+    for model_type in _index_model_types(index):
+        for target_suffix, source_suffix, dim, force_cpu in _wildcard_concat_converters_for(model_type):
+            if not full_name.endswith(target_suffix):
+                continue
+            prefix = full_name[: -len(target_suffix)]
+            # Require a clean path boundary so a suffix does not match mid-token.
+            if prefix and not prefix.endswith("."):
+                continue
+            # Build the concrete ``shard_*`` glob for this parameter and match the index.
+            source_regex = re.compile("^" + re.escape(prefix + source_suffix).replace(r"\*", r"(.+)") + "$")
+            matched = [name for name in index.weight_map if source_regex.match(name)]
+            if not matched:
+                continue
+            matched.sort(key=_dot_natural_key)
+            read_device = "cpu" if force_cpu else device
+            read = index.read_tensors(matched, device=read_device)
+            assembled = torch.cat([read[name] for name in matched], dim=dim).contiguous()
+            return assembled, read_device
+    return None
+
+
+# ── General converter-driven materialization ─────────────────────────────────
+# The helpers above cover the common single-op cases explicitly (direct name,
+# reverse renaming, expert fusion, literal/wildcard concat). Some model families
+# -- especially the MoE ones we target on the meta path (Qwen3-Next "Flash",
+# GLM-5-next, DeepSeek-V4, ...) -- also carry *other* WeightConverters in their
+# transformers mapping: fused-qkv ``Chunk``, ``Interleave``/``Transpose`` gate-up,
+# ``PermuteForRope``, and multi-op chains. Rather than reimplement each op, the
+# fallback below reuses the real transformers ``WeightConverter`` objects: it
+# routes the checkpoint keys through ``rename_source_key`` exactly like
+# ``from_pretrained`` (all renamings, then one converter), feeds the collected
+# source tensors into a fresh converter instance, and runs ``convert`` -- the same
+# path transformers' own ``revert_weight_conversion`` uses. Output is accepted
+# only when its shape matches the destination parameter, so a bad route can never
+# silently corrupt a weight (it just falls back to leaving the param on meta).
+
+
+@lru_cache(maxsize=8)
+def _conversion_transforms_for_dir(checkpoint_dir: str):
+    """Collect ``(renamings, converters)`` from every model_type in the config.
+
+    Deduplicated by ``(source_patterns, target_patterns)`` so families that share
+    a base mapping (e.g. ``qwen3_5_moe_text`` embeds ``qwen2_moe``) do not route a
+    checkpoint key through the same converter twice (which would duplicate tensors
+    inside a concat/merge).
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import WeightConverter, WeightRenaming
+    except ImportError:  # pragma: no cover - transformers < 5
+        return (), ()
+
+    renamings: list = []
+    converters: list = []
+    seen: set = set()
+    for model_type in _model_types_for_dir(checkpoint_dir):
+        mapping = get_checkpoint_conversion_mapping(model_type)
+        if not mapping:
+            continue
+        for entry in mapping:
+            if not isinstance(entry, (WeightConverter, WeightRenaming)):
+                continue
+            sig = (tuple(entry.source_patterns), tuple(entry.target_patterns))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            (converters if isinstance(entry, WeightConverter) else renamings).append(entry)
+    return tuple(renamings), tuple(converters)
+
+
+@lru_cache(maxsize=8)
+def _converter_routing_table(checkpoint_dir: str):
+    """Map each converter-produced model-side name to its checkpoint sources.
+
+    Mirrors the ``from_pretrained`` routing loop: every checkpoint key is renamed
+    via ``rename_source_key`` (all ``WeightRenaming``s, then at most one
+    ``WeightConverter``). Returns ``(table, pattern_to_converter)`` where ``table``
+    maps ``renamed_full_name -> [(source_pattern, checkpoint_key), ...]``.
+    """
+    renamings, converters = _conversion_transforms_for_dir(checkpoint_dir)
+    if not converters:
+        return {}, {}
+    try:
+        from transformers.core_model_loading import rename_source_key
+    except ImportError:  # pragma: no cover - transformers < 5
+        return {}, {}
+
+    index = get_safetensors_index(checkpoint_dir)
+    pattern_to_converter = {pattern: conv for conv in converters for pattern in conv.source_patterns}
+    renaming_list = list(renamings)
+    converter_list = list(converters)
+    table: dict = {}
+    for key in index.weight_map:
+        try:
+            renamed, source_pattern = rename_source_key(key, renaming_list, converter_list)
+        except Exception:  # pragma: no cover - never fail the whole load on one key
+            continue
+        if source_pattern is None:
+            continue
+        table.setdefault(renamed, []).append((source_pattern, key))
+
+    # ``rename_source_key`` renames a 1->N converter (e.g. fused-QKV ``Chunk``) to its FIRST
+    # target only, so the table above holds just that one name. ``convert`` emits every target
+    # from the same source tensors, so register the sibling target names too (each pointing at
+    # the same collected sources); the caller passes whichever it needs and picks it out.
+    expanded: dict = {}
+    for renamed, entries in table.items():
+        converter = pattern_to_converter.get(entries[0][0])
+        targets = list(getattr(converter, "target_patterns", []) or [])
+        first = targets[0] if targets else None
+        if len(targets) <= 1 or first is None or first not in renamed:
+            expanded[renamed] = entries
+            continue
+        for target in targets:
+            expanded[renamed.replace(first, target, 1)] = entries
+    return expanded, pattern_to_converter
+
+
+@lru_cache(maxsize=8)
+def _auto_config_for_dir(checkpoint_dir: str):
+    """Best-effort model config for converter ops that need it (PermuteForRope, ...).
+
+    ``local_files_only=True`` keeps this fully offline -- the checkpoint is already a local
+    snapshot dir, and a hub round-trip here would stall the whole materialization.
+    """
+    try:
+        from transformers import AutoConfig
+
+        return AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=False, local_files_only=True)
+    except Exception as exc:  # pragma: no cover - config-less ops still work
+        logger.debug("could not load config for converter ops from %s: %s", checkpoint_dir, exc)
+        return None
+
+
+def _convert_param_via_converters(index, full_name: str, target_shape, device: str):
+    """Materialize ``full_name`` by replaying its transformers ``WeightConverter``.
+
+    Returns ``(tensor, dst_device)`` when a converter produces a tensor whose shape
+    matches ``target_shape``; otherwise ``None`` (the caller then leaves the param
+    on meta). ``dst_device`` is ``"cpu"`` when the converter declares ``force_cpu``.
+    """
+    checkpoint_dir = str(getattr(index, "checkpoint_dir", "") or "")
+    if not checkpoint_dir:
+        return None
+    try:
+        table, pattern_to_converter = _converter_routing_table(checkpoint_dir)
+    except Exception:  # pragma: no cover
+        return None
+    entries = table.get(full_name)
+    if not entries:
+        return None
+
+    try:
+        import copy as _copy
+        from types import SimpleNamespace
+
+        base_converter = pattern_to_converter.get(entries[0][0])
+        if base_converter is None:
+            return None
+        force_cpu = bool(getattr(base_converter, "force_cpu", False))
+        read_device = "cpu" if force_cpu else device
+
+        # Group checkpoint keys per source pattern; order within each group by the
+        # same natural key transformers uses, so shard/expert indices line up.
+        keys_by_pattern: dict = {}
+        for source_pattern, key in entries:
+            keys_by_pattern.setdefault(source_pattern, []).append(key)
+
+        converter = _copy.deepcopy(base_converter)
+        all_keys = [k for keys in keys_by_pattern.values() for k in keys]
+        read = index.read_tensors(all_keys, device=read_device)
+        for source_pattern in converter.source_patterns:
+            keys = keys_by_pattern.get(source_pattern)
+            if not keys:
+                continue
+            keys.sort(key=_dot_natural_key)
+            for key in keys:
+                converter.add_tensor(full_name, key, source_pattern, read[key])
+
+        config = _auto_config_for_dir(checkpoint_dir)
+        target_size = torch.Size(tuple(target_shape))
+        model_shim = SimpleNamespace(
+            config=config,
+            get_parameter=lambda _name, _s=target_size: SimpleNamespace(shape=_s),
+        )
+        result = converter.convert(full_name, model=model_shim, config=config)
+    except Exception as exc:
+        logger.debug("converter-driven materialization of %s failed: %s", full_name, exc)
+        return None
+
+    if not isinstance(result, dict):
+        return None
+    value = result.get(full_name)
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None or tuple(value.shape) != tuple(target_shape):
+        return None
+    return value.contiguous(), read_device
 
 
 def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIndex, device: str) -> None:
@@ -512,17 +986,32 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
 
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
+    buffer_names = {name for name, _ in module.named_buffers()}
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
-        if str(tensor.device) != "meta":
-            continue  # already materialized (e.g. shared/tied weights)
+        is_meta = str(tensor.device) == "meta"
+        is_checkpoint_backed_buffer = name in buffer_names
+        if not is_meta and not is_checkpoint_backed_buffer:
+            continue  # already materialized parameter (e.g. shared/tied weights)
         full_name = f"{module_name}.{name}".replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
+        if not is_meta and resolved_name is None:
+            continue  # runtime buffer without a checkpoint counterpart
         if resolved_name is None:
             sliced = _fused_lookup(full_name, tensor.shape)
             if sliced is None:
                 sliced = _concat_lookup(full_name)
             if sliced is not None:
                 fused_targets.append((name, sliced))
+                continue
+            assembled = _assemble_sharded_tensor(index, full_name, device)
+            if assembled is not None:
+                value, dst_device = assembled
+                set_module_tensor_to_device(module, name, dst_device, value=value, dtype=value.dtype)
+                continue
+            converted = _convert_param_via_converters(index, full_name, tensor.shape, device)
+            if converted is not None:
+                value, dst_device = converted
+                set_module_tensor_to_device(module, name, dst_device, value=value, dtype=value.dtype)
                 continue
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
@@ -538,7 +1027,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
             raise RuntimeError(
                 f"Failed to materialize fused MoE parameter '{module_name}.{name}' from the checkpoint "
                 f"(value shape {tuple(value.shape)}). This usually means the model's fused-expert layout "
-                "is not yet recognised by the meta-skeleton loader. Set AR_DISABLE_AUTO_META_LOAD=1 to load "
+                "is not yet recognised by the meta-skeleton loader. Set AR_DISABLE_META_LOAD=1 to load "
                 "the whole model on CPU instead (uses more RAM)."
             ) from exc
     _fused_cache.clear()
@@ -642,7 +1131,7 @@ def unfuse_meta_moe_(model: nn.Module) -> list[str]:
     return unfused
 
 
-def build_meta_model(model_name: str, trust_remote_code: bool = True, unfuse_moe: bool = True):
+def build_meta_model(model_name: str, trust_remote_code: bool = False, unfuse_moe: bool = True):
     """Build a meta-device model skeleton (~0 RAM) plus its tokenizer and a
     SafetensorsIndex for on-demand materialization, instead of AutoRound's own
     ``llm_load_model(model_name, device_map="cpu")`` which fully materializes the
@@ -666,8 +1155,16 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True, unfuse_moe
     # reap/layerwise_prune.py's disk-streamed model builder.
     import transformers as _transformers
 
+    from auto_round.modeling.nemotron_h_omni import (
+        prefer_remote_omni_class,
+        register_nemotron_h_omni_checkpoint_mapping,
+    )
+
+    register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code)
     archs = getattr(config, "architectures", None) or []
-    model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
+    model_cls = None
+    if not prefer_remote_omni_class(config, trust_remote_code):
+        model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
     with init_empty_weights():
         if model_cls is not None:
             model = model_cls(config)
@@ -723,6 +1220,16 @@ def materialize_non_block_params(
         full_name = name.replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
         if resolved_name is None:
+            assembled = _assemble_sharded_tensor(index, full_name, device)
+            if assembled is not None:
+                value, dst_device = assembled
+                set_module_tensor_to_device(model, name, dst_device, value=value, dtype=value.dtype)
+                continue
+            converted = _convert_param_via_converters(index, full_name, tensor.shape, device)
+            if converted is not None:
+                value, dst_device = converted
+                set_module_tensor_to_device(model, name, dst_device, value=value, dtype=value.dtype)
+                continue
             if _is_tied(name):
                 deferred_tied.append(name)
             else:
@@ -773,12 +1280,12 @@ class stream_block_forward:
     is for a plain inference-only forward pass (e.g. eval loss), not tuning.
     """
 
-    def __init__(self, model: nn.Module, index: SafetensorsIndex, device: str, block_names: list[str] = None):
+    def __init__(self, model: nn.Module, index: SafetensorsIndex, device: str, block_names: list[str] | None = None):
         self.model = model
         self.index = index
         self.device = device
         self.block_names = block_names if block_names is not None else _default_block_names(model)
-        self._originals: Dict[str, "callable"] = {}
+        self._originals: dict[str, callable] = {}
 
     def __enter__(self):
         for block_name in self.block_names:

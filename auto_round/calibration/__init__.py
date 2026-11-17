@@ -23,9 +23,9 @@ from auto_round.calibration import mllm as _mllm  # noqa: F401
 from auto_round.calibration import diffusion as _diffusion  # noqa: F401
 
 __all__ = [
-    "Calibrator",
-    "CalibrationContext",
     "CALIBRATORS",
+    "CalibrationContext",
+    "Calibrator",
     "get_calibrator",
     "register_calibrator",
 ]

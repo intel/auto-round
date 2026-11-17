@@ -53,7 +53,7 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
         assert model is not None, "Loaded model should not be None."
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     @require_gptqmodel
     def test_autoawq_format_fp_qsave_layers(self):
         layer_config = {

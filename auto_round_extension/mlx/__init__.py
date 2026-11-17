@@ -14,4 +14,4 @@
 
 from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX, MLX_AVAILABLE
 
-__all__ = ["QuantLinearMLX", "MLX_AVAILABLE"]
+__all__ = ["MLX_AVAILABLE", "QuantLinearMLX"]

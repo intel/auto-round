@@ -9,7 +9,7 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
+from auto_round.export.formats.autoround import float as autoround_nvfp_mx_export
 
 from ...envs import require_compressed_tensors
 
@@ -61,7 +61,6 @@ class TestAutoRoundFP:
         moe = compressed_model.model.layers[1].mlp
         assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
 
-    @pytest.mark.timeout(60)
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -94,7 +93,6 @@ class TestAutoRoundFP:
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
 
-    @pytest.mark.timeout(60)
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {

@@ -21,7 +21,7 @@ import torch
 from safetensors.torch import save_file
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.export.formats.backends.svdquant_nunchaku import SVDQuantNunchakuFormat
+from auto_round.export.formats.svdquant.format import SVDQuantNunchakuFormat
 from auto_round.formats import get_formats
 from auto_round.schemes import PRESET_SCHEMES
 
@@ -80,7 +80,7 @@ def test_format_resolves_nested_sdxl_quant_blocks():
 
 @pytest.mark.parametrize("quant_block_list", [[["custom.block"]], []], ids=["custom", "empty"])
 def test_format_preserves_explicit_quant_blocks_without_adapter_resolution(monkeypatch, quant_block_list):
-    import auto_round.export.svdquant_adapters as svdquant_adapters
+    import auto_round.export.formats.svdquant.adapters as svdquant_adapters
 
     monkeypatch.setattr(
         svdquant_adapters,
@@ -151,6 +151,7 @@ def test_full_model_format_disables_immediate_packing_and_saving():
             is_immediate_saving=True,
         ),
         quantize_config=SimpleNamespace(data_type="mx_fp"),
+        _alg_configs=[],
         output_dir="unused",
         _ensure_shard_writer=lambda: pytest.fail("full-model export must not create a shard writer"),
     )
@@ -162,8 +163,8 @@ def test_full_model_format_disables_immediate_packing_and_saving():
 
 
 def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_path):
-    import auto_round.export.svdquant_nunchaku as exporter
-    from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
+    import auto_round.export.formats.svdquant.nunchaku as exporter
+    from auto_round.export.formats.svdquant.adapters.flux import FluxSVDQuantNunchakuAdapter
 
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
 
@@ -198,8 +199,8 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
 
 
 def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
-    import auto_round.export.svdquant_nunchaku as exporter
-    from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
+    import auto_round.export.formats.svdquant.nunchaku as exporter
+    from auto_round.export.formats.svdquant.adapters.sdxl import SDXLSVDQuantNunchakuAdapter
 
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
 

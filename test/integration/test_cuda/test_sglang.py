@@ -32,7 +32,7 @@ def _run_sglang_worker(model_path, connection):
         import sglang as sgl
         from sglang.srt.server_args import ServerArgs
 
-        fields = {field.name for field in dataclasses.fields(ServerArgs)}
+        fields = set(ServerArgs.__annotations__.keys())
         engine_kwargs = {"model_path": model_path, "mem_fraction_static": 0.5}
         if "disable_piecewise_cuda_graph" in fields:
             engine_kwargs["disable_piecewise_cuda_graph"] = True
@@ -207,7 +207,7 @@ class TestAutoRound:
 
         assert "!!!" not in generated_text
 
-    @pytest.mark.skip_ci(reason="Cannot work well in CI env")
+    @pytest.mark.skip_ci(reason="Third-party: Cannot work well in CI env")
     def test_awq_format_sglang(self, dataloader):
         autoround = AutoRound(
             self.model_name,

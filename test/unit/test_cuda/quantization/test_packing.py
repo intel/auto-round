@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from auto_round.export.export_to_autoround.qlinear_fp import FLOAT_TO_E2M1, pack_fp4_to_uint8
+from auto_round.export.formats.autoround.qlinear_fp import FLOAT_TO_E2M1, pack_fp4_to_uint8
 
 
 def _cuda_device_has_more_than_40gb_memory():

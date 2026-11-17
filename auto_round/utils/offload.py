@@ -47,22 +47,73 @@ import gc
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 from collections import defaultdict
 from functools import partial
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 
 from auto_round.logger import logger
 from auto_round.utils.model import get_module
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 __all__ = ["OffloadManager"]
+
+#: Name of the file each offload temp dir drops to prove which process (and
+#: which machine) created it. Only directories carrying one are ever swept.
+_OWNER_MARKER = ".ar_offload_owner.json"
 
 # =====================================================================
 # Low-level helpers
 # =====================================================================
+
+
+def _hostname_tag() -> str:
+    """Return a stable tag identifying this machine.
+
+    Pids are only meaningful on the host that allocated them, and
+    ``AR_WORK_SPACE`` may sit on shared storage, so a leftover directory from
+    another machine must never be judged by *our* pid table.
+    """
+    try:
+        return socket.gethostname() or ""
+    except OSError:
+        return ""
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Windows liveness probe that cannot terminate the process it probes."""
+    try:
+        import psutil  # pylint: disable=C0415
+    except ImportError:
+        # Without psutil the only safe answer is "assume alive": falling back
+        # to os.kill() here would terminate an unrelated live process.
+        return True
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:  # pragma: no cover - defensive
+        return True
+
+
+def _is_zombie(pid: int) -> bool:
+    """Return *True* when *pid* exists only as an unreaped zombie.
+
+    A zombie holds no file descriptors and owns no temp dir, but
+    ``os.kill(pid, 0)`` still succeeds for it. On Linux ``/proc`` is the only
+    portable-enough way to tell; elsewhere we simply report "not a zombie".
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            # The comm field is parenthesised and may contain spaces, so read
+            # the state from after the last ')'.
+            data = f.read()
+        state = data[data.rindex(b")") + 2 : data.rindex(b")") + 3]
+    except (OSError, ValueError):
+        return False
+    return state == b"Z"
 
 
 def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) -> dict:
@@ -101,7 +152,7 @@ def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) ->
             continue  # original fused module still in the tree; assign as-is
         to_split[key] = state_dict.pop(key)
     if to_split:
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         state_dict.update(split_fused_expert_tensors(to_split))
     return state_dict
@@ -189,45 +240,81 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str) -> str:
+def _resolve_model_dir(model_dir: str, revision: str | None = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download, try_to_load_from_cache
 
+        for filename in (
+            "model.safetensors.index.json",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "pytorch_model.bin",
+            "diffusion_pytorch_model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.bin.index.json",
+            "diffusion_pytorch_model.bin",
+        ):
+            cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
+            if isinstance(cached_file, str):
+                return os.path.dirname(cached_file)
+
+        if revision is not None:
+            return snapshot_download(model_dir, revision=revision, local_files_only=True)
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
+        if revision is not None:
+            raise
         return model_dir
 
 
 def _build_weight_map(model_dir: str) -> dict[str, str]:
     """Build ``{tensor_name: shard_filename}`` from the model directory."""
     index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(
+            filename for filename in os.listdir(model_dir) if filename.endswith(".safetensors.index.json")
+        )
+        if custom_indexes:
+            index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
-            return json.load(f)["weight_map"]
+            # Shard names are declared by the checkpoint itself; validate them
+            # before any caller joins one onto model_dir.
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=index_path)
 
-    single_path = os.path.join(model_dir, "model.safetensors")
-    if os.path.exists(single_path):
-        from safetensors import safe_open
+    # Diffusers components (UNet, VAE, transformer) use a different basename.
+    # Use explicit names rather than globbing: a directory can also contain
+    # precision variants or non-PyTorch artifacts such as openvino_model.bin.
+    for filename in ("model.safetensors", "diffusion_pytorch_model.safetensors"):
+        single_path = os.path.join(model_dir, filename)
+        if os.path.exists(single_path):
+            from safetensors import safe_open
 
-        with safe_open(single_path, framework="pt") as f:
-            return {k: "model.safetensors" for k in f.keys()}
+            with safe_open(single_path, framework="pt") as f:
+                return {k: filename for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
+    if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(filename for filename in os.listdir(model_dir) if filename.endswith(".bin.index.json"))
+        if custom_indexes:
+            bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
-            return json.load(f)["weight_map"]
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=bin_index_path)
 
-    single_bin = os.path.join(model_dir, "pytorch_model.bin")
-    if os.path.exists(single_bin):
-        state_dict = torch.load(single_bin, map_location="cpu")
-        return {k: "pytorch_model.bin" for k in state_dict.keys()}
+    for filename in ("pytorch_model.bin", "diffusion_pytorch_model.bin"):
+        single_bin = os.path.join(model_dir, filename)
+        if os.path.exists(single_bin):
+            # No unrestricted fallback: this pickle comes from an untrusted artifact.
+            state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
+            return {k: filename for k in state_dict.keys()}
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
-        "Expected model.safetensors or pytorch_model.bin (with optional index.json)."
+        "Expected a safetensors or PyTorch .bin checkpoint (with optional index.json)."
     )
 
 
@@ -277,7 +364,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
 
     state_dict = {}
     for shard_file, tensor_names in shard_to_tensors.items():
-        shard_path = os.path.join(model_dir, shard_file)
+        shard_path = str(resolve_within_directory(model_dir, shard_file))
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
 
@@ -285,7 +372,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
                 for name in tensor_names:
                     state_dict[name[len(prefix) :]] = f.get_tensor(name)
         else:
-            full_state = torch.load(shard_path, map_location="cpu")
+            full_state = torch.load(shard_path, map_location="cpu", weights_only=True)
             for name in tensor_names:
                 if name in full_state:
                     state_dict[name[len(prefix) :]] = full_state[name]
@@ -329,6 +416,9 @@ class OffloadManager:
     model_dir : str, optional
         Path to the model checkpoint directory. Required for ``"clean"``
         mode; optional for ``"offload"``.
+    model_revision : str, optional
+        Commit hash used to resolve a Hugging Face model ID without relying
+        on a mutable branch reference.
     offload_dir_prefix : str
         Prefix for the temp directory name (``"offload"`` mode only).
     cache_numel : bool
@@ -340,22 +430,27 @@ class OffloadManager:
         self,
         enabled: bool = True,
         mode: str = "offload",
-        model_dir: Optional[str] = None,
+        model_dir: str | None = None,
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
+        model_revision: str | None = None,
     ):
         from auto_round import envs
 
         self.enabled = enabled and not envs.AR_DISABLE_OFFLOAD
         self.mode = mode
-        self.model_dir = model_dir
+        self.model_dir = (
+            _resolve_model_dir(model_dir, revision=model_revision)
+            if mode == "clean" and model_dir is not None and model_revision is not None
+            else model_dir
+        )
         self.cache_numel = cache_numel
         self._prefix = offload_dir_prefix
         self.retain_saved_entries = retain_saved_entries
 
         # Disk state (offload mode)
-        self._tempdir: Optional[str] = None
+        self._tempdir: str | None = None
         self._saved: dict[str, dict] = {}  # name -> {"save_path": str}
 
         # Cached weight map for clean mode (avoids repeated disk I/O)
@@ -363,12 +458,12 @@ class OffloadManager:
 
         # Hook state (for add_offload_hooks/remove_offload_hooks transparent offloading)
         self._hook_handles: list = []
-        self._model_ref: Optional[torch.nn.Module] = None
+        self._model_ref: torch.nn.Module | None = None
         self._module_names: list[str] = []
-        self._last_loaded: Optional[str] = None
+        self._last_loaded: str | None = None
 
         # Ensure-style state (for wrapping loops)
-        self._current_loaded: Optional[str] = None
+        self._current_loaded: str | None = None
 
     # ------------------------------------------------------------------
     # Context manager
@@ -390,7 +485,7 @@ class OffloadManager:
     def __call__(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -414,7 +509,7 @@ class OffloadManager:
     def offload(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -472,7 +567,7 @@ class OffloadManager:
             logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
 
-    def _check_disk_space(self, model: torch.nn.Module, names: Union[str, list[str], list[list[str]]]) -> bool:
+    def _check_disk_space(self, model: torch.nn.Module, names: str | list[str] | list[list[str]]) -> bool:
         """Check whether there is enough disk space to offload the given modules.
 
         Args:
@@ -540,7 +635,7 @@ class OffloadManager:
             self._save_to_disk(name, module)
         self._clear(module, block_name=name)
 
-    def reload(self, model: torch.nn.Module, names: Union[str, list[str], None] = None) -> None:
+    def reload(self, model: torch.nn.Module, names: str | list[str] | None = None) -> None:
         """Reload previously offloaded module(s).
 
         For ``"offload"`` mode: loads from the temp directory, then
@@ -566,11 +661,23 @@ class OffloadManager:
         for name in names:
             self._reload(model, name)
 
+    def _get_checkpoint_dir(self, model: torch.nn.Module | None) -> str | None:
+        """Resolve the active component directory for both clearing and reloading."""
+        model_dir = self.model_dir
+        component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
+        if model_dir is not None and component_subfolder:
+            resolved_dir = _resolve_model_dir(model_dir)
+            component_dir = os.path.join(resolved_dir, component_subfolder)
+            if os.path.isdir(component_dir):
+                model_dir = component_dir
+        return model_dir
+
     def _reload(self, model: torch.nn.Module, name: str) -> None:
         """Reload a single named module (internal helper)."""
         module = get_module(model, name)
         if module is None:
             return
+        model_dir = self._get_checkpoint_dir(model)
         if self.mode == "offload":
             if name not in self._saved:
                 # Before falling back to the
@@ -599,8 +706,8 @@ class OffloadManager:
                 # meta skeleton (AR_DISK_STREAM_MODEL=1) instead of a full CPU
                 # load. There is nothing on the temp dir to load from -- read
                 # straight from the original checkpoint instead.
-                if self.model_dir is not None:
-                    load_block_from_model_files(self.model_dir, name, module)
+                if model_dir is not None:
+                    load_block_from_model_files(model_dir, name, module)
                 return
             self._load_from_disk(name, module)
             if not self.retain_saved_entries:
@@ -609,7 +716,7 @@ class OffloadManager:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
                 return
-            load_block_from_model_files(self.model_dir, name, module)
+            load_block_from_model_files(model_dir, name, module)
 
     # ------------------------------------------------------------------
     # Hook-based transparent offloading
@@ -649,7 +756,7 @@ class OffloadManager:
         clear_memory()
         logger.info("module weights cleared")
 
-    def remove_offload_hooks(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
+    def remove_offload_hooks(self, model: torch.nn.Module, names: list[str] | None = None) -> None:
         """Remove hooks and reload all managed modules.
 
         Args:
@@ -803,6 +910,12 @@ class OffloadManager:
 
             base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
             os.makedirs(base_dir, exist_ok=True)
+            # Reclaim disk from runs that were killed before cleanup() could
+            # run (SIGKILL, OOM-killer, host reboot). Safe regardless of mode:
+            # a directory is only removed when its owning process is provably
+            # gone, and the persistent ``{prefix}_resume`` dir carries no owner
+            # marker, so it is never a sweep candidate.
+            self._sweep_stale_dirs(base_dir)
             if envs.AR_RESUME_DIR:
                 # A fresh tempfile.mkdtemp()
                 # directory is unique to this process and can never be found
@@ -819,11 +932,12 @@ class OffloadManager:
                 self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
                 os.makedirs(self._tempdir, exist_ok=True)
             else:
-                # A fresh temp dir is unique to this process. Before creating
-                # it, sweep leftover pid-tagged dirs from prior processes that
-                # were killed/crashed before their cleanup() could run.
-                self._sweep_stale_dirs(base_dir)
                 self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_{os.getpid()}_", dir=base_dir)
+            # Claim the directory so a later run can prove it is stale. The
+            # resume dir is shared across runs by design, so it is never
+            # claimed -- that is what keeps it out of the sweep.
+            if not envs.AR_RESUME_DIR:
+                self._write_owner_marker(self._tempdir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
@@ -872,6 +986,12 @@ class OffloadManager:
             from safetensors.torch import load_file as safe_load_file
 
             state_dict = safe_load_file(save_path, device="cpu")
+            # Replace every tensor with a private copy so the mapping is
+            # released as soon as this method returns.
+            for key in list(state_dict.keys()):
+                tensor = state_dict[key]
+                state_dict[key] = tensor.clone()
+                del tensor
             _load_state_dict_into_module(state_dict, module)
         except Exception as e:
             logger.warning(f"OffloadManager: failed to load {name}: {e}")
@@ -907,37 +1027,92 @@ class OffloadManager:
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
-        """Return *True* if a process with *pid* is still running."""
+        """Return *True* if a process with *pid* is, or may be, still running.
+
+        Deliberately biased towards *True*: treating a live owner as dead would
+        delete data another process is still using, while the reverse merely
+        leaves a directory behind for a later run to collect.
+        """
         if pid <= 0:
             return False
+        if sys.platform == "win32":
+            # ``os.kill`` is not a liveness probe on Windows -- every signal
+            # except CTRL_C_EVENT/CTRL_BREAK_EVENT is routed to
+            # ``TerminateProcess``, so probing a live pid would kill it.
+            return _windows_pid_alive(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False  # no such process
+        except (OverflowError, ValueError):
+            # pid outside this platform's range -- the tag is not trustworthy.
+            return True
         except OSError:
             return True  # e.g. PermissionError -> exists, owned by another user
-        return True
+        # A killed-but-unreaped child still answers kill(pid, 0). It owns
+        # nothing any more, so treat it as dead where we can tell.
+        return not _is_zombie(pid)
+
+    def _write_owner_marker(self, tempdir: str) -> None:
+        """Record who owns *tempdir* so a later run can prove it is stale."""
+        try:
+            with open(os.path.join(tempdir, _OWNER_MARKER), "w") as f:
+                json.dump({"pid": os.getpid(), "host": _hostname_tag()}, f)
+        except OSError as e:
+            # Without a marker the directory is simply never auto-reclaimed;
+            # never fail the run over it.
+            logger.debug(f"OffloadManager ({self._prefix}): could not write owner marker in {tempdir}: {e}")
+
+    @staticmethod
+    def _read_owner_marker(path: str) -> dict | None:
+        """Return the owner record of *path*, or *None* when it is unknown."""
+        if not os.path.isdir(path):
+            return None
+        try:
+            with open(os.path.join(path, _OWNER_MARKER)) as f:
+                owner = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return owner if isinstance(owner, dict) else None
 
     def _sweep_stale_dirs(self, base_dir: str) -> None:
-        """Remove leftover pid-tagged temp dirs whose owning process is dead."""
-        if not os.path.isdir(base_dir):
-            return
-        tag = f"{self._prefix}_"
-        for entry in sorted(os.listdir(base_dir)):
+        """Remove leftover offload temp dirs whose owning process is dead.
+
+        A run that is killed or crashes mid-tuning (SIGKILL, OOM-killer, host
+        reboot) never reaches :meth:`cleanup`, so its temp dir stays on disk
+        forever; nothing ever reads it again. Sweeping here reclaims that space.
+
+        Only directories carrying an owner marker written by this module are
+        candidates:
+
+        * a directory without one (the persistent ``{prefix}_resume`` dir, or
+          leftovers from an older AutoRound) cannot be *proven* stale;
+        * a directory owned by another host is skipped as well, because a pid
+          only means something on the machine that allocated it and
+          ``AR_WORK_SPACE`` may live on shared storage.
+
+        Every manager sweeps every prefix, not just its own: ``offload/`` is
+        shared by the ``compressor`` and ``autoscheme`` offloaders, so a crash
+        in one would otherwise leak a directory the other never touches.
+        """
+        try:
+            entries = os.listdir(base_dir)
+        except OSError:
+            return  # base dir vanished between makedirs() and here
+        host = _hostname_tag()
+        for entry in sorted(entries):
             full = os.path.join(base_dir, entry)
-            if not os.path.isdir(full) or not entry.startswith(tag):
+            owner = self._read_owner_marker(full)
+            if owner is None or owner.get("host") != host:
                 continue
-            if entry == f"{self._prefix}_resume":
-                continue  # resume dir is intentionally persistent
-            pid_str = entry[len(tag) :].split("_", 1)[0]
-            if not pid_str.isdigit():
-                continue  # legacy dir without a pid tag -- cannot prove it is stale
-            pid = int(pid_str)
+            pid = owner.get("pid")
+            if not isinstance(pid, int) or pid <= 0:
+                continue
             if self._pid_alive(pid):
                 continue
             try:
                 shutil.rmtree(full)
-            except OSError as e:
+            except Exception as e:
                 logger.warning(f"OffloadManager ({self._prefix}): could not remove stale dir {full}: {e}")
                 continue
             logger.info(f"OffloadManager ({self._prefix}): removed stale temp dir {full} (dead pid {pid})")
@@ -961,7 +1136,7 @@ class OffloadManager:
             return None
         try:
             if self._weight_map is None:
-                model_dir = _resolve_model_dir(self.model_dir)
+                model_dir = _resolve_model_dir(self._get_checkpoint_dir(self._model_ref))
                 self._weight_map = _build_weight_map(model_dir)
             weight_map = self._weight_map
         except Exception as e:
@@ -1005,7 +1180,7 @@ class OffloadManager:
         return False
 
     @staticmethod
-    def _flatten_names(names: Union[list[str], list[list[str]]]) -> list[str]:
+    def _flatten_names(names: list[str] | list[list[str]]) -> list[str]:
         """Flatten a potentially nested list of names."""
         flat = []
         for item in names:

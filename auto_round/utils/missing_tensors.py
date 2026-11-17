@@ -39,171 +39,274 @@
 
 import json
 import os
-import re
-from typing import Optional, Tuple
+import tempfile
 
 import torch
 
 from auto_round.logger import logger
 from auto_round.utils.common import compress_layer_names
+from auto_round.utils.model_free_utils import (
+    _normalize_tensor_name_for_warning,
+    quantize_weight_rtn,
+    split_fused_expert_tensors,
+)
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-# ------------------------------------------------------------------ #
-# Fused expert projection patterns                                      #
-# ------------------------------------------------------------------ #
-# Maps a fused projection name to its constituent split names.
-# When a 3D tensor ``*.experts.<fused_name>`` (shape [num_experts, ...])
-# is encountered, it is split along dimension 0 of the per-expert 2-D
-# slice to produce one tensor per split name per expert.
-_FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
-    "gate_up_proj": ["gate_proj", "up_proj"],
-    "w13": ["w1", "w3"],
-}
 
-_AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
-_WARNING_INDEX_PLACEHOLDER = "<idx>"
+def _restore_special_fp32_tensors(
+    source_tensor_to_file: dict[str, str],
+    saved_tensor_to_file: dict[str, str],
+) -> None:
+    """Restore source FP32 tensors that were saved as FP16 or BF16."""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
 
-# model_type values whose native inference-engine loader (e.g. vLLM's custom
-# MoE weight loader) expects the *fused*, per-layer stacked 3-D expert
-# tensors (``experts.w13_weight`` / ``experts.w2_weight``) to be preserved
-# as-is (quantized in place) rather than unfused into per-expert 2-D
-# tensors. Splitting these would break loading for such architectures.
-_KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
+    source_to_saved: dict[str, str] = {}
+    for source_name in source_tensor_to_file:
+        if source_name in saved_tensor_to_file:
+            source_to_saved[source_name] = source_name
+
+    source_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, source_shard in source_tensor_to_file.items():
+        source_names_by_shard.setdefault(source_shard, []).append(tensor_name)
+
+    candidates: list[str] = []
+    has_low_precision_float = False
+    for source_shard, tensor_names in source_names_by_shard.items():
+        with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+            for tensor_name in tensor_names:
+                dtype = source_file.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32" and tensor_name in source_to_saved:
+                    candidates.append(tensor_name)
+
+    # An all-FP32 source has no "special" FP32 tensors; the downcast to the export dtype is intended.
+    if not has_low_precision_float:
+        return
+
+    target_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in candidates:
+        target_name = source_to_saved[tensor_name]
+        target_names_by_shard.setdefault(saved_tensor_to_file[target_name], []).append(tensor_name)
+
+    tensors_to_restore: dict[str, torch.Tensor] = {}
+    for target_shard, tensor_names in target_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            for tensor_name in tensor_names:
+                target_name = source_to_saved[tensor_name]
+                if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
+                    source_shard = source_tensor_to_file[tensor_name]
+                    with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+                        source_tensor = source_file.get_tensor(tensor_name)
+                    target_tensor = target_file.get_tensor(target_name)
+                    # Skip tensors changed beyond a plain downcast (e.g. fake-quantized weights).
+                    if source_tensor.shape == target_tensor.shape and torch.equal(
+                        source_tensor.to(target_tensor.dtype), target_tensor
+                    ):
+                        tensors_to_restore[tensor_name] = source_tensor
+
+    restore_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in tensors_to_restore:
+        restore_names_by_shard.setdefault(saved_tensor_to_file[source_to_saved[tensor_name]], []).append(tensor_name)
+
+    for target_shard, tensor_names in restore_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            metadata = target_file.metadata()
+            shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
+        for tensor_name in tensor_names:
+            shard_tensors[source_to_saved[tensor_name]] = tensors_to_restore[tensor_name]
+
+        # Preserve the original shard permission bits so the temporary file's
+        # 0600 mode is not inherited by the final replacement target.
+        original_mode = os.stat(target_shard).st_mode
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(target_shard), prefix=".restore_fp32_", suffix=".safetensors", delete=False
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+            save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
+            os.replace(temporary_path, target_shard)
+            os.chmod(target_shard, original_mode)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
+
+    if tensors_to_restore:
+        tensor_summary = compress_layer_names(list(tensors_to_restore))
+        logger.info(
+            f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
+            f"{tensor_summary}."
+        )
 
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
+def keep_special_fp32_params(model: torch.nn.Module, source_dir: str) -> list[str]:
+    """Preserve checkpoint FP32 tensors after loading or building a meta skeleton.
 
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
+    Only applies to mixed-precision checkpoints (e.g. a BF16 model that stores
+    ``linear_attn.norm.weight`` in FP32); for an all-FP32 checkpoint the load dtype is
+    intentional. Restored names are appended to ``model._keep_in_fp32_modules`` so that
+    later ``cast_model_dtype`` calls and export keep them in FP32.
+
+    Meta tensors are promoted without reading their payload; materialization later
+    loads the original FP32 values. Returns the restored or marked tensor names.
     """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if not source_tensor_to_file:
+        return []
+    from safetensors import safe_open
+
+    model_tensors = dict(model.named_parameters(remove_duplicate=False))
+    model_tensors.update(model.named_buffers(remove_duplicate=False))
+
+    names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, shard in source_tensor_to_file.items():
+        names_by_shard.setdefault(shard, []).append(tensor_name)
+
+    has_low_precision_float = False
+    candidates_by_shard: dict[str, list[str]] = {}
+    for shard, tensor_names in names_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                dtype = f.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32":
+                    tensor = model_tensors.get(tensor_name)
+                    if tensor is not None and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32):
+                        candidates_by_shard.setdefault(shard, []).append(tensor_name)
+
+    if not has_low_precision_float or not candidates_by_shard:
+        return []
+
+    restored: list[str] = []
+    for shard, tensor_names in candidates_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                tensor = model_tensors[tensor_name]
+                if tensor.device.type == "meta":
+                    if tuple(f.get_slice(tensor_name).get_shape()) != tuple(tensor.shape):
+                        continue
+                    tensor.data = tensor.to(dtype=torch.float32)
+                    restored.append(tensor_name)
+                    continue
+                value = f.get_tensor(tensor_name)
+                if value.shape != tensor.shape:
+                    continue
+                tensor.data = value.to(tensor.device)
+                restored.append(tensor_name)
+
+    if restored:
+        keep = getattr(model, "_keep_in_fp32_modules", None) or []
+        keep = [keep] if isinstance(keep, str) else list(keep)
+        model._keep_in_fp32_modules = keep + [name for name in restored if name not in keep]
+        logger.info(
+            f"Kept {len(restored)} checkpoint FP32 tensor(s) in FP32 after loading: "
+            f"{compress_layer_names(restored)}."
+        )
+    return restored
 
 
-def split_fused_expert_tensors(
-    tensors_dict: dict[str, torch.Tensor],
-    model_type: str | None = None,
-) -> dict[str, torch.Tensor]:
-    """Split 3-D fused expert tensors into per-expert 2-D tensors.
+def _resolve_source_tensor_map(source_dir: str) -> dict[str, str] | None:
+    """Return ``tensor_name -> shard_file`` for the safetensors checkpoint in *source_dir*."""
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        logger.warning("safetensors not available, skipping tensor comparison against source checkpoint")
+        return None
 
-    Many MoE checkpoints store expert weights as fused 3-D parameters
-    under either ``*.experts.<proj_name>`` or ``*.moe.<proj_name>``
-    (for example ``gate_up_proj`` with shape
-    ``[num_experts, 2*intermediate, hidden]``, or ``down_proj`` with shape
-    ``[num_experts, out, in]``).  After unfusing, each expert gets its own
-    2-D weight tensor, e.g.
-    ``experts.0.gate_proj.weight [intermediate, hidden]``.
+    if not os.path.isdir(source_dir):
+        try:
+            from auto_round.utils.model import download_hf_model
 
-    Splitting rules:
+            source_dir = download_hf_model(source_dir)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return None
 
-        * **gate_up_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
-    * **up_gate_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
-        * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
-            ``experts.{i}.<proj>.weight``
+    if not source_dir or not os.path.isdir(source_dir):
+        return None
 
-        For ``*.moe.<proj_name>`` tensors, outputs use
-        ``*.moe.experts.{i}.<proj>.weight`` so they align with the sequential
-        expert module layout used by quantized MoE replacements.
+    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
+    source_single_file = os.path.join(source_dir, "model.safetensors")
 
-    Non-3-D or non-expert tensors pass through unchanged.
+    source_tensor_to_file: dict = {}
+    if os.path.exists(source_index_file):
+        with open(source_index_file) as f:
+            src_index = json.load(f)
+        # Shard names come from the source checkpoint's own index: validate them
+        # against source_dir, then resolve at the point of use below.
+        for tensor_name, shard_file in validate_weight_map(
+            src_index["weight_map"], source_dir, index_path=source_index_file
+        ).items():
+            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
+    elif os.path.exists(source_single_file):
+        with safe_open(source_single_file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                source_tensor_to_file[key] = source_single_file
+    else:
+        return None
+    return source_tensor_to_file
 
-    Some architectures (see ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) ship a custom
-    inference-engine loader that consumes the fused 3-D stacked tensors
-    directly (quantizing/packing them in place without unfusing per expert).
-    For those ``model_type`` values, this function is a no-op passthrough.
 
-    Args:
-        tensors_dict: Mapping of tensor names to tensors.
-        model_type: Source model's ``model_type`` (from ``config.json``), used
-            to skip splitting for architectures whose native loader expects
-            fused stacked expert tensors.
+def _resolve_tensor_shard_maps(
+    source_dir: str,
+    target_dir: str,
+) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
 
-    Returns:
-        New dict with fused expert tensors replaced by per-expert 2-D tensors.
+    Returns ``None`` when either checkpoint cannot be resolved (missing config,
+    unresolvable source repo, or no safetensors present), in which case callers
+    should skip whatever tensor-level processing they were about to do.
     """
-    if (model_type or "").lower() in _KEEP_FUSED_EXPERT_MODEL_TYPES:
-        return dict(tensors_dict)
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.exists(config_path):
+        return None
 
-    result: dict[str, torch.Tensor] = {}
-    split_count = 0
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if source_tensor_to_file is None:
+        return None
+    from safetensors import safe_open
 
-    for tensor_name, tensor in tensors_dict.items():
-        if tensor.dim() != 3:
-            result[tensor_name] = tensor
-            continue
+    saved_tensor_to_file: dict[str, str] = {}
+    saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
+    saved_single_file = os.path.join(target_dir, "model.safetensors")
 
-        warning_tensor_name = _normalize_tensor_name_for_warning(tensor_name)
+    if os.path.exists(saved_index_file):
+        with open(saved_index_file) as f:
+            saved_idx = json.load(f)
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
+    elif os.path.exists(saved_single_file):
+        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
+    else:
+        return None
 
-        # Strip optional .weight suffix for pattern matching
-        stripped = tensor_name
-        stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
+    return source_tensor_to_file, saved_tensor_to_file
 
-        # Expect: <prefix>.experts.<proj_name>
-        dot_idx = stripped.rfind(".")
-        if dot_idx < 0:
-            result[tensor_name] = tensor
-            continue
 
-        parent = stripped[:dot_idx]
-        proj_name = stripped[dot_idx + 1 :]
+def restore_fp32_tensors_from_source(
+    source_dir: str,
+    target_dir: str,
+) -> None:
+    """Restore FP32 source tensors that were downcast to FP16/BF16 in the saved output.
 
-        parent_last = parent.split(".")[-1]
-        is_experts_parent = parent.endswith("experts") or parent_last == "experts"
-        is_moe_parent = parent.endswith("moe") or parent_last == "moe"
-
-        # The immediate parent must be "experts" or "moe"
-        if not is_experts_parent and not is_moe_parent:
-            logger.warning_once(
-                "Found 3-D tensor '%s' while splitting expert tensors; "
-                "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
-                "please open an issue at %s.",
-                warning_tensor_name,
-                _AUTOROUND_ISSUE_URL,
-            )
-            result[tensor_name] = tensor
-            continue
-
-        target_prefix = parent if is_experts_parent else f"{parent}.experts"
-
-        num_experts = tensor.shape[0]
-
-        if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
-            split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
-            logger.warning_once(
-                f"Splitting fused expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
-                f"into {split_names}"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [fused_out, in_features]
-                chunks = expert_2d.chunk(len(split_names), dim=0)
-                for split_name, chunk in zip(split_names, chunks):
-                    out_key = f"{target_prefix}.{i}.{split_name}.weight"
-                    result[out_key] = chunk.contiguous()
-        else:
-            logger.warning_once(
-                f"Splitting stacked expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts})"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [out, in]
-                out_key = f"{target_prefix}.{i}.{proj_name}.weight"
-                result[out_key] = expert_2d.contiguous()
-
-        split_count += 1
-
-    return result
+    This is independent of MTP/missing-tensor handling: it must run by default
+    whenever a source checkpoint can be resolved, regardless of whether
+    ``AR_DISABLE_COPY_MTP_WEIGHTS`` disables the (separate) missing-tensor copy
+    performed by :func:`copy_missing_tensors_from_source`.
+    """
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
+        return
+    source_tensor_to_file, saved_tensor_to_file = maps
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
 
 
 def copy_missing_tensors_from_source(
@@ -250,60 +353,19 @@ def copy_missing_tensors_from_source(
         logger.warning("safetensors not available, skipping copy of missing tensors from source checkpoint")
         return
 
-    # ------------------------------------------------------------------ #
-    # Resolve source directory                                             #
-    # ------------------------------------------------------------------ #
-    config_path = os.path.join(target_dir, "config.json")
-    if not os.path.exists(config_path):
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
         return
+    source_tensor_to_file, saved_tensor_to_file = maps
 
-    if not os.path.isdir(source_dir):
-        try:
-            from auto_round.utils.model import download_hf_model
+    # Also restore FP32 tensors here so direct callers of this function keep
+    # getting the restore; ``restore_fp32_tensors_from_source`` is the
+    # preferred entry point and is safe to call again (no-op once restored).
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    saved_tensor_names = set(saved_tensor_to_file)
 
-            source_dir = download_hf_model(source_dir)
-        except Exception as e:
-            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
-            return
-
-    if not source_dir or not os.path.isdir(source_dir):
-        return
-
-    # ------------------------------------------------------------------ #
-    # Build a mapping: tensor_name -> source shard file path               #
-    # ------------------------------------------------------------------ #
-    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
-    source_single_file = os.path.join(source_dir, "model.safetensors")
-
-    source_tensor_to_file: dict = {}
-    if os.path.exists(source_index_file):
-        with open(source_index_file) as f:
-            src_index = json.load(f)
-        for tensor_name, shard_file in src_index["weight_map"].items():
-            source_tensor_to_file[tensor_name] = os.path.join(source_dir, shard_file)
-    elif os.path.exists(source_single_file):
-        with safe_open(source_single_file, framework="pt", device="cpu") as f:
-            for key in f.keys():
-                source_tensor_to_file[key] = source_single_file
-    else:
-        return
-
-    # ------------------------------------------------------------------ #
-    # Collect tensor names already present in the saved output              #
-    # ------------------------------------------------------------------ #
-    saved_tensor_names: set = set()
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
     saved_single_file = os.path.join(target_dir, "model.safetensors")
-
-    if os.path.exists(saved_index_file):
-        with open(saved_index_file) as f:
-            saved_idx = json.load(f)
-        saved_tensor_names = set(saved_idx["weight_map"].keys())
-    elif os.path.exists(saved_single_file):
-        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_names = set(f.keys())
-    else:
-        return
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
@@ -347,34 +409,33 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _name_aliases(name: str) -> set:
-        """Return a set of equivalent tensor-name variants to match against saved tensors.
+    def _is_missing_by_name(name: str) -> bool:
+        if name in saved_tensor_names:
+            return False
+        parent = name.rsplit(".", 1)[0]
+        if parent in saved_parent_layers:
+            return False
+        # For split experts, name is changed but block name is the same.
+        block = _first_numeric_prefix(name)
+        if block is not None:
+            return block not in saved_block_prefix
+        return True
 
-        Handles models where the source and saved prefixes differ, e.g.
-        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
-        """
-        aliases = {name}
-        if name.startswith("language_model.model."):
-            aliases.add("model.language_model." + name[len("language_model.model.") :])
-        elif name.startswith("model.language_model."):
-            aliases.add("language_model.model." + name[len("model.language_model.") :])
-        return aliases
+    nested_trunk_source, nested_trunk_saved = "language_model.backbone.", "language_model.model."
 
     def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        aliases = _name_aliases(name)
-        if aliases & saved_tensor_names:
+        if not _is_missing_by_name(name):
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
-        if parents & saved_parent_layers:
-            return False
-        # For split experts, name is changed but block name is the same.
-        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
-        if blocks:
-            return not (blocks & saved_block_prefix)
+        # Nemotron-H Omni checkpoints store the language-model trunk as
+        # ``language_model.backbone.*`` while the quantized model saves it as
+        # ``language_model.model.*``; without this alias every quantized LM block
+        # would be re-copied from the source in BF16.
+        if name.startswith(nested_trunk_source):
+            return _is_missing_by_name(nested_trunk_saved + name[len(nested_trunk_source) :])
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
@@ -502,6 +563,16 @@ def copy_missing_tensors_from_source(
         return
 
     # ------------------------------------------------------------------ #
+    # compressed-tensors: register copied-through modules in ``ignore``     #
+    # ------------------------------------------------------------------ #
+    # For the compressed-tensors / llm_compressor export format these tensors
+    # are written unquantized (BF16). If a ``config_groups`` group targets the
+    # bare class name ``"Linear"`` (a catch-all), an inference engine such as
+    # vLLM applies that scheme to every ``nn.Linear`` not listed in ``ignore``
+    # and then fails to load these scale-less modules. Add them to ``ignore``.
+    _register_missing_modules_in_ct_ignore(target_dir, missing_tensors_dict)
+
+    # ------------------------------------------------------------------ #
     # Write missing tensors to a new shard and update the index             #
     # ------------------------------------------------------------------ #
     is_sharded = os.path.exists(saved_index_file)
@@ -534,172 +605,92 @@ def copy_missing_tensors_from_source(
     )
 
 
-def quantize_weight_rtn(
-    weight: torch.Tensor,
-    bits: int,
-    group_size: int,
-    sym: bool = True,
-    device: Optional[torch.device] = None,
-    disable_opt_rtn: bool = True,
-    *,
-    packing: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Quantize a 2-D weight tensor and pack into auto_gptq format.
+def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict: dict) -> None:
+    """Add copied-through (unquantized) Linear modules to the compressed-tensors ``ignore`` list.
 
-    Parameters
-    ----------
-    weight : Tensor [out_features, in_features]
-    bits   : target bit-width (e.g. 4, 8)
-    group_size : quantization group size along in_features
-    sym    : use symmetric quantisation
-    device : compute device (cuda / cpu). Results are always returned on CPU.
-    disable_opt_rtn : when False and sym=True, use the optimised-RTN scale
-        search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
-        candidates per group and picks the best MSE.  Defaults to True
-        (plain RTN) to preserve backward-compatible behaviour.
-    packing : the packing_format the artifact will declare (required); the
-        zero-point convention follows the inference backend registry.  GPTQ_FORMAT
-        entries ("auto_round:auto_gptq", qlinear_torch_zp) store zp - 1 per
-        nibble and unpack with +1; GPTQ_FORMAT_NO_ZP entries ("auto_round",
-        "auto_round:gptqmodel", qlinear_torch) store the zero point directly.
-        Any other value raises.
+    When ``transformers`` does not instantiate a submodule (most notably **MTP /
+    multi-token-prediction** layers), AutoRound copies its original weights into
+    the saved checkpoint verbatim (see :func:`copy_missing_tensors_from_source`),
+    leaving them unquantized (no ``weight_scale``).
 
-    Returns
-    -------
-    qweight : [in_features // pack_factor, out_features]  int32
-    qzeros  : [num_groups,  out_features // pack_factor]   int32
-    scales  : [num_groups,  out_features]                   float16
+    For the compressed-tensors / llm_compressor export format, a ``config_groups``
+    group whose ``targets`` include the bare class name ``"Linear"`` acts as a
+    catch-all that an inference engine (e.g. vLLM) applies to *every* ``nn.Linear``
+    that is not listed in ``ignore``. Because the copied-through modules carry no
+    scales, loading fails unless they are explicitly ignored. This function adds
+    their module names to ``ignore`` in both ``config.json`` (the embedded copy
+    engines read) and the standalone ``quantization_config.json``.
+
+    This is a no-op for the WOQ / ``auto_round:auto_gptq`` export path (which has
+    no ``config_groups`` and handles missing tensors via ``extra_config`` in
+    :func:`_woq_quantize_missing_tensors`).
+
+    Args:
+        target_dir: Output directory that contains ``config.json``.
+        missing_tensors_dict: Dict mapping copied-through tensor names to values.
     """
-    assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
-    from auto_round.inference.backend import GPTQ_FORMAT, GPTQ_FORMAT_NO_ZP
+    import re as _re
 
-    if packing in GPTQ_FORMAT:
-        zp_minus_one = True
-    elif packing in GPTQ_FORMAT_NO_ZP:
-        zp_minus_one = False
-    else:
-        raise ValueError(
-            f"unsupported packing format '{packing}': zero-point conventions are defined only for "
-            f"{GPTQ_FORMAT} (zp - 1, unpacked with +1) and {GPTQ_FORMAT_NO_ZP} (zp stored directly)"
+    # Only 2-D Linear weights can be matched by a "Linear" catch-all target.
+    missing_linear_modules = sorted(
+        {
+            name[: -len(".weight")]
+            for name, tensor in missing_tensors_dict.items()
+            if name.endswith(".weight") and getattr(tensor, "dim", lambda: 0)() == 2
+        }
+    )
+    if not missing_linear_modules:
+        return
+
+    def _is_compressed_tensors(qcfg: dict) -> bool:
+        return (
+            isinstance(qcfg, dict)
+            and qcfg.get("quant_method") == "compressed-tensors"
+            and isinstance(qcfg.get("config_groups"), dict)
         )
-    out_features, in_features = weight.shape
-    if device is None:
-        device = weight.device
-    # Single-step transfer + cast avoids an intermediate BF16 copy on CUDA
-    # (``weight.to(device).float()`` would briefly allocate both BF16 and
-    # float32 buffers on the target device).
-    weight = weight.to(device=device, dtype=torch.float32)
 
-    # --- pad in_features to multiple of group_size ---
-    if in_features % group_size != 0:
-        pad = group_size - (in_features % group_size)
-        weight = torch.nn.functional.pad(weight, (0, pad))
-        in_features = weight.shape[1]
+    def _already_ignored(ignore_list: list, module_name: str) -> bool:
+        for entry in ignore_list:
+            if entry == module_name:
+                return True
+            if isinstance(entry, str) and entry.startswith("re:"):
+                try:
+                    if _re.match(entry[len("re:") :], module_name):
+                        return True
+                except _re.error:
+                    continue
+        return False
 
-    num_groups = in_features // group_size
-    pack_factor = 32 // bits  # values per int32
+    def _update_qcfg(qcfg: dict) -> list:
+        ignore_list = qcfg.get("ignore")
+        if not isinstance(ignore_list, list):
+            ignore_list = []
+        added = [m for m in missing_linear_modules if not _already_ignored(ignore_list, m)]
+        if added:
+            qcfg["ignore"] = ignore_list + added
+        return added
 
-    # --- pad out_features to multiple of pack_factor (needed for qzeros) ---
-    out_pad = 0
-    if out_features % pack_factor != 0:
-        out_pad = pack_factor - (out_features % pack_factor)
-        weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
-    padded_out = weight.shape[0]
-
-    from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size
-
-    # Use get_quant_func (same as WrapperLinear) so all data types and opt_rtn
-    # variants are resolved via the QUANT_FUNC_WITH_DTYPE registry uniformly.
-    quant_func, _ = get_quant_func("int", bits, sym=sym, disable_opt_rtn=disable_opt_rtn, iters=0)
-    # quant_func returns (qdq_result, scale, zp_or_maxq)
-    _, scale, zp_val = quant_func(weight, bits=bits, group_size=group_size)
-
-    if sym:
-        maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
-        zero_point = maxq  # unsigned offset for packing
-
-        # scale shape: [padded_out * num_groups, 1]
-        # Reshape weight for group-wise quantization: [padded_out * num_groups, group_size]
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_().clamp_(-maxq, maxq - 1)
-        del w_grouped
-        q += zero_point  # shift to unsigned [0, 2*maxq - 1]
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
-    else:
-        # Asymmetric quantization
-        max_int = (1 << bits) - 1
-
-        # scale shape: [padded_out * num_groups, 1], zp_val shape: [padded_out * num_groups, 1]
-
-        # Reshape weight for group-wise quantization
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_()
-        del w_grouped
-        q += zp_val
-        q.clamp_(0, max_int)
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        # zp → [num_groups, padded_out]
-        zp = zp_val.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.int32)
-        del zp_val
-
-    # q → [in_features, padded_out]
-    q = q.reshape(padded_out, in_features).t().contiguous()
-
-    # ---- Pack qweight: [in_features // pack_factor, padded_out] ----
-    # Vectorised: reshape → broadcast shift → int64 sum (≡ bitwise-OR for
-    # non-overlapping bit lanes) avoids a Python loop per bit-lane.
-    _shifts = torch.arange(pack_factor, dtype=torch.int64, device=device) * bits
-    q_packed = q.reshape(in_features // pack_factor, pack_factor, padded_out).to(torch.int64)
-    del q
-    qweight = (q_packed << _shifts[None, :, None]).sum(dim=1).to(torch.int32)
-    del q_packed
-
-    # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    # The zero-point convention is a property of the declared packing format
-    # (see the backend registry): the auto_round:auto_gptq format
-    # (qlinear_torch_zp) adds +1 to zeros after unpacking, so we subtract 1
-    # before packing to compensate. The (zp-1) packing cannot represent
-    # zp=0: a -1 left-shifts into a negative word and corrupts every nibble
-    # sharing it. Clamp the stored value so only that zero-point degrades
-    # (decodes as +1). Formats in GPTQ_FORMAT_NO_ZP (plain qlinear_torch)
-    # read the nibble as the zero point directly, so it is stored as-is
-    # (symmetric packing stores the offset-binary constant the same way:
-    # 7 for the gptq family, 8 for the direct family).
-    if zp_minus_one:
-        zp = (zp - 1).clamp_(0, (1 << bits) - 1)
-    else:
-        zp = zp.clamp_(0, (1 << bits) - 1)
-    zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
-    del zp
-    qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
-    del zp_packed, _shifts
-
-    # Remove output padding from qweight / scales (qzeros stays in pack units)
-    if out_pad > 0:
-        qweight = qweight[:, :out_features]
-        scales_out = scales_out[:, :out_features]
-
-    # Always return CPU tensors (safetensors requires CPU)
-    return qweight.cpu(), qzeros.cpu(), scales_out.cpu()
+    for cfg_file in ["config.json", "quantization_config.json"]:
+        cfg_path = os.path.join(target_dir, cfg_file)
+        if not os.path.exists(cfg_path):
+            continue
+        try:
+            with open(cfg_path) as f:
+                cfg_data = json.load(f)
+            qcfg = cfg_data.get("quantization_config", {}) if cfg_file == "config.json" else cfg_data
+            if not _is_compressed_tensors(qcfg):
+                continue
+            added = _update_qcfg(qcfg)
+            if not added:
+                continue
+            with open(cfg_path, "w") as f:
+                json.dump(cfg_data, f, indent=2)
+            logger.info(
+                f"Added {len(added)} copied-through module(s) to the compressed-tensors "
+                f"'ignore' list in {cfg_file}: {compress_layer_names(added)}"
+            )
+        except Exception as e:  # pragma: no cover - defensive, mirrors sibling handlers
+            logger.warning(f"Failed to update 'ignore' in {cfg_file}: {e}")
 
 
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:
@@ -731,7 +722,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".mlp.gate.", ".g_proj.", "mtp.fc."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
@@ -746,9 +737,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     # Pre-compile all valid regex patterns once to avoid repeated re.compile() calls
     # for every tensor lookup (O(N×M) → O(M) compile + O(N×M) match).
     _compiled_patterns: list = []
-    for pattern in extra_config:
+    for pattern, pattern_cfg in extra_config.items():
         try:
-            _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
+            _compiled_patterns.append((_re.compile(pattern), pattern, pattern_cfg))
         except _re.error as exc:
             logger.warning(
                 "Invalid regex key in extra_config ignored during pre-compilation: %r (%s)",
@@ -840,7 +831,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 if isinstance(block_name_to_quantize, list)
                 else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
             )
-            if not any(k.startswith(b + ".") or k.startswith(b + "[") for b in blocks):
+            if not any(k.startswith((b + ".", b + "[")) for b in blocks):
                 return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)

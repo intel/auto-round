@@ -13,20 +13,80 @@
 # limitations under the License.
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache, wraps
+from types import SimpleNamespace
 from typing import Any
 
 import torch
 import transformers
 from packaging import version
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
+
+
+def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "<idx>") -> str:
+    """Normalize tensor names for warning deduplication.
+
+    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
+    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
+    (``<idx>`` by default) so warning keys are stable across different
+    layer/expert ids.
+    """
+    parts = name.split(".")
+    normalized_parts = []
+    for part in parts:
+        if part.isdigit():
+            normalized_parts.append(numeric_replacement)
+            continue
+        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
+    return ".".join(normalized_parts)
+
+
+def _compact_name_diffs(a: str, b: str) -> tuple[str, str]:
+    """Return the minimal differing fragments of two dotted/comma-separated names.
+
+    Handles comma-separated lists by diffing each corresponding part. For each
+    dotted name pair, the common prefix and suffix are stripped and only the
+    differing middle is returned. If nothing differs, returns the last segment.
+    This keeps log messages short and focused on the changed fields.
+    """
+
+    def _single_diff(x: str, y: str) -> tuple[str, str]:
+        x_parts = x.split(".")
+        y_parts = y.split(".")
+        # common prefix
+        i = 0
+        while i < len(x_parts) and i < len(y_parts) and x_parts[i] == y_parts[i]:
+            i += 1
+        # common suffix
+        j = 0
+        while j < len(x_parts) - i and j < len(y_parts) - i and x_parts[-1 - j] == y_parts[-1 - j]:
+            j += 1
+        x_mid = x_parts[i : len(x_parts) - j] if i < len(x_parts) - j else [x_parts[-1]]
+        y_mid = y_parts[i : len(y_parts) - j] if i < len(y_parts) - j else [y_parts[-1]]
+        return ".".join(x_mid), ".".join(y_mid)
+
+    if "," in a or "," in b:
+        a_list = [p.strip() for p in a.split(",")]
+        b_list = [p.strip() for p in b.split(",")]
+        max_len = max(len(a_list), len(b_list))
+        a_list += [""] * (max_len - len(a_list))
+        b_list += [""] * (max_len - len(b_list))
+        a_out = []
+        b_out = []
+        for ax, bx in zip(a_list, b_list):
+            ad, bd = _single_diff(ax, bx)
+            a_out.append(ad)
+            b_out.append(bd)
+        return ",".join(a_out), ",".join(b_out)
+    return _single_diff(a, b)
 
 
 def download_audiocaps_csv():
@@ -42,8 +102,8 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    # Prefer AR_WORKSPACE environment variable for cache location when provided.
-    ar_workspace = os.environ.get("AR_WORKSPACE")
+    # Prefer the documented AR_WORK_SPACE (or the legacy AR_WORKSPACE) for the cache location when set.
+    ar_workspace = os.environ.get("AR_WORK_SPACE") or os.environ.get("AR_WORKSPACE")
     if ar_workspace:
         cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
     else:
@@ -66,7 +126,7 @@ def download_audiocaps_csv():
         logger.info(f"AudioCaps dataset cached at: {cache_file}")
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to download AudioCaps from {url}: {e}") from e
-    except IOError as e:
+    except OSError as e:
         raise RuntimeError(f"Failed to write AudioCaps cache to {cache_file}: {e}") from e
 
     return cache_file
@@ -86,7 +146,7 @@ TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
-class LazyImport(object):
+class LazyImport:
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
@@ -347,7 +407,7 @@ def monkey_patch_transformers():
     if parsed_version >= version.parse("5.0.0"):
         from transformers.initialization import no_init_weights
 
-        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+        transformers.modeling_utils.no_init_weights = no_init_weights
     if parsed_version >= version.parse("5.2.0"):
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
@@ -359,10 +419,25 @@ def monkey_patch_transformers():
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
     _patch_nvfp4_e5m3_compressed_tensors_quantizer()
+    _patch_qwen4_exp_qsa_indexer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_qwen4_exp_qsa_indexer():
+    """Vectorize the Qwen4-Exp / Qwen3.8-Flash-Next QSA indexer.
+
+    The upstream indexer walks every (batch, query) pair in Python and issues a
+    handful of tiny kernels per token, so the full-attention blocks of
+    Qwen3.8-Flash-Next take minutes each during tuning. See
+    ``auto_round/modeling/qwen4_exp_qsa.py`` and intel/auto-round#2323.
+    """
+    from auto_round.modeling.qwen4_exp_qsa import patch_qwen4_exp_indexer
+
+    if patch_qwen4_exp_indexer():
+        logger.debug("Applied vectorized QSA indexer patch for Qwen4-Exp.")
 
 
 def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
@@ -379,7 +454,10 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
 
     def is_nvfp4_e5m3(self):
         compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
-        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+        return getattr(compression_config, "format", None) in (
+            "nvfp4-e5m3-pack-quantized",
+            "nvfp4-e5m3-gs-pack-quantized",
+        )
 
     def patched_before(self, model, **kwargs):
         if not is_nvfp4_e5m3(self):
@@ -387,7 +465,9 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
         from auto_round.inference.convert_model import convert_hf_model
 
         model.config.quantization_config = self.compressor.quantization_config
-        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        from auto_round.utils.device_manager import get_major_device
+
+        target_device = get_major_device()
         model, _ = convert_hf_model(model, target_device=target_device)
         self.run_compressed = True
         return model
@@ -646,36 +726,22 @@ htcore = LazyImport("habana_frameworks.torch.core")
 
 
 class SupportedFormats:
+    """Live view of public registered formats and GGUF configuration aliases."""
 
-    def __init__(self):
-        self._support_format = (
-            "auto_round",
-            "auto_gptq",
-            "auto_awq",
-            "auto_round:auto_gptq",
-            "auto_round:gptqmodel",
-            "auto_round:auto_awq",
-            "auto_round:llm_compressor",
-            "fake",
-            "llm_compressor",
-            "fp8",
-            "auto_round:fp8",
-            "mlx",
-            "auto_round:mlx",
-            "svdquant_nunchaku",
-        )
-        self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
-        self._support_list = self._support_format + self._gguf_format
+    @staticmethod
+    def _names():
+        from auto_round.export.registry import public_format_names
+
+        return public_format_names()
 
     def __contains__(self, key):
-        return True if key in self._support_list else False
+        return key in self._names()
 
     def __str__(self):
-        # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-        return "(%s)" % ", ".join(self._support_list)
+        return f"({', '.join(self._names())})"
 
     def __getitem__(self, key):
-        return self._support_list[key]
+        return self._names()[key]
 
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings", "cu_seqlens")
@@ -836,23 +902,26 @@ def to_standard_regex(pattern: str) -> str:
     '.*mlp.*gate.*'
     """
     # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
+    meta_chars = {"*", "{", "}", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
     has_regex = any(tok in pattern for tok in meta_chars)
     if not has_regex:
         # Escape literal dots, etc., and wrap with .* for substring matching
         pattern = re.escape(pattern)
         regex = f".*{pattern}.*"
     else:
-        # Only escape bare dots that are not already part of regex constructs
-        # Avoid double escaping .* sequences
+        # Only escape bare dots that are not already part of regex constructs:
+        # keep escape sequences (e.g. "\\.", "\\d") and quantified dots
+        # (".*", ".+", ".?", ".{n}") unchanged.
         tmp = []
         i = 0
         while i < len(pattern):
+            if pattern[i] == "\\" and i + 1 < len(pattern):
+                tmp.append(pattern[i : i + 2])  # keep escape sequence
+                i += 2
+                continue
             if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                    tmp.append(".*")  # keep regex token
-                    i += 2
-                    continue
+                if i + 1 < len(pattern) and pattern[i + 1] in "*+?{":
+                    tmp.append(".")  # keep regex token
                 else:
                     tmp.append("\\.")  # escape bare dot
             else:
@@ -1022,6 +1091,8 @@ def parse_layer_config_arg(s: str) -> dict:
                 in_string = False
             escaped.append(ch)
             index += 1
+
+        return "".join(escaped)
 
     s = strip_matching_quotes(s)
 
@@ -1216,19 +1287,193 @@ def get_reverse_checkpoint_conversion_mapping(model):
         v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
     }
 
-    if hasattr(model, "_weight_conversions"):
-        weight_conversions = model._weight_conversions
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    # Models built from config (e.g. AutoRound's meta / disk-stream skeleton in
+    # ``build_meta_model`` via ``model_cls(config)``) are NOT created through
+    # ``from_pretrained``, so transformers never attaches ``_weight_conversions``.
+    # Without it the per-family renames registered centrally in
+    # ``transformers/conversion_mapping.py`` (transformers >= 5.x) are lost, and
+    # module-side names such as ``attn_hc.base`` / ``self_attn.forget_gate.*``
+    # (glm5_next, deepseek_v4, ...) get written to the checkpoint verbatim instead
+    # of their original ``hc_attn_base`` / ``self_attn.*`` names, breaking reload
+    # (e.g. vLLM ``KeyError: 'layers.0.attn_hc.base'``). Fall back to the central
+    # registry and reverse those entries ourselves in that case.
+    if not weight_conversions and hasattr(transformers, "conversion_mapping"):
+        try:
+            from transformers.conversion_mapping import (
+                get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+            )
+        except ImportError:  # pragma: no cover - transformers < 5
+            transformers_get_checkpoint_conversion_mapping = None
+
+        config = getattr(model, "config", None)
+        if transformers_get_checkpoint_conversion_mapping is not None and config is not None:
+            # Include the text sub-model type for composite models (e.g. VLMs), where
+            # the MoE / hyper-connection renames are registered on the text config.
+            model_types = []
+            for candidate in (
+                getattr(config, "model_type", None),
+                getattr(getattr(config, "text_config", None), "model_type", None),
+            ):
+                if candidate and candidate not in model_types:
+                    model_types.append(candidate)
+
+            weight_conversions = []
+            seen = set()
+            for model_type in model_types:
+                mapping = transformers_get_checkpoint_conversion_mapping(model_type)
+                if not mapping:
+                    continue
+                for entry in mapping:
+                    sig = (tuple(entry.source_patterns), tuple(entry.target_patterns))
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    weight_conversions.append(entry)
+
+    # ``PrefixChange`` transforms (e.g. ``qwen3_5_text``'s
+    # ``PrefixChange(prefix_to_remove="language_model", model_prefix="model")``)
+    # rely on a ``^`` anchor plus a negative look-ahead to add/remove a full
+    # prefix exactly once. The flattened regex applier
+    # (:func:`revert_checkpoint_conversion_mapping`) strips that ``^`` anchor, so
+    # the reverse ``^model\.(?:(?!language_model\.))(.+)$`` -> ``model.language_model.\1``
+    # no longer anchors at the start and instead matches the ``model.`` embedded
+    # inside ``language_model.``, doubling the prefix
+    # (``model.language_model.language_model.layers.*``) and bloating the export.
+    # These prefix changes are handled safely by the scope-aware
+    # :func:`get_reverse_weight_transforms` path, so drop them here.
+    try:
+        from transformers.core_model_loading import PrefixChange
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitive
+        PrefixChange = None
+
+    if weight_conversions:
         for weight_conversion in weight_conversions:
-            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            if PrefixChange is not None and isinstance(weight_conversion, PrefixChange):
+                continue
+            try:
+                reverse_conversion_mapping = weight_conversion.reverse_transform()
+            except Exception:  # pragma: no cover - not every transform is reversible (e.g. quantized converters)
+                continue
+            if PrefixChange is not None and isinstance(reverse_conversion_mapping, PrefixChange):
+                continue
             for source_pattern in reverse_conversion_mapping.source_patterns:
                 reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
 
     return reverse_checkpoint_conversion_mapping
 
 
-def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+def get_reverse_weight_transforms(model):
+    """Build transformers' scope-aware reverse weight transforms for ``model``.
+
+    Returns a ``(renamings, converters)`` tuple of reversed ``WeightTransform``
+    objects, or ``None`` when transforms are unavailable (transformers too old,
+    or nothing to revert).
+
+    This mirrors ``transformers.core_model_loading.revert_weight_conversion`` so
+    AutoRound reverts parameter names exactly the way transformers itself does
+    when saving, honouring each transform's ``scope_prefix`` / ``base_model_prefix``
+    and ``^`` anchors. Two sources are used, in order:
+
+    * ``model._weight_conversions`` -- attached only to ``from_pretrained`` models;
+      the exact, already-scoped transforms that were used at load time.
+    * ``get_model_conversion_mapping(model, add_legacy=False)`` -- for models built
+      ``from_config`` (e.g. AutoRound's meta / disk-stream skeleton), rebuilt from
+      the model's real module tree so every transform is correctly scoped. As
+      transformers does in this case, ``PrefixChange`` transforms are dropped:
+      because the model was not loaded from a checkpoint we cannot know whether a
+      prefix was present, and re-adding it corrupts keys -- doubling
+      ``language_model`` (``model.language_model.language_model.layers.*``) or
+      nesting the sibling vision tower (``model.language_model.visual.*``).
+
+    The flattened ``{source: target}`` regex path in
+    :func:`revert_checkpoint_conversion_mapping`, by contrast, drops both the
+    ``^`` anchor and the per-sub-model scope, which is precisely what triggers the
+    prefix-doubling / vision-nesting corruption above.
+    """
+    try:
+        from transformers.core_model_loading import PrefixChange, WeightConverter, WeightRenaming
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitives
+        return None
+
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    if not weight_conversions:
+        # Model not created via ``from_pretrained`` -> rebuild scoped transforms
+        # from the real module tree and drop ``PrefixChange`` (see docstring).
+        try:
+            from transformers.conversion_mapping import get_model_conversion_mapping
+
+            weight_conversions = get_model_conversion_mapping(model, add_legacy=False)
+        except Exception:  # pragma: no cover - no module tree / older transformers
+            return None
+        weight_conversions = [c for c in weight_conversions if not isinstance(c, PrefixChange)]
+
+    if not weight_conversions:
+        return None
+
+    try:
+        # Mirror transformers.core_model_loading.revert_weight_conversion: reverse
+        # the conversion order first, then reverse each individual transform.
+        reversed_conversions = [conversion.reverse_transform() for conversion in list(weight_conversions)[::-1]]
+    except Exception:  # pragma: no cover - not every transform is reversible
+        return None
+
+    renamings = [entry for entry in reversed_conversions if isinstance(entry, WeightRenaming)]
+    converters = [entry for entry in reversed_conversions if isinstance(entry, WeightConverter)]
+    if not renamings and not converters:
+        return None
+    return renamings, converters
+
+
+def revert_name_with_weight_transforms(name: str, transforms) -> str:
+    """Revert ``name`` to its original checkpoint form using scope-aware transforms.
+
+    ``transforms`` is the ``(renamings, converters)`` tuple returned by
+    :func:`get_reverse_weight_transforms`. Applies transformers'
+    ``rename_source_key`` (reverse mode) so the reverse honours each transform's
+    ``scope_prefix`` / ``base_model_prefix`` and ``^`` anchors, avoiding the
+    prefix-leak / double-prefix corruption of the flattened regex fallback. On
+    any failure it returns ``name`` unchanged so saving never crashes.
+    """
     if "," in name:
-        return ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+        return ",".join(revert_name_with_weight_transforms(part, transforms) for part in name.split(","))
+
+    renamings, converters = transforms
+    try:
+        from transformers.core_model_loading import rename_source_key
+
+        renamed_key, _ = rename_source_key(name, renamings, converters, reverse=True)
+        if renamed_key != name:
+            norm_orig = _normalize_tensor_name_for_warning(name, numeric_replacement="[idx]")
+            norm_new = _normalize_tensor_name_for_warning(renamed_key, numeric_replacement="[idx]")
+            a_diff, b_diff = _compact_name_diffs(norm_orig, norm_new)
+            logger.warning_once(
+                "Transformers checkpoint->model renaming detected: '%s' -> '%s'. Using reverted checkpoint name.",
+                a_diff,
+                b_diff,
+            )
+        return renamed_key
+    except Exception:  # pragma: no cover - defensive: never break saving on rename
+        return name
+
+
+def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    original_name = name
+    if "," in name:
+        # handle comma-separated lists by mapping each part independently
+        reverted = ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+        if reverted != original_name:
+            norm_orig = _normalize_tensor_name_for_warning(original_name, numeric_replacement="[idx]")
+            norm_rev = _normalize_tensor_name_for_warning(reverted, numeric_replacement="[idx]")
+            a_diff, b_diff = _compact_name_diffs(norm_orig, norm_rev)
+            logger.warning_once(
+                "Transformers checkpoint->model flattened conversion detected: '%s' -> '%s'.",
+                a_diff,
+                b_diff,
+            )
+        return reverted
 
     for source_pattern, target_patterns in key_mapping.items():
         if isinstance(target_patterns, str):
@@ -1238,6 +1483,16 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             # Skip stripping the capture group if the target backreferences it,
             # otherwise re.subn raises "invalid group reference".
             if not re.search(r"\\g?<?\d+>?", target_pattern):
+                # A capture group that matches a numeric index (e.g.
+                # ``ngram_embedding.shard_(\d+).weight``) must NOT be stripped:
+                # dropping it and applying the rule would rewrite every
+                # ``shard_0, shard_1, ... shard_N`` onto the *same* reverted name,
+                # silently collapsing hundreds of distinct tensors into one (all
+                # but the first are then dropped by the saver's dedup guard).
+                # Such a rule cannot be expressed without a backreference, so skip
+                # it entirely and keep the original (indexed) name intact.
+                if re.search(r"\([^)]*(?:\\d|\[0-9\])[^)]*\)", source_pattern):
+                    continue
                 source_pattern = re.sub(r"\(.*\)", "", source_pattern)
 
             # Weight-conversion reverse mappings may expose bare tensor names
@@ -1253,6 +1508,15 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             name, n_replace = re.subn(match_pattern, target_pattern, name)
             # Early exit of the loop
             if n_replace > 0:
+                if name != original_name:
+                    norm_orig = _normalize_tensor_name_for_warning(original_name, numeric_replacement="[idx]")
+                    norm_new = _normalize_tensor_name_for_warning(name, numeric_replacement="[idx]")
+                    a_diff, b_diff = _compact_name_diffs(norm_orig, norm_new)
+                    logger.warning_once(
+                        "Transformers checkpoint->model flattened conversion detected [Recover]: '%s' -> '%s'.",
+                        a_diff,
+                        b_diff,
+                    )
                 return name
     return name
 
@@ -1282,6 +1546,21 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
             preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.language_model.") and reverted_part.startswith(
+            "thinker.model.layers"
+        ):
+            # Qwen-Omni checkpoints use ``thinker.model.layers`` while newer
+            # Transformers exposes them as ``thinker.model.language_model.layers``.
+            # Keep both so runtimes can match either layout.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.") and reverted_part == original_part.replace(
+            "thinker.model.", "thinker.", 1
+        ):
+            # Vision/audio towers move between ``thinker.<tower>`` and
+            # ``thinker.model.<tower>`` across Transformers releases.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
         else:
             preserved_parts.append(reverted_part)
 
@@ -1299,7 +1578,52 @@ def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) 
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             name, n_replace = re.subn(source_pattern, target_pattern, name)
-            # Early exit of the loop
             if n_replace > 0:
-                return name
+                break
     return name
+
+
+def expand_layer_config_for_weight_renames(
+    layer_config: dict | None,
+    *,
+    model=None,
+    model_type: str | None = None,
+    to_model_names: bool,
+) -> dict:
+    """Add layer-config aliases across Transformers checkpoint renames.
+
+    Existing keys always win over generated aliases. Regular model workflows
+    use ``to_model_names=True`` because matching happens against
+    ``model.named_modules()``; model-free workflows use checkpoint-side names
+    from the source shards and therefore set it to ``False``.
+    """
+    expanded = copy.deepcopy(layer_config) if layer_config else {}
+    if not expanded:
+        return expanded
+
+    if model is None:
+        model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+
+    if to_model_names:
+        # get_reverse_checkpoint_conversion_mapping is intended.
+        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
+        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        key_mapping = {}
+        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+            if isinstance(target_patterns, str):
+                target_patterns = [target_patterns]
+            for target_pattern in target_patterns:
+                key_mapping.setdefault(target_pattern, []).append(source_pattern)
+        convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
+    else:
+        key_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)
+
+    if not key_mapping:
+        return expanded
+
+    for name, config in list(expanded.items()):
+        converted_name = convert_name(name)
+        if converted_name != name:
+            expanded.setdefault(converted_name, copy.deepcopy(config))
+    return expanded

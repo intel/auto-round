@@ -478,7 +478,6 @@ def test_disable_model_free_opt_out(tiny_opt_model_path):
         ("plain_rtn", True, {"disable_opt_rtn": True}),
     ],
 )
-@pytest.mark.timeout(60)
 def test_mxfp_auto_scheme_quantization_config_parity(
     tmp_path, tiny_opt_model_path, test_name, model_free_disable_opt_rtn, regular_kwargs
 ):

@@ -1,4 +1,5 @@
 import copy
+import gc
 import shutil
 
 import pytest
@@ -16,12 +17,10 @@ class TestAutoRoundXPU:
     @classmethod
     def setup_class(self):
         self.device = "xpu"
-        pass
 
     @classmethod
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
-        pass
 
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
@@ -29,7 +28,6 @@ class TestAutoRoundXPU:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_gptq_format(self, dataloader):
         model_name = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(
@@ -126,7 +124,6 @@ class TestAutoRoundXPU:
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
-    @pytest.mark.timeout(120)
     def test_vlm_model(self, dataloader):
         scheme = "W4A16"
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
@@ -194,11 +191,9 @@ class TestAutoRoundXPU:
         )
         print(output_text[0])
 
-    @pytest.mark.timeout(90)
-    def test_quant_lm_head(self, dataloader):
+    def test_quant_lm_head(self, tiny_untied_qwen_model_path, dataloader):
         bits, sym, group_size = 4, True, 128
-        # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
-        model_name = get_model_path("Qwen/Qwen3-8B")
+        model_name = tiny_untied_qwen_model_path
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
@@ -224,11 +219,15 @@ class TestAutoRoundXPU:
         _, quantized_model_path = ar.quantize_and_save(
             output_dir=quantized_model_path, inplace=True, format="auto_round"
         )
+        del ar
+        gc.collect()
+        torch.xpu.empty_cache()
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)

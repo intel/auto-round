@@ -157,10 +157,13 @@ class TestDiffusionCalibrator:
         calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator._requires_calibration_image = lambda: False
 
-        with patch(
-            "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
-            return_value=(new_dataloader, 2),
-        ), patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+        with (
+            patch(
+                "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
+                return_value=(new_dataloader, 2),
+            ),
+            patch("auto_round.calibration.diffusion.tqdm", FakeTqdm),
+        ):
             calibrator.calib(nsamples=2, bs=1)
 
         assert calibrator.dataloader is new_dataloader
@@ -203,12 +206,14 @@ class TestDiffusionCalibrator:
         )
         calibrator.dataset = "mock"
 
-        with patch(
-            "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
-            return_value=([], 2),
+        with (
+            patch(
+                "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
+                return_value=([], 2),
+            ),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                calibrator.calib(nsamples=1, bs=1)
+            calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_moves_pipeline_to_target_device(self, calibrator):
         seen = []
@@ -224,9 +229,12 @@ class TestDiffusionCalibrator:
 
         calibrator.pipe.to = fake_to
 
-        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), patch(
-            "auto_round.calibration.diffusion.device_manager",
-            SimpleNamespace(device="cuda:0"),
+        with (
+            patch("auto_round.calibration.diffusion.tqdm", FakeTqdm),
+            patch(
+                "auto_round.calibration.diffusion.device_manager",
+                SimpleNamespace(device="cuda:0"),
+            ),
         ):
             calibrator.calib(nsamples=2, bs=1)
 
@@ -294,9 +302,11 @@ class TestDiffusionCalibrator:
         calibrator.pipe = FakePipeline(fn=failing_pipe)
         calibrator._requires_calibration_image = lambda: False
 
-        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(NotImplementedError, match="unsupported op"):
-                calibrator.calib(nsamples=1, bs=1)
+        with (
+            patch("auto_round.calibration.diffusion.tqdm", FakeTqdm),
+            pytest.raises(NotImplementedError, match="unsupported op"),
+        ):
+            calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_other_exceptions_propagate(self, calibrator):
         def failing_pipe(*args, **kwargs):
@@ -306,9 +316,8 @@ class TestDiffusionCalibrator:
         calibrator.pipe = FakePipeline(fn=failing_pipe)
         calibrator._requires_calibration_image = lambda: False
 
-        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(RuntimeError, match="unexpected"):
-                calibrator.calib(nsamples=1, bs=1)
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), pytest.raises(RuntimeError, match="unexpected"):
+            calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_single_sample_stops_early(self, calibrator):
         seen = []
@@ -330,9 +339,8 @@ class TestDiffusionCalibrator:
         calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator._requires_calibration_image = lambda: False
 
-        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(SystemExit):
-                calibrator.calib(nsamples=1, bs=1)
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), pytest.raises(SystemExit):
+            calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_insufficient_samples_warns_and_truncates(self, calibrator):
         def fake_pipe(prompts, **kwargs):
@@ -357,6 +365,8 @@ class TestDiffusionCalibrator:
         calibrator.pipe = FakePipeline(fn=fake_pipe)
         calibrator._requires_calibration_image = lambda: False
 
-        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(ValueError, match="valid sample count is less than batch_size"):
-                calibrator.calib(nsamples=3, bs=2)
+        with (
+            patch("auto_round.calibration.diffusion.tqdm", FakeTqdm),
+            pytest.raises(ValueError, match="valid sample count is less than batch_size"),
+        ):
+            calibrator.calib(nsamples=3, bs=2)

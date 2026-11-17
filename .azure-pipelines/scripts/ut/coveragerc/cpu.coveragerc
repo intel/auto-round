@@ -13,8 +13,8 @@ include =
  */auto_round/**
  */auto_round_extension/**
 omit =
- */auto_round/export/export_to_gguf/conversion/*
- */auto_round/export/export_to_gguf/sync_llama_cpp_conversion.py
+ */auto_round/export/formats/gguf/conversion/*
+ */auto_round/export/formats/gguf/sync_llama_cpp_conversion.py
  */auto_round/algorithms/transforms/hadamard/utils/triton/*
  */auto_round/modeling/finegrained_fp8_patch*.py
 exclude_also =

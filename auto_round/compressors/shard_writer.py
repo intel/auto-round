@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import json
+import math
 import os
 import re
 from collections import OrderedDict
-from typing import Optional, Union
+from typing import Optional
 
 import torch
 
@@ -30,10 +31,17 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
 
 DEFAULT_MAX_SHARD_SIZE = "5GB"
+
+
+# Parameter names that only exist once a module has been packed for export, and
+# that replace its floating-point ``weight``.
+PACKED_WEIGHT_NAMES = frozenset({"qweight", "weight_packed"})
 
 
 class ShardWriter:
@@ -57,7 +65,7 @@ class ShardWriter:
         self,
         model: torch.nn.Module,
         bits: int,
-        max_shard_size: Optional[Union[int, str]] = None,
+        max_shard_size: int | str | None = None,
         safe_serialization: bool = True,
     ) -> None:
         if ShardWriter._initialized:
@@ -75,6 +83,13 @@ class ShardWriter:
         self.shard_meta = []  # List of {tmp_file: str, params: list}
         self.global_weight_map = {}
         self.shard_counter = 0
+        # Prefer transformers' own scope-aware reverse transforms (only attached to
+        # ``from_pretrained`` models). They revert a parameter name exactly the way
+        # transformers would when saving, honouring each transform's scope / anchors
+        # so a text-model prefix rule cannot leak onto a sibling vision tower or
+        # double-apply on an already-prefixed key. Fall back to the flattened regex
+        # mapping for models built from config (no ``_weight_conversions``).
+        self.reverse_weight_transforms = get_reverse_weight_transforms(self.model)
         self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
         # Persistent set of all parameter names already flushed to a shard file.
@@ -115,47 +130,54 @@ class ShardWriter:
         shard numbering instead of colliding with them, and ``finalize()``'s
         index covers tensors from both processes.
 
-        Only files still in the pre-``finalize()`` temp naming
-        (``model-shard-NNNNN.<ext>``) are considered: once ``finalize()`` runs
-        it renames everything to the final HF layout, so a directory with no
-        such temp files means either nothing has been flushed yet, or a prior
-        run already finished -- neither should be treated as in-progress
-        shards to adopt.
+        Include both temporary and final checkpoint names: the resume manifest
+        remains live until the export steps after ``finalize()`` succeed.
         """
         output_dir = self.output_dir
         if not os.path.isdir(output_dir):
             return
         pattern = re.compile(rf"^model-shard-(\d+)\.{re.escape(self.shard_suffix)}$")
+        final_pattern = re.compile(rf"^model-(\d+)-of-\d+\.{re.escape(self.shard_suffix)}$")
         found = []
         for fname in os.listdir(output_dir):
-            m = pattern.match(fname)
+            m = pattern.match(fname) or final_pattern.match(fname)
             if m:
                 found.append((int(m.group(1)), fname))
+            elif fname == f"model.{self.shard_suffix}":
+                found.append((1, fname))
         if not found:
             return
         found.sort()
         for _, fname in found:
             path = os.path.join(output_dir, fname)
-            params = self._read_shard_tensor_names(path)
+            params, numel, size_bytes = self._read_shard_metadata(path)
             self.shard_meta.append({"tmp_file": fname, "params": params, "dir": output_dir})
             self._all_saved.update(params)
-        self.shard_counter = found[-1][0]
+            self.total_param_elems += numel
+            self.total_param_size_bytes += size_bytes
+        self.shard_counter = max(len(found), found[-1][0])
         logger.info(
             f"ShardWriter: discovered {len(found)} already-flushed shard(s) in {output_dir} "
             f"from a previous run; resuming shard numbering from {self.shard_counter}."
         )
 
-    def _read_shard_tensor_names(self, path: str) -> list[str]:
-        """Read only the tensor-name header of an already-flushed shard file,
-        without materializing any tensor data."""
+    def _read_shard_metadata(self, path: str) -> tuple[list[str], int, int]:
+        """Read tensor names, element count and bytes without materializing data."""
         if self.use_safetensors:
             from safetensors import safe_open
 
             with safe_open(path, framework="pt") as f:
-                return list(f.keys())
+                params = list(f.keys())
+                numel = sum(math.prod(f.get_slice(name).get_shape()) for name in params)
+            # A validated safetensors file stores all tensor bytes after its
+            # eight-byte header length and JSON header, with no gaps or padding.
+            with open(path, "rb") as f:
+                header_size = int.from_bytes(f.read(8), "little")
+            size_bytes = os.path.getsize(path) - 8 - header_size
+            return params, numel, size_bytes
         else:
             sd = torch.load(path, map_location="meta")
-            return list(sd.keys())
+            return list(sd.keys()), sum(t.numel() for t in sd.values()), sum(t.nbytes for t in sd.values())
 
     @property
     def output_dir(self) -> str:
@@ -209,7 +231,7 @@ class ShardWriter:
                 logger.warning("safetensors not installed; falling back to torch.save.")
         return False
 
-    def save_module(self, m: torch.nn.Module, name: str = None) -> None:
+    def save_module(self, m: torch.nn.Module, name: str | None = None) -> None:
         """Extracts and accumulates tensors from a module."""
         prefix = name if name is not None else getattr(m, "global_name", "model")
         sd = m.state_dict()
@@ -238,7 +260,7 @@ class ShardWriter:
             List of (key, 2D tensor) pairs, or None if not a fused expert param.
         """
         from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         parts = name.rsplit(".", 1)
         if len(parts) != 2:
@@ -256,6 +278,28 @@ class ShardWriter:
         if set(expanded) == {name}:
             return None
         return list(expanded.items())
+
+    def _split_merged_concat(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
+        """Split a merged model-side concat param back into its checkpoint shards.
+
+        Some families store a parameter as several numbered shards on disk and
+        concatenate them into one model-side tensor on load (e.g. Qwen3-Next
+        "Flash" PLE n-gram embeddings: ``...ngram_embedding.shard_<i>.weight`` ->
+        ``...ngram_embedding.weight``). ``save_pretrained`` reverses this
+        automatically; this immediate-saving path must replay the inverse so the
+        checkpoint keeps its original shards instead of one unusable blob.
+
+        Returns a list of ``(shard_name, shard_tensor)`` pairs, or ``None`` when
+        *name* is not such a merged concat parameter.
+        """
+        from auto_round.utils.disk_stream_util import split_merged_concat_tensor
+
+        config = getattr(self.model, "config", None)
+        try:
+            return split_merged_concat_tensor(config, name, tensor)
+        except Exception as e:  # pragma: no cover - never break saving on a split attempt
+            logger.warning("Failed to split merged concat tensor '%s' (%s); saving it as-is.", name, e)
+            return None
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
         if is_attention_calibration_tensor_name(name):
@@ -278,8 +322,21 @@ class ShardWriter:
                     self._add_tensor(sub_name, sub_tensor)
                 return
 
-        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+        # Split a merged model-side concat parameter (e.g. Qwen3-Next "Flash" PLE
+        # n-gram embedding, merged from ``shard_<i>.weight`` on load) back into its
+        # numbered checkpoint shards. ``save_pretrained`` does this automatically,
+        # but this immediate-saving path bypasses it, so replay the inverse here --
+        # otherwise a single, unusable ``[sum_rows, dim]`` blob is written.
+        split = self._split_merged_concat(name, tensor)
+        if split is not None:
+            self._all_saved.add(name)
+            for sub_name, sub_tensor in split:
+                self._add_tensor(sub_name, sub_tensor)
+            return
+
+        name = self._checkpoint_name(name)
+        if name in self._all_saved or name in self.current_shard_tensors:
+            return
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
@@ -299,6 +356,12 @@ class ShardWriter:
         else:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
+
+    def _checkpoint_name(self, name: str) -> str:
+        """Use the serialized namespace for both saving and resume comparisons."""
+        if self.reverse_weight_transforms is not None:
+            return revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
+        return revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
     def _handle_tied_weights(self):
         """
@@ -372,24 +435,51 @@ class ShardWriter:
 
     def finalize(self) -> None:
         """Saves remaining weights, renames files, and writes the index JSON."""
+        # Adopt the shards of a run this one resumed from before deciding which
+        # weights are still missing, otherwise their tensors look unsaved here.
+        if envs.AR_RESUME_DIR and not self._existing_shards_discovered:
+            self._discover_existing_shards()
+            self._existing_shards_discovered = True
+
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
 
+        # Modules whose packed tensors were already written, e.g. by a previous
+        # run this one resumed from. Such a module is skipped by tuning, so the
+        # model tree still holds its original floating-point weight under a name
+        # that never matches the packed one.
+        packed_layers = {
+            pname.rsplit(".", 1)[0] for pname in self._all_saved if pname.rsplit(".", 1)[-1] in PACKED_WEIGHT_NAMES
+        }
+
         finalize_skipped_meta_tensors = []
+        stale_unpacked_tensors = []
         for pname, tensor in full_sd.items():
-            if pname in self._all_saved:
+            checkpoint_name = self._checkpoint_name(pname)
+            if pname in self._all_saved or checkpoint_name in self._all_saved:
                 continue
             if tensor.device.type == "meta":
                 continue
             layer_name = ".".join(pname.split(".")[:-1])
+            if pname.rsplit(".", 1)[-1] == "weight" and checkpoint_name.rsplit(".", 1)[0] in packed_layers:
+                # Writing it would put the module in the checkpoint twice: once
+                # packed and once as the stale floating-point weight.
+                stale_unpacked_tensors.append(pname)
+                continue
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
                 lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
+
+        if stale_unpacked_tensors:
+            logger.info(
+                f"Skipped {len(stale_unpacked_tensors)} unpacked weight(s) of already-packed modules, "
+                f"e.g. {stale_unpacked_tensors[:3]}."
+            )
 
         self._flush_shard()
 
@@ -437,7 +527,7 @@ class ShardWriter:
         logger.info(f"model has been saved to {self.output_dir}")
 
     @torch.no_grad()
-    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False) -> None:
+    def write(self, m: torch.nn.Module = None, name: str | None = None, is_finalize: bool = False) -> None:
         if m is None and name is None and not is_finalize and not is_finalize:
             raise ValueError("Must specify either name or m")
         if m is None and name is not None:

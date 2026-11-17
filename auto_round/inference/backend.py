@@ -15,7 +15,7 @@ import functools
 import platform
 from dataclasses import dataclass, field
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import torch
 from packaging.version import Version
@@ -28,6 +28,8 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_library_version
 
 BackendInfos = {}
+
+import sys
 
 import cpuinfo
 
@@ -91,18 +93,18 @@ class BackendInfo:
     packing_format: list[str]
     bits: list[int]
     compute_dtype: list[str] = None
-    data_type: Optional[list[str]] = None
-    group_size: Optional[list[int]] = None
-    act_bits: Optional[list[int]] = None
-    act_group_size: Optional[list[int]] = None
-    act_sym: Optional[list[bool]] = None
-    act_data_type: Optional[list[str]] = None
-    act_dynamic: Optional[list[bool]] = None
+    data_type: list[str] | None = None
+    group_size: list[int] | None = None
+    act_bits: list[int] | None = None
+    act_group_size: list[int] | None = None
+    act_sym: list[bool] | None = None
+    act_data_type: list[str] | None = None
+    act_dynamic: list[bool] | None = None
     priority: int = 0  ##higher is better
     checkers: list[Any] = field(default_factory=list)
-    alias: Optional[list[str]] = None
-    requirements: Optional[list[str]] = None
-    systems: Optional[list[str]] = None
+    alias: list[str] | None = None
+    requirements: list[str] | None = None
+    systems: list[str] | None = None
 
 
 BACKEND_ACT_ATTRS = [
@@ -211,8 +213,8 @@ def fp8_static_scheme_checker(
     in_feature: int,
     out_feature: int,
     config: QuantizationScheme,
-    in_feature_multiplier: Optional[int] = None,
-    out_feature_multiplier: Optional[int] = None,
+    in_feature_multiplier: int | None = None,
+    out_feature_multiplier: int | None = None,
 ):
     from auto_round.schemes import FP8_STATIC
 
@@ -238,6 +240,8 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 FAKE_FORMAT = ["auto_round:fake", "auto_round:auto_gptq", "auto_round", "auto_round:auto_awq"]
 NVFP4_E5M3_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3"]
+NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3_gs"]
+RRQ_FORMAT = ["auto_round:rrq"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 # CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
@@ -439,6 +443,44 @@ BackendInfos["auto_round:cute_nvfp4_e5m3"] = BackendInfo(
     priority=6,
     checkers=[cute_nvfp4_e5m3_checker],
     alias=["cute_nvfp4_e5m3"],
+    requirements=["auto-round>0.12.0"],
+)
+
+BackendInfos["auto_round:torch_nvfp4_e5m3_gs"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["nvfp4_v2_gs"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nvfp4_v2_with_static_gs"],
+    act_dynamic=[True],
+    priority=3,
+    checkers=[mxfp_nvfp_feature_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.12.0"],
+)
+
+BackendInfos["auto_round:cute_nvfp4_e5m3_gs"] = BackendInfo(
+    device=["cuda"],
+    packing_format=NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["nvfp4_v2_gs"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nvfp4_v2_with_static_gs"],
+    act_dynamic=[True],
+    priority=6,
+    checkers=[cute_nvfp4_e5m3_checker],
+    alias=["cute_nvfp4_e5m3_gs"],
     requirements=["auto-round>0.12.0"],
 )
 
@@ -918,6 +960,10 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return ar_qmodules.MXINT4QuantLinear
     if "torch_mxfp4" in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if backend == "auto_round:cute_nvfp4_e5m3_gs":
+        return ar_qmodules.CuteNVFP4E5M3GSQuantLinear
+    if backend == "auto_round:torch_nvfp4_e5m3_gs":
+        return ar_qmodules.NVFP4E5M3GSQuantLinear
     if backend == "auto_round:cute_nvfp4_e5m3":
         return ar_qmodules.CuteNVFP4E5M3QuantLinear
     if backend == "auto_round:torch_nvfp4_e5m3":
@@ -1154,7 +1200,7 @@ def get_autogptq_infer_linear(backend, bits=4, group_size=128, sym=False):
     return QuantLinear
 
 
-def find_backend(backend: str, orig_backend: str = None):
+def find_backend(backend: str, orig_backend: str | None = None):
     """
     Finds the matching backend key based on the target backend name or its aliases.
 
@@ -1196,7 +1242,7 @@ def get_all_compatible_backend(
     # Find compatible backends
     compatible_backends = [
         key
-        for key in BackendInfos.keys()
+        for key in BackendInfos
         if check_compatible(key, device, config, packing_format, in_features, out_features, check_requirements=False)
     ]
 
@@ -1240,8 +1286,8 @@ def get_layer_backend(
     if backend == "auto":
         backends = BackendInfos.keys()
     else:
-        for key in BackendInfos.keys():
-            if backend == key or (BackendInfos[key].alias and backend in BackendInfos[key].alias):
+        for key, info in BackendInfos.items():
+            if backend == key or (info.alias and backend in info.alias):
                 backends.append(key)
 
     # Find and store other compatible backends
@@ -1281,8 +1327,7 @@ def get_highest_priority_backend(
 ) -> str | None:
     current_system = platform.system().lower()
     supported_backends = []
-    for key in BackendInfos.keys():
-        backend = BackendInfos[key]
+    for key, backend in BackendInfos.items():
         # Filter by operating system (e.g. MLX is Darwin-only; ark CPU
         # backends are non-Darwin only).
         if backend.systems is not None:
@@ -1384,10 +1429,10 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
     for msg in install_instructions:
         log(msg)
         if logger_level == "error" and len(pip_cmds) == 0:
-            exit(-1)
+            sys.exit(-1)
 
     joined_cmds = " and ".join(f"`{cmd}`" for cmd in pip_cmds)
     if joined_cmds:
         log(joined_cmds)
         if logger_level == "error":
-            exit(-1)
+            sys.exit(-1)

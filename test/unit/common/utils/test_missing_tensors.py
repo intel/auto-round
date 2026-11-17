@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -23,8 +24,10 @@ import torch
 from auto_round.utils.missing_tensors import (
     _get_woq_config_from_dir,
     _normalize_tensor_name_for_warning,
+    _register_missing_modules_in_ct_ignore,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
+    restore_fp32_tensors_from_source,
     split_fused_expert_tensors,
 )
 
@@ -93,9 +96,81 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quan
     return qcfg
 
 
+def _make_compressed_tensors_config(ignore: list | None = None) -> dict:
+    """Minimal compressed-tensors ``quantization_config`` with a ``"Linear"`` catch-all group."""
+    return {
+        "quant_method": "compressed-tensors",
+        "format": "mixed-precision",
+        "provider": "auto-round",
+        "config_groups": {
+            "group_0": {
+                "format": "mxfp8-quantized",
+                "targets": ["Linear"],
+                "weights": {"num_bits": 8, "type": "float", "group_size": 32},
+            }
+        },
+        "ignore": list(ignore) if ignore is not None else [],
+    }
+
+
 # ===========================================================================
 #  split_fused_expert_tensors
 # ===========================================================================
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_glm_nextn_missing_weights_remain_full_precision(tmp_path, nested):
+    """Draft-layer weights absent from the model must survive checkpoint copying."""
+    src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+    os.makedirs(src)
+    os.makedirs(tgt)
+    name = "model.language_model.layers.45.mlp.experts.0.down_proj.weight"
+    weight = torch.randn(32, 128, dtype=torch.bfloat16)
+    _save_safetensors({name: weight}, os.path.join(src, "model.safetensors"))
+    _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+    config = _make_auto_round_config()
+    config["model_type"] = "glm5_next"
+    text_config = {"num_hidden_layers": 45, "num_nextn_predict_layers": 1}
+    if nested:
+        config["text_config"] = text_config
+    else:
+        config.update(text_config)
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import extract_regex_config
+    from auto_round.schemes import QuantizationScheme
+    from auto_round.special_model_handler import get_predefined_ignore_layers
+    from auto_round.utils.common import to_standard_regex
+
+    # Exercise the normal ignore-layer/export path with no draft module loaded.
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(model_type="glm5_next", name_or_path=src, architectures=[])
+    if nested:
+        model.config.text_config = SimpleNamespace(**text_config)
+    else:
+        for key, value in text_config.items():
+            setattr(model.config, key, value)
+    ignored = get_predefined_ignore_layers(model)
+    assert "layers.45." in ignored
+    regex_config = extract_regex_config(
+        model=model,
+        scheme=ResolvedScheme.from_scheme(QuantizationScheme()),
+        layer_config={},
+        ignore_layers=",".join(ignored),
+    )
+    config["quantization_config"]["extra_config"] = {
+        to_standard_regex(key): {"bits": value["bits"], "data_type": value["data_type"]}
+        for key, value in regex_config.items()
+    }
+    with open(os.path.join(tgt, "config.json"), "w") as f:
+        json.dump(config, f)
+    copy_missing_tensors_from_source(src, tgt)
+    restored = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+    assert name in restored
+    assert restored[name].dtype == weight.dtype
+    assert torch.equal(restored[name], weight)
+    with open(os.path.join(tgt, "config.json")) as f:
+        updated = json.load(f)
+    assert updated["quantization_config"]["extra_config"][name.removesuffix(".weight")]["bits"] == 16
 
 
 class TestSplitFusedExpertTensors:
@@ -133,8 +208,8 @@ class TestSplitFusedExpertTensors:
         }
         result = split_fused_expert_tensors(tensors)
         assert set(result.keys()) == set(tensors.keys())
-        for k in tensors:
-            assert torch.equal(result[k], tensors[k])
+        for k, v in tensors.items():
+            assert torch.equal(result[k], v)
 
     def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog, _autoround_log_propagate):
         tensors = {
@@ -199,6 +274,15 @@ class TestSplitFusedExpertTensors:
             key = f"model.layers.3.moe.experts.{i}.down_proj.weight"
             assert result[key].shape == (O, I)
             assert torch.equal(result[key], stacked[i])
+
+    def test_keep_fused_expert_model_type_passthrough(self):
+        fused = torch.randn(2, 32, 16)
+        tensors = {"model.layers.0.mlp.experts.w13_weight": fused}
+
+        result = split_fused_expert_tensors(tensors, model_type="inkling_mm_model")
+
+        assert set(result.keys()) == set(tensors.keys())
+        assert torch.equal(result["model.layers.0.mlp.experts.w13_weight"], fused)
 
     def test_mixed_fused_and_normal(self):
         N, I, H = 2, 32, 16
@@ -433,6 +517,25 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
 
+    def test_nested_nemotron_omni_lm_not_recopied(self, tmp_path):
+        """Nemotron-H Omni: ``language_model.backbone.*`` on disk is saved as ``language_model.model.*``."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {"language_model.backbone.layers.0.mixer.experts.0.up_proj.weight": torch.randn(4, 4).bfloat16()},
+            os.path.join(src, "model.safetensors"),
+        )
+        packed = torch.randint(0, 16, (2, 4), dtype=torch.int32)
+        saved_name = "language_model.model.layers.0.mixer.experts.0.up_proj.qweight"
+        _save_safetensors({saved_name: packed}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert set(result) == {saved_name}
+        torch.testing.assert_close(result[saved_name], packed)
+
     def test_known_block_prefix_not_copied(self, tmp_path):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
@@ -462,12 +565,85 @@ class TestCopyMissingTensorsFromSource:
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
         os.makedirs(tgt)
-        t = torch.randn(64)
+        t = torch.randn(64, dtype=torch.bfloat16)
         _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(src, "model.safetensors"))
         _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(tgt, "model.safetensors"))
         _write_config(tgt)
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_restores_fp32_tensor_saved_as_fp16(self, tmp_path, caplog, _autoround_log_propagate):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
+        unchanged = torch.tensor([3.0], dtype=torch.bfloat16)
+        _save_safetensors(
+            {"model.special.weight": original, "model.unchanged.weight": unchanged},
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                "model.special.weight": original.to(torch.float16),
+                "model.unchanged.weight": torch.tensor([9.0], dtype=torch.float32),
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert "model.special.weight" in caplog.text
+        assert result["model.special.weight"].dtype == torch.float32
+        assert torch.equal(result["model.special.weight"], original)
+        assert torch.equal(result["model.unchanged.weight"], torch.tensor([9.0], dtype=torch.float32))
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_restores_fp32_tensor_in_indexed_shards(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
+        source_shard = "model-00002-of-00002.safetensors"
+        target_shard = "model-00001-of-00002.safetensors"
+        _save_safetensors(
+            {"model.special.weight": original, "model.other.weight": torch.ones(2, dtype=torch.bfloat16)},
+            os.path.join(src, source_shard),
+        )
+        _save_safetensors(
+            {"model.special.weight": original.to(torch.bfloat16), "model.other.weight": torch.ones(2)},
+            os.path.join(tgt, target_shard),
+        )
+        with open(os.path.join(src, "model.safetensors.index.json"), "w") as f:
+            json.dump(
+                {
+                    "metadata": {},
+                    "weight_map": {"model.special.weight": source_shard, "model.other.weight": source_shard},
+                },
+                f,
+            )
+        with open(os.path.join(tgt, "model.safetensors.index.json"), "w") as f:
+            json.dump(
+                {
+                    "metadata": {},
+                    "weight_map": {
+                        "model.special.weight": target_shard,
+                        "model.other.weight": target_shard,
+                    },
+                },
+                f,
+            )
+        _write_config(tgt)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, target_shard))
+        assert result["model.special.weight"].dtype == torch.float32
+        assert torch.equal(result["model.special.weight"], original)
+        assert torch.equal(result["model.other.weight"], torch.ones(2))
+        with open(os.path.join(tgt, "model.safetensors.index.json")) as f:
+            assert json.load(f)["weight_map"]["model.special.weight"] == target_shard
 
     def test_detects_multiple_missing_tensors_from_different_blocks(self, tmp_path):
         """All source tensors from blocks absent in the saved output are copied."""
@@ -702,31 +878,6 @@ class TestCopyMissingTensorsFromSource:
         assert weight_map["mtp.0.norm.weight"] == "model_extra_tensors.safetensors"
         assert weight_map["model.embed_tokens.weight"] == "model.safetensors"
 
-    def test_known_block_prefix_not_copied_gemma(self, tmp_path):
-        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
-        os.makedirs(src)
-        os.makedirs(tgt)
-        _save_safetensors(
-            {
-                "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                "language_model.model.norm.weight": torch.randn(64),
-                "language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                "language_model.norm.weight": torch.randn(64),
-            },
-            os.path.join(src, "model.safetensors"),
-        )
-        _save_safetensors(
-            {
-                "language_model.model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                "model.language_model.layers.0.mlp.gate_proj.weight": torch.randn(32, 64),
-                "model.language_model.norm.weight": torch.randn(64),
-            },
-            os.path.join(tgt, "model.safetensors"),
-        )
-        _write_config(tgt)
-        copy_missing_tensors_from_source(src, tgt)
-        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
-
     def test_talker_missing_weight_is_never_woq_quantized(self):
         """Talker weights must stay BF16/full precision even in WOQ exports."""
         with tempfile.TemporaryDirectory() as source_dir, tempfile.TemporaryDirectory() as target_dir:
@@ -811,3 +962,495 @@ class TestCopyMissingTensorsFromSource:
                 "Fused talker expert keys should not be treated as missing when "
                 "their per-expert 2D components are already saved"
             )
+
+
+# ===========================================================================
+#  _register_missing_modules_in_ct_ignore: compressed-tensors ``ignore`` fix
+#
+#  Copied-through (unquantized) Linear modules — most notably MTP layers that
+#  ``transformers`` does not instantiate — must be added to the compressed-tensors
+#  ``ignore`` list so a ``"Linear"`` catch-all target does not make an inference
+#  engine (e.g. vLLM) treat them as quantized and fail to load their scale-less
+#  weights.
+# ===========================================================================
+
+
+class TestRegisterMissingModulesInCtIgnore:
+
+    def test_mtp_linear_added_to_ignore_in_both_config_files(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "mtp.fc.weight": torch.randn(32, 64),
+                "mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64),
+                "mtp.norm.weight": torch.randn(64),  # 1-D: not a Linear, must NOT be ignored
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        qcfg = _make_compressed_tensors_config()
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        with open(os.path.join(tgt, "quantization_config.json"), "w") as f:
+            json.dump(qcfg, f)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in embedded_ignore
+        assert "mtp.norm" not in embedded_ignore  # 1-D norm is not matched by a "Linear" catch-all
+
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in standalone_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in standalone_ignore
+
+    def test_existing_regex_ignore_not_duplicated(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:.*mtp.*"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:.*mtp.*"], "a covering regex should suppress redundant exact-name entries"
+
+    def test_non_prefix_regex_does_not_suppress_exact_name(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:mtp"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"model.mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:mtp", "model.mtp.fc"]
+
+    def test_save_model_preserves_ignore_in_both_config_files(self, tmp_path):
+        from types import SimpleNamespace
+
+        from auto_round.export.common.serialization import save_model
+
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.fc.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(src, "config.json"), "w") as f:
+            json.dump({}, f)
+        qcfg = _make_compressed_tensors_config()
+        model = SimpleNamespace(name_or_path=src, config=SimpleNamespace(quantization_config=qcfg))
+
+        save_model(model, tgt, immediate_saving=True)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.fc" in standalone_ignore
+
+    def test_config_groups_with_other_quant_method_untouched(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["quant_method"] = "other"
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == []
+
+    def test_idempotent_no_duplicate_exact_names(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": _make_compressed_tensors_config()}, f)
+        missing = {"mtp.fc.weight": torch.randn(32, 64)}
+
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore.count("mtp.fc") == 1
+
+    def test_non_compressed_tensors_config_untouched(self, tmp_path):
+        """The WOQ / auto_round:auto_gptq config has no ``config_groups`` and must be left alone."""
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            qcfg = json.load(f)["quantization_config"]
+        assert "ignore" not in qcfg
+
+
+# ===========================================================================
+#  restore_fp32_tensors_from_source: decoupled from MTP handling
+#
+#  Regression coverage for Qwen/Qwen3.5-0.8B-style checkpoints, which keep
+#  ``linear_attn.norm.weight`` in FP32 and additional ``mtp.*`` tensors that are
+#  absent from the saved output. Both must be handled by default, independent
+#  of each other and of ``AR_DISABLE_COPY_MTP_WEIGHTS``.
+# ===========================================================================
+
+
+class TestRestoreFp32DecoupledFromMtp:
+
+    def _write_qwen35_checkpoints(self, src: str, tgt: str) -> tuple[torch.Tensor, torch.Tensor]:
+        os.makedirs(src, exist_ok=True)
+        os.makedirs(tgt, exist_ok=True)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        mtp_weight = torch.randn(32, 64, dtype=torch.bfloat16)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": mtp_weight,
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                # Downcast during save, as `model.save_pretrained` does under bf16 dtype.
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        return norm_weight, mtp_weight
+
+    def test_restore_fp32_tensors_from_source_runs_standalone(self, tmp_path):
+        """restore_fp32_tensors_from_source must fix FP32 precision loss on its own,
+        with no dependency on the missing-tensor (MTP) copy logic."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        norm_weight, _ = self._write_qwen35_checkpoints(src, tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+        assert restored.dtype == torch.float32
+        assert torch.equal(restored, norm_weight)
+        # The MTP-only tensor must remain untouched by the fp32-only restore.
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_fp32_restore_not_gated_by_mtp_disable_flag(self, tmp_path, monkeypatch):
+        """FP32 restoration must run by default even when AR_DISABLE_COPY_MTP_WEIGHTS
+        disables the (separate) missing-tensor copy, mirroring how `save_model` now
+        calls the two features independently."""
+        import auto_round.envs as envs
+        from auto_round.export.common.serialization import save_model
+
+        src = str(tmp_path / "src")
+        os.makedirs(src)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": torch.randn(32, 64, dtype=torch.bfloat16),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+
+        monkeypatch.setattr(envs, "AR_DISABLE_COPY_MTP_WEIGHTS", True)
+
+        class _FakeModel:
+            name_or_path = src
+
+            def save_pretrained(self, save_dir, max_shard_size=None, safe_serialization=None):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp_save_dir:
+            _save_safetensors(
+                {
+                    "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                    "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+                },
+                os.path.join(tmp_save_dir, "model.safetensors"),
+            )
+            _write_config(tmp_save_dir)
+
+            save_model(_FakeModel(), tmp_save_dir, immediate_saving=True)
+
+            result = _load_safetensors(os.path.join(tmp_save_dir, "model.safetensors"))
+            restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+            assert restored.dtype == torch.float32
+            assert torch.equal(restored, norm_weight)
+            # MTP copy is disabled, so the mtp tensor must NOT be copied.
+            assert not os.path.exists(os.path.join(tmp_save_dir, "model_extra_tensors.safetensors"))
+
+    def test_mtp_and_fp32_both_restored_when_enabled(self, tmp_path, monkeypatch):
+        """With the MTP-disable flag off (default), both fp32 restore and MTP tensor
+        copy must be applied together via save_model."""
+        import auto_round.envs as envs
+        from auto_round.export.common.serialization import save_model
+
+        src = str(tmp_path / "src")
+        os.makedirs(src)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        mtp_weight = torch.randn(32, 64, dtype=torch.bfloat16)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": mtp_weight,
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+
+        monkeypatch.setattr(envs, "AR_DISABLE_COPY_MTP_WEIGHTS", False)
+
+        class _FakeModel:
+            name_or_path = src
+
+            def save_pretrained(self, save_dir, max_shard_size=None, safe_serialization=None):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp_save_dir:
+            _save_safetensors(
+                {
+                    "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                    "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+                },
+                os.path.join(tmp_save_dir, "model.safetensors"),
+            )
+            _write_config(tmp_save_dir)
+
+            save_model(_FakeModel(), tmp_save_dir, immediate_saving=True)
+
+            result = _load_safetensors(os.path.join(tmp_save_dir, "model.safetensors"))
+            restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+            assert restored.dtype == torch.float32
+            assert torch.equal(restored, norm_weight)
+
+            extra = _load_safetensors(os.path.join(tmp_save_dir, "model_extra_tensors.safetensors"))
+            assert "model.language_model.mtp.0.fc.weight" in extra
+            torch.testing.assert_close(extra["model.language_model.mtp.0.fc.weight"], mtp_weight)
+
+    def test_all_fp32_source_is_not_restored(self, tmp_path):
+        """An all-FP32 source (e.g. fake format export to bf16) must keep the saved tensors."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        weight = torch.randn(32, 64)
+        _save_safetensors({"model.layers.0.mlp.up_proj.weight": weight}, os.path.join(src, "model.safetensors"))
+        _save_safetensors(
+            {"model.layers.0.mlp.up_proj.weight": weight.to(torch.bfloat16)}, os.path.join(tgt, "model.safetensors")
+        )
+        _write_config(tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert result["model.layers.0.mlp.up_proj.weight"].dtype == torch.bfloat16
+
+    def test_modified_fp32_tensor_is_not_restored(self, tmp_path):
+        """FP32 source tensors altered by quantization (fake format) must not be overwritten."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        weight = torch.randn(32, 64)
+        fake_quantized = (weight * 4).round().div(4).to(torch.bfloat16) + 1
+        _save_safetensors(
+            {
+                "model.layers.0.norm.weight": norm_weight,
+                "model.layers.0.mlp.up_proj.weight": weight,
+                "model.embed_tokens.weight": torch.randn(8, 64, dtype=torch.bfloat16),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                "model.layers.0.norm.weight": norm_weight.to(torch.bfloat16),
+                "model.layers.0.mlp.up_proj.weight": fake_quantized,
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert torch.equal(result["model.layers.0.norm.weight"], norm_weight)
+        assert torch.equal(result["model.layers.0.mlp.up_proj.weight"], fake_quantized)
+
+
+class TestKeepSpecialFp32Params:
+
+    def test_meta_loader_marks_fp32_params_and_buffers(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from auto_round.context.model import ModelContext
+        from auto_round.utils.disk_stream_util import SafetensorsIndex, materialize_module
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "block.norm.weight": norm_weight,
+                "block.norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "block.proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+                "block.scale": norm_weight.clone(),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        with torch.device("meta"):
+            model = torch.nn.Module()
+            model.block = self._make_model().to(torch.bfloat16)
+            model.block.register_buffer("scale", torch.empty(4))
+        index = SafetensorsIndex(str(tmp_path))
+        context = SimpleNamespace(trust_remote_code=False)
+        with patch("auto_round.utils.disk_stream_util.build_meta_model", return_value=(model, None, index)):
+            loaded, _, loaded_index = ModelContext._build_disk_stream_model(context, str(tmp_path))
+
+        assert loaded is model
+        assert loaded_index is index
+        assert set(model._keep_in_fp32_modules) == {"block.norm.weight", "block.scale"}
+        assert all(tensor.is_meta for tensor in model.parameters())
+        assert model.block.scale.is_meta
+        materialize_module(model.block, "block", index, device="cpu")
+        assert torch.equal(model.block.norm.weight, norm_weight)
+        assert model.block.norm.weight.dtype == torch.float32
+        assert torch.equal(model.block.scale, norm_weight)
+        assert model.block.scale.dtype == torch.float32
+
+    def test_all_fp32_meta_checkpoint_is_untouched(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+        _save_safetensors(self._make_model().state_dict(), str(tmp_path / "model.safetensors"))
+        with torch.device("meta"):
+            model = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == []
+        assert model.norm.weight.is_meta
+        assert model.norm.weight.dtype == torch.bfloat16
+
+    def test_meta_checkpoint_keeps_fp32_through_materialization(self, tmp_path):
+        from auto_round.utils.disk_stream_util import SafetensorsIndex, free_module, materialize_module
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "block.norm.weight": norm_weight,
+                "block.norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "block.proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = torch.nn.Module()
+        with torch.device("meta"):
+            model.block = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["block.norm.weight"]
+        assert all(tensor.is_meta for tensor in model.parameters())
+        cast_model_dtype(model, torch.bfloat16)
+        assert model.block.norm.weight.dtype == torch.float32
+
+        index = SafetensorsIndex(str(tmp_path))
+        for _ in range(2):
+            materialize_module(model.block, "block", index, device="cpu")
+            assert model.block.norm.weight.dtype == torch.float32
+            assert torch.equal(model.block.norm.weight, norm_weight)
+            assert model.block.proj.weight.dtype == torch.bfloat16
+            free_module(model.block)
+
+    @staticmethod
+    def _make_model():
+        model = torch.nn.Module()
+        model.norm = torch.nn.LayerNorm(4)
+        model.proj = torch.nn.Linear(4, 4, bias=False)
+        return model
+
+    def test_mixed_checkpoint_keeps_fp32_after_cast(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "norm.weight": norm_weight,
+                "norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["norm.weight"]
+        model = cast_model_dtype(model, torch.bfloat16)
+
+        assert model.norm.weight.dtype == torch.float32
+        assert torch.equal(model.norm.weight, norm_weight)
+        assert model.proj.weight.dtype == torch.bfloat16
+
+    def test_mixed_checkpoint_keeps_fp32_loaded_model_param_after_cast(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "norm.weight": norm_weight,
+                "norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = self._make_model()
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["norm.weight"]
+        model = cast_model_dtype(model, torch.bfloat16)
+
+        assert model.norm.weight.dtype == torch.float32
+        assert torch.equal(model.norm.weight, norm_weight)
+        assert model.proj.weight.dtype == torch.bfloat16
+
+    def test_checkpoint_fp32_restore_uses_resolved_revision(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        import auto_round.utils.missing_tensors as missing_tensors
+        import auto_round.utils.model as model_utils
+
+        calls = {}
+
+        def fake_download(repo_id, platform, revision):
+            calls.update(repo_id=repo_id, platform=platform, revision=revision)
+            return str(tmp_path)
+
+        monkeypatch.setattr(model_utils, "download_or_get_path", fake_download)
+        monkeypatch.setattr(missing_tensors, "keep_special_fp32_params", lambda model, source_dir: [])
+        model = self._make_model()
+        model.config = SimpleNamespace(_commit_hash="resolved-commit")
+
+        model_utils._keep_checkpoint_fp32_params(model, "org/model", "hf", revision="requested-branch")
+
+        assert calls == {"repo_id": "org/model", "platform": "hf", "revision": "resolved-commit"}
+
+    def test_all_fp32_checkpoint_is_untouched(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+        model = self._make_model()
+        _save_safetensors(model.state_dict(), str(tmp_path / "model.safetensors"))
+        model = model.to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == []
+        assert model.norm.weight.dtype == torch.bfloat16

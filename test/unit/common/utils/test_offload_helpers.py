@@ -20,7 +20,9 @@ The full save/reload path requires a real model checkpoint and is covered
 elsewhere.
 """
 
+import json
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -262,27 +264,186 @@ class TestResolveModelDir:
             result = _resolve_model_dir(str(tmp_path / "missing"))
             assert result == str(tmp_path / "missing")
 
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.bin.index.json",
+            "diffusion_pytorch_model.bin",
+        ],
+    )
+    def test_revision_resolves_partial_snapshot_from_cached_weight_index(self, tmp_path, filename):
+        """A usable weight snapshot need not contain every repository file."""
+        from auto_round.utils.offload import _resolve_model_dir
+
+        snapshot = tmp_path / "snapshots" / "commit"
+        index_path = snapshot / filename
+        index_path.parent.mkdir(parents=True)
+        index_path.write_text('{"weight_map": {}}')
+        incomplete = RuntimeError("snapshot is missing README.md")
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                side_effect=lambda repo, name, revision: str(index_path) if name == filename else None,
+            ) as cached,
+            patch("huggingface_hub.snapshot_download", side_effect=incomplete) as download,
+        ):
+            resolved = _resolve_model_dir("org/model", revision="commit")
+
+        assert resolved == str(snapshot)
+        cached.assert_any_call("org/model", filename, revision="commit")
+        download.assert_not_called()
+
+    def test_offload_manager_resolves_model_id_once(self, tmp_path):
+        """Block reloads must reuse the snapshot resolved when the manager is created."""
+        from auto_round.utils.offload import OffloadManager
+
+        snapshot = tmp_path / "snapshot"
+        snapshot.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        with (
+            patch("auto_round.utils.offload._resolve_model_dir", return_value=str(snapshot)) as resolve,
+            patch("auto_round.utils.offload.load_block_from_model_files") as load_block,
+        ):
+            manager = OffloadManager(mode="clean", model_dir="org/model", model_revision="commit")
+            manager.reload(model, "0")
+
+        assert manager.model_dir == str(snapshot)
+        resolve.assert_called_once_with("org/model", revision="commit")
+        load_block.assert_called_once_with(str(snapshot), "0", model[0])
+
+    def test_offload_manager_uses_diffusion_component_subfolder(self, tmp_path):
+        """Diffusers block reloads must read from the active pipeline component."""
+        from auto_round.utils.offload import OffloadManager
+
+        component_dir = tmp_path / "transformer_2"
+        component_dir.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        model._autoround_checkpoint_subfolder = "transformer_2"
+        with patch("auto_round.utils.offload.load_block_from_model_files") as load_block:
+            manager = OffloadManager(mode="clean", model_dir=str(tmp_path))
+            manager.reload(model, "0")
+
+        load_block.assert_called_once_with(str(component_dir), "0", model[0])
+
+    @pytest.mark.parametrize("component", ["unet", "transformer", "transformer_2"])
+    def test_diffusion_component_clear_and_reload(self, tmp_path, component):
+        from safetensors.torch import save_file
+
+        from auto_round.utils.offload import OffloadManager
+
+        component_dir = tmp_path / component
+        component_dir.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        model._autoround_checkpoint_subfolder = component
+        expected = {name: tensor.clone() for name, tensor in model.state_dict().items()}
+        save_file(expected, str(component_dir / "diffusion_pytorch_model.safetensors"))
+        model[0].register_parameter("calib_scale", nn.Parameter(torch.ones(1)))
+        manager = OffloadManager(mode="clean", model_dir=str(tmp_path))
+        manager.offload(model, "0")
+        assert model[0].weight.numel() == model[0].bias.numel() == 0
+        assert model[0].calib_scale.numel() == 1
+        manager.reload(model, "0")
+        for name, tensor in expected.items():
+            torch.testing.assert_close(model.state_dict()[name], tensor)
+
+    def test_offload_manager_does_not_eagerly_resolve_without_revision(self):
+        """Revision-less and non-Hugging Face sources retain the legacy lazy path."""
+        from auto_round.utils.offload import OffloadManager
+
+        with patch("auto_round.utils.offload._resolve_model_dir") as resolve:
+            manager = OffloadManager(mode="clean", model_dir="modelscope/model")
+
+        assert manager.model_dir == "modelscope/model"
+        resolve.assert_not_called()
+
+    def test_revision_resolution_preserves_hub_error(self):
+        """A pinned lookup failure must not be hidden behind a local-path error."""
+        from auto_round.utils.offload import _resolve_model_dir
+
+        error = RuntimeError("snapshot unavailable")
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+            patch("huggingface_hub.snapshot_download", side_effect=error),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            _resolve_model_dir("org/model", revision="commit")
+
+        assert exc_info.value is error
+
+
+class TestBuildWeightMap:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.safetensors",
+            "diffusion_pytorch_model.safetensors",
+            "pytorch_model.bin",
+            "diffusion_pytorch_model.bin",
+        ],
+    )
+    def test_single_checkpoint(self, tmp_path, filename):
+        from safetensors.torch import save_file
+
+        from auto_round.utils.offload import _build_weight_map
+
+        state_dict = {"blocks.0.weight": torch.ones(2, 2)}
+        checkpoint = tmp_path / filename
+        if filename.endswith(".safetensors"):
+            save_file(state_dict, str(checkpoint))
+        else:
+            torch.save(state_dict, checkpoint)
+
+        assert _build_weight_map(str(tmp_path)) == {"blocks.0.weight": filename}
+
+    def test_custom_diffusers_safetensors_index(self, tmp_path):
+        from auto_round.utils.offload import _build_weight_map
+
+        weight_map = {"blocks.0.weight": "diffusion_pytorch_model-00001-of-00002.safetensors"}
+        index_path = tmp_path / "diffusion_pytorch_model.safetensors.index.json"
+        index_path.write_text(json.dumps({"weight_map": weight_map}))
+
+        assert _build_weight_map(str(tmp_path)) == weight_map
+
 
 # ---------------------------------------------------------------------------
 # OffloadManager stale-dir sweep
 # ---------------------------------------------------------------------------
 class TestOffloadStaleDirSweep:
-    """Startup cleanup of leftover pid-tagged offload temp dirs."""
+    """Startup reclaim of offload temp dirs left behind by dead processes."""
 
     def _offload_base(self, tmp_path, monkeypatch) -> str:
-        workspace = str(tmp_path).lower()  # envs.AR_WORK_SPACE is lowercased
-        monkeypatch.setenv("AR_WORK_SPACE", workspace)
+        """Point ``AR_WORK_SPACE`` at a *relative* path under ``tmp_path``.
+
+        A relative workspace keeps the test independent of path casing (and of
+        whether the filesystem is case-sensitive), unlike lowercasing an
+        absolute ``tmp_path``.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("AR_WORK_SPACE", "ar_work_space")
         monkeypatch.delenv("AR_RESUME_DIR", raising=False)
-        base = os.path.join(workspace, "offload")
+        base = os.path.join("ar_work_space", "offload")
         os.makedirs(base, exist_ok=True)
         return base
+
+    @staticmethod
+    def _make_stale_dir(base: str, name: str, pid: int, host: str | None = None) -> str:
+        """Create a temp dir laid out the way a crashed run leaves it."""
+        from auto_round.utils.offload import _OWNER_MARKER, _hostname_tag
+
+        path = os.path.join(base, name)
+        os.makedirs(path)
+        with open(os.path.join(path, _OWNER_MARKER), "w") as f:
+            json.dump({"pid": pid, "host": host if host is not None else _hostname_tag()}, f)
+        return path
 
     def test_ensure_dir_is_pid_tagged_and_sweeps_stale(self, tmp_path, monkeypatch):
         from auto_round.utils.offload import OffloadManager
 
         base = self._offload_base(tmp_path, monkeypatch)
-        stale = os.path.join(base, "compressor_424242_deadbeef")
-        os.makedirs(stale)
+        stale = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
         mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
         # Only our own pid counts as alive.
         monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
@@ -298,33 +459,79 @@ class TestOffloadStaleDirSweep:
         from auto_round.utils.offload import OffloadManager
 
         base = self._offload_base(tmp_path, monkeypatch)
-        dead = os.path.join(base, "compressor_424242_deadbeef")
-        live = os.path.join(base, f"compressor_{os.getpid()}_cafebabe")
-        resume = os.path.join(base, "compressor_resume")
-        legacy = os.path.join(base, "compressor_0gbcamv0")  # pre-pid-tag naming
-        for d in (dead, live, resume, legacy):
+        dead = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
+        live = self._make_stale_dir(base, f"compressor_{os.getpid()}_cafebabe", os.getpid())
+        # Directories without an owner marker cannot be proven stale: the
+        # resume dir is shared across runs by design, and pre-marker dirs left
+        # by an older AutoRound are indistinguishable from a live run.
+        unmarked = [os.path.join(base, "compressor_resume"), os.path.join(base, "compressor_0gbcamv0")]
+        for d in unmarked:
             os.makedirs(d)
         mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
         monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
         mgr._sweep_stale_dirs(base)
         assert not os.path.exists(dead)
         assert os.path.isdir(live)
-        assert os.path.isdir(resume)
-        assert os.path.isdir(legacy)
+        for d in unmarked:
+            assert os.path.isdir(d)
 
-    def test_ensure_dir_resume_mode_never_sweeps(self, tmp_path, monkeypatch):
+    def test_sweep_is_cross_prefix(self, tmp_path, monkeypatch):
+        """A crash in AutoScheme must not leak a dir the compressor never handles."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        foreign = self._make_stale_dir(base, "autoscheme_424242_deadbeef", 424242)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        mgr._sweep_stale_dirs(base)
+        assert not os.path.exists(foreign), "every prefix shares offload/, so all dead dirs go"
+
+    def test_sweep_skips_dirs_owned_by_another_host(self, tmp_path, monkeypatch):
+        """A pid from another machine says nothing about our process table."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        remote = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242, host="some-other-host")
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: False))
+        mgr._sweep_stale_dirs(base)
+        assert os.path.isdir(remote), "shared-storage leftovers from another host must be left alone"
+
+    def test_sweep_tolerates_vanishing_base_dir(self, tmp_path, monkeypatch):
+        """A concurrent cleaner removing offload/ must not break _ensure_dir()."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr("os.listdir", lambda _: (_ for _ in ()).throw(FileNotFoundError("gone")))
+        mgr._sweep_stale_dirs(base)  # must not raise
+
+    def test_resume_mode_keeps_resume_dir_but_reclaims_dead_dirs(self, tmp_path, monkeypatch):
         from auto_round.utils.offload import OffloadManager
 
         base = self._offload_base(tmp_path, monkeypatch)
         monkeypatch.setenv("AR_RESUME_DIR", str(tmp_path / "resume"))
-        stale = os.path.join(base, "compressor_424242_deadbeef")
-        os.makedirs(stale)
+        stale = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
+        # The resume dir itself is shared across runs by design, so it carries
+        # no owner marker and can never be swept.
+        os.makedirs(os.path.join(base, "compressor_resume"))
         mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
-        # Even if every pid were dead, resume mode must not delete anything.
         monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: False))
         tempdir = mgr._ensure_dir()
         try:
             assert tempdir == os.path.join(base, "compressor_resume")
-            assert os.path.exists(stale)
+            # Resume mode is exactly the crash-recovery path, so stale dirs
+            # from the dead run are reclaimed while the resume dir survives.
+            assert not os.path.exists(stale)
+            assert os.path.isdir(tempdir)
         finally:
             mgr._cleanup_tempdir()
+
+    def test_pid_alive_handles_out_of_range_pid(self):
+        """An untrustworthy pid tag must read as alive, never as dead."""
+        from auto_round.utils.offload import OffloadManager
+
+        if sys.platform == "win32":  # pragma: no cover - POSIX-only overflow
+            pytest.skip("OverflowError from os.kill is POSIX-specific")
+        assert OffloadManager._pid_alive(2**64) is True
+        assert OffloadManager._pid_alive(0) is False

@@ -1,5 +1,4 @@
 #
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2023 Intel Corporation
 #
@@ -16,7 +15,7 @@
 # limitations under the License.
 
 
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 # From PyTorch:
 #
@@ -102,7 +101,7 @@ from torch.optim.optimizer import Optimizer
 __all__ = ["SignSGD", "sgd"]
 
 
-class _RequiredParameter(object):
+class _RequiredParameter:
     """Singleton class representing a required parameter for an Optimizer."""
 
     def __repr__(self):
@@ -220,15 +219,15 @@ class SignSGD(Optimizer):
         nesterov: bool = False,
         *,
         maximize: bool = False,
-        foreach: Optional[bool] = None,
+        foreach: bool | None = None,
         differentiable: bool = False,
     ) -> None:
         if lr is not required and lr < 0.0:
-            raise ValueError("Invalid learning rate: {}".format(lr))
+            raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
-            raise ValueError("Invalid momentum value: {}".format(momentum))
+            raise ValueError(f"Invalid momentum value: {momentum}")
         if weight_decay < 0.0:
-            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
         defaults = dict(
             lr=lr,
@@ -242,7 +241,7 @@ class SignSGD(Optimizer):
         )
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
-        super(SignSGD, self).__init__(params, defaults)
+        super().__init__(params, defaults)
 
     def __setstate__(self, state):
         super().__setstate__(state)
@@ -307,13 +306,13 @@ class SignSGD(Optimizer):
 
 
 def sgd(
-    params: List[Tensor],
-    d_p_list: List[Tensor],
-    momentum_buffer_list: List[Optional[Tensor]],
+    params: list[Tensor],
+    d_p_list: list[Tensor],
+    momentum_buffer_list: list[Tensor | None],
     # kwonly args with defaults are not supported by functions compiled with torchscript issue #70627
     # setting this as kwarg for now as functional API is compiled by torch/distributed/optim
-    has_sparse_grad: bool = None,
-    foreach: bool = None,
+    has_sparse_grad: bool | None = None,
+    foreach: bool | None = None,
     *,
     weight_decay: float,
     momentum: float,
@@ -354,9 +353,9 @@ def sgd(
 
 
 def _single_tensor_sgd(
-    params: List[Tensor],
-    d_p_list: List[Tensor],
-    momentum_buffer_list: List[Optional[Tensor]],
+    params: list[Tensor],
+    d_p_list: list[Tensor],
+    momentum_buffer_list: list[Tensor | None],
     *,
     weight_decay: float,
     momentum: float,
@@ -368,6 +367,7 @@ def _single_tensor_sgd(
 ):
     for i, param in enumerate(params):
         d_p = d_p_list[i] if not maximize else -d_p_list[i]
+        sign_in_place = True
 
         if weight_decay != 0:
             d_p = d_p.add(param, alpha=weight_decay)
@@ -385,5 +385,11 @@ def _single_tensor_sgd(
                 d_p = d_p.add(buf, alpha=momentum)
             else:
                 d_p = buf
+                # the buffer is reused next step; its values must survive
+                sign_in_place = False
 
-        param.add_(torch.sign(d_p), alpha=-lr)
+        # a fresh sign tensor is as large as the gradient (several GiB for a
+        # full-vocabulary lm_head); in-place sign on the gradient (zeroed
+        # after the step) or on the fresh add() result allocates nothing
+        update = d_p.sign_() if sign_in_place else torch.sign(d_p)
+        param.add_(update, alpha=-lr)

@@ -11,9 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import json
+import math
 import os
-from typing import Any, Optional, Union
+from dataclasses import replace
+from typing import Any
 
 import torch
 
@@ -24,7 +27,7 @@ from auto_round.utils.device import (
     get_major_device,
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
-from auto_round.utils.model import rename_weights_files
+from auto_round.utils.model import cast_model_dtype, rename_weights_files
 
 
 class DiffusionMixin:
@@ -44,6 +47,10 @@ class DiffusionMixin:
         num_inference_steps: Number of denoising steps for diffusion generation or evaluation
         calib_num_inference_steps: Number of denoising steps used to collect calibration inputs
         generator_seed: Seed for initial noise generation
+        diffusion_tuning_cache_size: Extra persistent GPU buffer budget in GiB for
+            single-CUDA SignRound prefetch with low_gpu_mem_usage; 0 disables it.
+            "auto" selects a conservative budget after the first tuning iteration.
+            Training activations/workspace are not included in this budget.
 
     Design note:
         ``ModelContext._load_model()`` loads the diffusion pipeline and sets
@@ -58,13 +65,26 @@ class DiffusionMixin:
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         calib_num_inference_steps: int = 8,
-        generator_seed: Optional[int] = None,
+        generator_seed: int | None = None,
+        diffusion_tuning_cache_size: float | str = 0,
         **kwargs,
     ) -> None:
         if num_inference_steps < 1:
             raise ValueError("num_inference_steps must be a positive integer.")
         if calib_num_inference_steps < 1:
             raise ValueError("calib_num_inference_steps must be a positive integer.")
+        if diffusion_tuning_cache_size != "auto":
+            try:
+                diffusion_tuning_cache_size = float(diffusion_tuning_cache_size)
+                if not math.isfinite(diffusion_tuning_cache_size) or diffusion_tuning_cache_size < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "diffusion_tuning_cache_size must be 'auto' or finite and non-negative (GiB)."
+                ) from None
+
+        self._diffusion_user_block_selector = copy.deepcopy(kwargs.get("to_quant_block_names"))
+        self._diffusion_user_layer_config = copy.deepcopy(kwargs.get("layer_config"))
 
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
@@ -73,9 +93,9 @@ class DiffusionMixin:
         self.generator_seed = generator_seed
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
-        # Default dataset for diffusion models is "coco2014", not "NeelNanda/pile-10k"
+        # Use video-domain calibration prompts by default for diffusion models.
         if kwargs.get("dataset") in (None, "NeelNanda/pile-10k"):
-            kwargs["dataset"] = "coco2014"
+            kwargs["dataset"] = "opens2v"
 
         iters = kwargs.get("iters", None)
         _alg_cfg = args[0] if args else None
@@ -119,6 +139,7 @@ class DiffusionMixin:
 
         # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
+        self.model_context.diffusion_tuning_cache_size = diffusion_tuning_cache_size
 
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
@@ -138,15 +159,7 @@ class DiffusionMixin:
             if not isinstance(component, torch.nn.Module):
                 continue
 
-            fp32_modules = getattr(component, "_keep_in_fp32_modules", None) or []
-            tensors = list(component.named_parameters()) + list(component.named_buffers())
-            for tensor_name, tensor in tensors:
-                if not tensor.is_floating_point():
-                    continue
-                keep_in_fp32 = any(module_name in tensor_name for module_name in fp32_modules)
-                desired_dtype = torch.float32 if keep_in_fp32 else target_dtype
-                if tensor.dtype != desired_dtype:
-                    tensor.data = tensor.data.to(dtype=desired_dtype)
+            cast_model_dtype(component, target_dtype)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
@@ -252,7 +265,7 @@ class DiffusionMixin:
 
         # Zero-shot (RTN) path: no calibration data needed
         if not self.need_calib:
-            return self._quantize_zero_shot()
+            return self._quantize_all_transformers_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs
         if bool(self.quant_block_list):
@@ -352,6 +365,9 @@ class DiffusionMixin:
             self.model_context.model = transformer
             self.model_context.quantized = False
             self._post_init_done = False
+            # Calibrators snapshot the active model at construction time. Recreate
+            # it so transformer_2 block hooks are not installed on the primary model.
+            self.calibration = None
 
             # Dispatch the pipeline for the secondary transformer without recasting it.
             self._align_device_and_dtype_for_secondary(comp_name)
@@ -365,7 +381,6 @@ class DiffusionMixin:
             # Get block names for new transformer
             all_blocks = get_block_names(self.model_context.model)
             self.quant_block_list = find_matching_blocks(self.model_context.model, all_blocks, None)
-            self.layer_config = {}
 
             # Get new block names for caching
             if bool(self.quant_block_list):
@@ -410,10 +425,77 @@ class DiffusionMixin:
 
         return self.model_context.model, self.layer_config
 
+    def _quantize_all_transformers_zero_shot(self):
+        """Quantize every transformer without running pipeline calibration."""
+        from auto_round.utils import find_matching_blocks, get_block_names
+
+        additional = self._find_additional_transformers()
+        if not additional:
+            return self._quantize_zero_shot()
+
+        primary_model = self.model_context.model
+        primary_blocks = self.quant_block_list
+        primary_config = self.layer_config
+        primary_quantized = self.model_context.quantized
+        state_keys = (
+            "compression_plan",
+            "_format_resolution",
+            "_alg_composer",
+            "to_quant_block_names",
+            "ignore_layers",
+            "calibration",
+            "_post_init_done",
+        )
+        primary_state = {key: getattr(self, key, None) for key in state_keys}
+        context = self.compress_context
+        original_flags = (context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving)
+        context.low_cpu_mem_usage = False
+        self._defer_multi_transformer_serialization()
+        extras = {}
+        plans = {}
+        try:
+            self._quantize_zero_shot()
+            primary_quantized = True
+            primary_config = dict(self.layer_config)
+            primary_state["compression_plan"] = getattr(self, "compression_plan", None)
+            for name, transformer in additional:
+                logger.info(f"Quantizing {name} without calibration")
+                self.model_context.model = transformer
+                self.model_context.quantized = False
+                self._post_init_done = False
+                self.calibration = None
+                self.to_quant_block_names = copy.deepcopy(self._diffusion_user_block_selector)
+                self.quant_block_list = find_matching_blocks(
+                    transformer, get_block_names(transformer), self.to_quant_block_names
+                )
+                # Build the component's plan from user overrides, not the primary's expanded plan.
+                self.layer_config = copy.deepcopy(self._diffusion_user_layer_config) or {}
+                self.ignore_layers = primary_state["ignore_layers"]
+                resolution = getattr(self, "_format_resolution", None)
+                if resolution is not None:
+                    self._format_resolution = replace(resolution, quant_block_list=self.quant_block_list)
+                self.post_init()
+                self._defer_multi_transformer_serialization()
+                self._quantize_zero_shot()
+                extras[name] = (self.model_context.model, dict(self.layer_config))
+                plans[name] = getattr(self, "compression_plan", None)
+                setattr(self.model_context.pipe, name, self.model_context.model)
+        finally:
+            self.model_context.model = primary_model
+            for key, value in primary_state.items():
+                setattr(self, key, value)
+            self.layer_config = primary_config
+            self.quant_block_list = primary_blocks
+            self.model_context.quantized = primary_quantized
+            self._quantized_transformers = extras
+            self._quantized_transformer_plans = plans
+            context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = original_flags
+        return primary_model, self.layer_config
+
     def save_quantized(
         self,
-        output_dir: Optional[str] = None,
-        format: Optional[Union[str, list]] = None,
+        output_dir: str | None = None,
+        format: str | list | None = None,
         inplace: bool = True,
         return_folders: bool = False,
         **kwargs,
@@ -462,6 +544,13 @@ class DiffusionMixin:
                 # Save secondary quantized transformer
                 saved_model = self.model_context.model
                 saved_lc = self.layer_config
+                saved_plan = getattr(self, "compression_plan", None)
+                saved_selector = self.to_quant_block_names
+                component_plan = getattr(self, "_quantized_transformer_plans", {}).get(name)
+                if component_plan is not None:
+                    self.compression_plan = component_plan
+                    # None lets serialization derive the selector from this component's plan.
+                    self.to_quant_block_names = copy.deepcopy(self._diffusion_user_block_selector)
                 saved_immediate_saving = self.compress_context.is_immediate_saving
                 self.model_context.model, self.layer_config = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
@@ -469,18 +558,22 @@ class DiffusionMixin:
                     self.compress_context.is_immediate_saving = False
                     if saved_subfolder is not None:
                         delattr(self.model_context.model, "_autoround_pipeline_subfolder")
-                compressed_model = super().save_quantized(
-                    output_dir=target_output_dir,
-                    format=_format,
-                    inplace=inplace,
-                    return_folders=False,
-                    **kwargs,
-                )
-                self.compress_context.is_immediate_saving = saved_immediate_saving
-                if saved_subfolder is not None:
-                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
-                self.model_context.model = saved_model
-                self.layer_config = saved_lc
+                try:
+                    compressed_model = super().save_quantized(
+                        output_dir=target_output_dir,
+                        format=_format,
+                        inplace=inplace,
+                        return_folders=False,
+                        **kwargs,
+                    )
+                finally:
+                    self.compress_context.is_immediate_saving = saved_immediate_saving
+                    if saved_subfolder is not None:
+                        self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                    self.model_context.model = saved_model
+                    self.compression_plan = saved_plan
+                    self.to_quant_block_names = saved_selector
+                    self.layer_config = saved_lc
             elif val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving
@@ -500,7 +593,19 @@ class DiffusionMixin:
                 if saved_subfolder is not None:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
             elif val is not None and hasattr(val, "save_pretrained"):
-                val.save_pretrained(sub_module_path)
+                if (
+                    pipe.__class__.__name__ == "ZImagePipeline"
+                    and name == "text_encoder"
+                    and val.__class__.__name__ == "Qwen3Model"
+                ):
+                    # Preserve the original causal-LM layout expected by vLLM-Omni.
+                    state_dict = {f"model.{key}": value for key, value in val.state_dict().items()}
+                    val.save_pretrained(sub_module_path, state_dict=state_dict)
+                    config = copy.deepcopy(val.config)
+                    config.architectures = ["Qwen3ForCausalLM"]
+                    config.save_pretrained(sub_module_path)
+                else:
+                    val.save_pretrained(sub_module_path)
                 continue
 
             if name.startswith("transformer"):

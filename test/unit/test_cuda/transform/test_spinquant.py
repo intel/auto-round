@@ -26,6 +26,11 @@ from auto_round.algorithms.transforms.spinquant.preprocessor import (
     remove_spinquant_hooks_from_model,
 )
 
+_PAIRWISE_FULL_CI = pytest.mark.skip_ci(
+    reason="Matrix: Full deterministic rotation already covers pairwise interactions"
+)
+_RANDOM_SINGLE_FULL_CI = pytest.mark.skip_ci(reason="Matrix: All-random rotation covers every random rotation path")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Config Tests
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -303,7 +308,6 @@ class TestPipelineIntegration:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_pipeline_quarot_string(self):
         """AutoRound(alg_configs=["rtn", "quarot"]) should work end-to-end."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -320,7 +324,6 @@ class TestPipelineIntegration:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
-    @pytest.mark.timeout(90)
     def test_pipeline_spinquant_config(self):
         """AutoRound(alg_configs=["rtn", SpinQuantConfig(...)]) should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -345,7 +348,9 @@ class TestPipelineIntegration:
         )
         shutil.rmtree(self.save_dir + "_cfg", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
+    @pytest.mark.skip_ci(
+        reason="Matrix: The SpinQuantConfig-object pipeline is already covered by test_pipeline_spinquant_config"
+    )
     def test_pipeline_config_object(self):
         """Building a SpinQuantConfig directly (instead of the dict shorthand) and passing
         it via ``alg_configs`` should work."""
@@ -469,18 +474,26 @@ class TestRotationEquivalence:
             (False, True, False, False, False, False, False, False, "R2"),
             (False, False, True, False, False, False, False, False, "R3"),
             (False, False, False, True, False, False, False, False, "R4"),
-            # --- Pairwise combinations (deterministic) ---
-            (True, True, False, False, False, False, False, False, "R1+R2"),
-            (True, False, True, False, False, False, False, False, "R1+R3"),
-            (True, False, False, True, False, False, False, False, "R1+R4"),
-            (False, False, True, True, False, False, False, False, "R3+R4"),
+            # --- Pairwise combinations (deterministic), retained for full CI ---
+            pytest.param(True, True, False, False, False, False, False, False, "R1+R2", marks=_PAIRWISE_FULL_CI),
+            pytest.param(True, False, True, False, False, False, False, False, "R1+R3", marks=_PAIRWISE_FULL_CI),
+            pytest.param(True, False, False, True, False, False, False, False, "R1+R4", marks=_PAIRWISE_FULL_CI),
+            pytest.param(False, False, True, True, False, False, False, False, "R3+R4", marks=_PAIRWISE_FULL_CI),
             # --- Full combination (deterministic) ---
             (True, True, True, True, False, False, False, False, "R1+R2+R3+R4"),
-            # --- Random Hadamard variants ---
-            (True, False, False, False, True, False, False, False, "R1-random"),
-            (False, True, False, False, False, True, False, False, "R2-random"),
-            (False, False, True, False, False, False, True, False, "R3-random"),
-            (False, False, False, True, False, False, False, True, "R4-random"),
+            # --- Random Hadamard variants, retained for full CI ---
+            pytest.param(
+                True, False, False, False, True, False, False, False, "R1-random", marks=_RANDOM_SINGLE_FULL_CI
+            ),
+            pytest.param(
+                False, True, False, False, False, True, False, False, "R2-random", marks=_RANDOM_SINGLE_FULL_CI
+            ),
+            pytest.param(
+                False, False, True, False, False, False, True, False, "R3-random", marks=_RANDOM_SINGLE_FULL_CI
+            ),
+            pytest.param(
+                False, False, False, True, False, False, False, True, "R4-random", marks=_RANDOM_SINGLE_FULL_CI
+            ),
             (True, True, True, True, True, True, True, True, "R1+R2+R3+R4-all-random"),
         ],
     )

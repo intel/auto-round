@@ -36,7 +36,6 @@
 import builtins
 import math
 import time
-from typing import Dict
 
 import triton
 
@@ -54,7 +53,7 @@ class CustomizedTritonAutoTuner(triton.KernelInterface):
         configs,
         key,
         reset_to_zero,
-        prune_configs_by: Dict = None,
+        prune_configs_by: dict | None = None,
         nearest_power_of_two: bool = False,
     ):
         if not configs:
@@ -207,9 +206,9 @@ def matmul248_kernel_config_pruner(configs, nargs):
     """
     The main purpose of this function is to shrink BLOCK_SIZE_* when the corresponding dimension is smaller.
     """
-    m = max(2 ** int(math.ceil(math.log2(nargs["M"]))), 16)
-    n = max(2 ** int(math.ceil(math.log2(nargs["N"]))), 16)
-    k = max(2 ** int(math.ceil(math.log2(nargs["K"]))), 16)
+    m = max(2 ** math.ceil(math.log2(nargs["M"])), 16)
+    n = max(2 ** math.ceil(math.log2(nargs["N"])), 16)
+    k = max(2 ** math.ceil(math.log2(nargs["K"])), 16)
 
     used = set()
     for config in configs:

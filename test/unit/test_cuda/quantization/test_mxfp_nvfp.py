@@ -11,8 +11,8 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.export.formats import BackendDataType
+from auto_round.export.formats.autoround import qlinear_fp as ar_qlinear_fp
 
 from ...envs import has_module, require_awq, require_optimum
 
@@ -28,7 +28,6 @@ QMODULE_MAPPING = {
 }
 
 
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize("scheme", testing_schemes)
 @torch.inference_mode()
 def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):
@@ -111,7 +110,7 @@ class TestAutoRound:
         print(model)
         assert model is not None, "Failed to load the quantized model."
 
-    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    @pytest.mark.skip_ci(reason="Matrix: Cannot test all cases in CI; time-consuming")
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(

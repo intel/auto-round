@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 
@@ -34,7 +36,7 @@ class AlgorithmParameter:
 
 
 class _MutuallyExclusiveParameterRegistry:
-    def __init__(self, registry: "AlgorithmParameterRegistry", group_id: int) -> None:
+    def __init__(self, registry: AlgorithmParameterRegistry, group_id: int) -> None:
         self._registry = registry
         self._group_id = group_id
 
@@ -84,10 +86,39 @@ class AlgorithmParameterRegistry:
         return values
 
 
+#: Union of ``serialized_fields`` declared by every ``AlgorithmConfig`` subclass.
+_ALL_SERIALIZED_FIELDS: set[str] = set()
+
+
+def all_algorithm_serialized_fields() -> frozenset[str]:
+    """Return every algorithm-specific field name that may appear in an export."""
+    return frozenset(_ALL_SERIALIZED_FIELDS)
+
+
 class AlgorithmConfig:
     """Base mixin for config-owned command-line parameter declarations."""
 
     cli_include_common_args: ClassVar[bool] = True
+
+    #: Optional per-field help text for configs whose CLI arguments are derived
+    #: from their constructor signature instead of ``register_args`` (see the
+    #: CLI fallback registry). Keyed by constructor parameter name.
+    #: Subclasses should override this mapping rather than mutate the base default.
+    cli_field_help: ClassVar[Mapping[str, str]] = MappingProxyType({})
+
+    #: Algorithm-owned fields recorded in the exported ``quantization_config``.
+    #: Each config declares only the fields it really owns; anything not listed
+    #: here is never exported for this algorithm. Values are read from the
+    #: config itself, so a declared field must exist on every instance.
+    serialized_fields: ClassVar[tuple[str, ...]] = ()
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        _ALL_SERIALIZED_FIELDS.update(cls.__dict__.get("serialized_fields", ()))
+
+    def to_serialized_dict(self) -> dict[str, Any]:
+        """Return this config's algorithm-specific fields for export."""
+        return {name: getattr(self, name) for name in self.serialized_fields}
 
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:

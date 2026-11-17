@@ -16,7 +16,7 @@ AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
-@pytest.mark.skip_ci(reason="multiple card test")
+@pytest.mark.skip_ci(reason="Resource: multiple card test")
 class TestAutoRoundCli:
     tasks = "lambada_openai"
 
@@ -61,7 +61,7 @@ class TestAutoRoundCli:
             assert False, "cmd line test fail, please have a check"
 
 
-@pytest.mark.skip_ci(reason="multiple card test")
+@pytest.mark.skip_ci(reason="Resource: multiple card test")
 class TestAutoRound:
 
     @pytest.fixture(autouse=True)
@@ -128,8 +128,8 @@ class TestAutoRound:
         model_name = "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc"
 
         device_map = {}
-        for i in range(0, 32):
-            key = f"model.layers.{str(i)}"
+        for i in range(32):
+            key = f"model.layers.{i!s}"
             device_map[key] = "cuda:0"
         device_map["model.layers.1"] = "cpu"
         device_map["model.layers.2"] = "cpu"

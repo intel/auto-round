@@ -7,6 +7,8 @@ import torch
 import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
     compress_layer_names,
+    expand_layer_config_for_weight_renames,
+    get_reverse_checkpoint_conversion_mapping,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
@@ -110,6 +112,79 @@ def test_revert_checkpoint_conversion_mapping_handles_backreference_patterns():
     assert converted == "model.layers.0.self_attn.q_proj.weight"
 
 
+def test_get_reverse_checkpoint_conversion_mapping_falls_back_to_central_registry():
+    # Models built from config (AutoRound's meta / disk-stream skeleton) are not
+    # created through ``from_pretrained`` and therefore carry no
+    # ``_weight_conversions``. The reverse map must still be recovered from
+    # transformers' central per-family registry (transformers >= 5.x), otherwise
+    # module-side names such as ``attn_hc.base`` are written to the checkpoint
+    # verbatim and break reload (e.g. vLLM ``KeyError: 'layers.0.attn_hc.base'``).
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as _tf_mapping
+
+    if not _tf_mapping("glm5_next"):
+        pytest.skip("installed transformers has no glm5_next conversion mapping")
+
+    model = SimpleNamespace(config=SimpleNamespace(model_type="glm5_next"))
+    reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+
+    # attn_hc.base -> hc_attn_base is the exact rename that broke vLLM deployment.
+    assert (
+        revert_checkpoint_conversion_mapping("model.language_model.layers.0.attn_hc.base", reverse_mapping)
+        == "model.language_model.layers.0.hc_attn_base"
+    )
+    assert (
+        revert_checkpoint_conversion_mapping("model.language_model.layers.3.ffn_hc.scale", reverse_mapping)
+        == "model.language_model.layers.3.hc_ffn_scale"
+    )
+    # The forget-gate submodule renames must reverse too, to avoid the next KeyError.
+    assert (
+        revert_checkpoint_conversion_mapping(
+            "model.language_model.layers.0.self_attn.forget_gate.A_log", reverse_mapping
+        )
+        == "model.language_model.layers.0.self_attn.A_log"
+    )
+
+
+def test_expand_layer_config_for_weight_renames_to_model_names(monkeypatch):
+    checkpoint_name = "language_model.model.layers.0.self_attn.q_proj"
+    model_name = "model.language_model.layers.0.self_attn.q_proj"
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda model: {
+            r"model.language_model": r"language_model",
+            r"language_model": r"language_model.model",
+        },
+    )
+
+    expanded = expand_layer_config_for_weight_renames(
+        {checkpoint_name: {"bits": 4}},
+        model=SimpleNamespace(),
+        to_model_names=True,
+    )
+
+    assert expanded[checkpoint_name]["bits"] == 4
+    assert expanded[model_name]["bits"] == 4
+
+
+def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):
+    model_name = "model.layers.0.attn_hc.base"
+    checkpoint_name = "model.layers.0.hc_attn_base"
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda model: {r"attn_hc\.base$": "hc_attn_base"},
+    )
+
+    expanded = expand_layer_config_for_weight_renames(
+        {model_name: {"bits": 4}},
+        model_type="glm5_next",
+        to_model_names=False,
+    )
+
+    assert expanded[model_name]["bits"] == 4
+    assert expanded[checkpoint_name]["bits"] == 4
+
+
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"
@@ -126,6 +201,21 @@ def test_preserve_original_visual_block_name():
     assert (
         preserve_original_visual_block_name("model.language_model.layers", "model.layers")
         == "model.language_model.layers,model.layers"
+    )
+    # Qwen-Omni renames ``thinker.model.layers`` to
+    # ``thinker.model.language_model.layers`` in newer Transformers releases;
+    # keep both forms for the runtime and checkpoint namespaces.
+    assert (
+        preserve_original_visual_block_name("thinker.model.language_model.layers", "thinker.model.layers")
+        == "thinker.model.language_model.layers,thinker.model.layers"
+    )
+    assert (
+        preserve_original_visual_block_name(
+            "thinker.model.visual.blocks,thinker.model.audio_tower.layers",
+            "thinker.visual.blocks,thinker.audio_tower.layers",
+        )
+        == "thinker.model.visual.blocks,thinker.visual.blocks,"
+        "thinker.model.audio_tower.layers,thinker.audio_tower.layers"
     )
 
 
@@ -188,6 +278,22 @@ class TestPredefinedIgnoreLayersBlockFilter:
         assert (
             "mm_projector" in stub.ignore_layers
         ), f"mm_projector should be in ignore_layers, got: '{stub.ignore_layers}'"
+
+    @patch("auto_round.compressors.base.get_predefined_ignore_layers")
+    @patch("auto_round.compressors.base.resolve_layer_config")
+    @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
+    def test_none_ignore_layers_accepts_predefined_layers(self, mock_handle, mock_set_lc, mock_get_predefined):
+        mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
+        mock_set_lc.return_value = {}
+        stub = self._make_compressor_stub(
+            predefined_ignore_layers=["vision_tower", "mm_projector"],
+            quant_block_list=[["model.layers"]],
+        )
+        stub.ignore_layers = None
+
+        stub.configure_layer_config()
+
+        assert stub.ignore_layers == "vision_tower,mm_projector"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.resolve_layer_config")

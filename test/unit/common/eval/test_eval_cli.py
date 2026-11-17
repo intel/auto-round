@@ -103,6 +103,11 @@ class TestEvalArgumentParser:
         args = parser.parse_args(["--disable_trust_remote_code"])
         assert args.disable_trust_remote_code is True
 
+    def test_trust_remote_code_default_disabled_and_opt_in(self):
+        parser = eval_cli.EvalArgumentParser()
+        assert parser.parse_args([]).disable_trust_remote_code is True
+        assert parser.parse_args(["--trust_remote_code"]).disable_trust_remote_code is False
+
     def test_diffusion_args_are_available(self):
         parser = eval_cli.EvalArgumentParser()
         args = parser.parse_args(
@@ -208,19 +213,24 @@ class TestEval:
     """Tests for the main `eval` entry point."""
 
     def test_diffusion_model_path_skips_lm_eval(self, monkeypatch):
-        args = SimpleNamespace(model_name="diffusion-model", eval_backend="hf")
+        args = SimpleNamespace(model_name="diffusion-model", eval_backend="hf", disable_trust_remote_code=True)
         captured = {}
 
         def fake_diffusion_eval(evaluation_args, pipe):
             captured["args"] = evaluation_args
             captured["pipe"] = pipe
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: True)
-        monkeypatch.setattr("auto_round.utils.diffusion_load_model", lambda value: (object(), object()))
+        def fake_diffusion_load_model(value, trust_remote_code):
+            captured["trust_remote_code"] = trust_remote_code
+            return object(), object()
+
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: True)
+        monkeypatch.setattr("auto_round.utils.diffusion_load_model", fake_diffusion_load_model)
         monkeypatch.setattr("auto_round.eval.evaluation.evaluate_diffusion_model", fake_diffusion_eval)
         eval_cli.eval(args)
         assert captured["args"] is args
         assert captured["pipe"] is not None
+        assert captured["trust_remote_code"] is False
 
     def test_vllm_backend_delegates(self, monkeypatch):
         captured = {}
@@ -228,8 +238,8 @@ class TestEval:
         def fake_eval_with_vllm(args):
             captured["args"] = args
 
-        args = SimpleNamespace(model_name="vllm-model", eval_backend="vllm")
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        args = SimpleNamespace(model_name="vllm-model", eval_backend="vllm", disable_trust_remote_code=True)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(eval_cli, "eval_with_vllm", fake_eval_with_vllm)
         eval_cli.eval(args)
         assert captured["args"] is args
@@ -250,7 +260,7 @@ class TestEval:
 
         fake_res = {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}}
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",
@@ -280,7 +290,7 @@ class TestEval:
             limit=None,
         )
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",
@@ -314,7 +324,7 @@ class TestEval:
             limit=None,
         )
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",
@@ -354,6 +364,8 @@ class TestEvalWithVllm:
         )
 
         captured_kwargs = {}
+        captured_evaluate_kwargs = {}
+        task_manager = object()
         fake_res = {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}}
 
         class FakeVLLM:
@@ -371,10 +383,13 @@ class TestEvalWithVllm:
         monkeypatch.setattr(eval_cli, "get_major_device", lambda: "cuda")
         monkeypatch.setattr(eval_cli, "get_device_and_parallelism", lambda device: ("cuda", False))
         monkeypatch.setattr(eval_cli, "get_model_dtype", lambda dtype, default="auto": "auto")
-        monkeypatch.setattr(
-            "lm_eval.evaluator.simple_evaluate",
-            lambda **kwargs: fake_res,
-        )
+        monkeypatch.setattr(eval_cli, "_get_lm_eval_task_manager", lambda tasks: task_manager)
+
+        def fake_simple_evaluate(**kwargs):
+            captured_evaluate_kwargs.update(kwargs)
+            return fake_res
+
+        monkeypatch.setattr("lm_eval.evaluator.simple_evaluate", fake_simple_evaluate)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
 
@@ -383,6 +398,32 @@ class TestEvalWithVllm:
 
         assert captured_kwargs["pretrained"] == "model-id"
         assert captured_kwargs["tensor_parallel_size"] == 2
+        assert captured_evaluate_kwargs["task_manager"] is task_manager
+
+    def test_task_manager_finds_nested_yaml_task(self, monkeypatch, tmp_path):
+        tasks_root = tmp_path / "lm_eval" / "tasks"
+        task_dir = tasks_root / "lambada"
+        task_dir.mkdir(parents=True)
+        (task_dir / "lambada_openai.yaml").write_text("task: lambada_openai\n")
+
+        fake_lm_eval = type(sys)("lm_eval")
+        fake_lm_eval.__file__ = str(tmp_path / "lm_eval" / "__init__.py")
+        captured = {}
+
+        class FakeTaskManager:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_tasks = type(sys)("lm_eval.tasks")
+        fake_tasks.TaskManager = FakeTaskManager
+        monkeypatch.setitem(sys.modules, "lm_eval", fake_lm_eval)
+        monkeypatch.setitem(sys.modules, "lm_eval.tasks", fake_tasks)
+
+        task_manager = eval_cli._get_lm_eval_task_manager(["lambada_openai"])
+
+        assert isinstance(task_manager, FakeTaskManager)
+        assert captured["include_defaults"] is False
+        assert captured["include_path"] == [str(task_dir)]
 
     def test_mllm_uses_vllm_vlm(self, monkeypatch):
         args = SimpleNamespace(
@@ -671,6 +712,29 @@ class TestEvaluateTasksWithRetry:
 
 class TestLoadGgufModelIfNeeded:
     """CPU-only tests for GGUF detection using temporary files/directories."""
+
+    def test_parent_export_dir_resolves_to_single_nested_artifact_dir(self, tmp_path):
+        export_root = tmp_path / "aware_topk_tune_shared"
+        nested_model_dir = export_root / "Qwen3-30B-A3B-w4g128"
+        nested_model_dir.mkdir(parents=True)
+        (nested_model_dir / "config.json").write_text('{"model_type": "qwen3_moe"}', encoding="utf-8")
+
+        resolved = eval_cli._resolve_exported_model_path(str(export_root))
+
+        assert resolved == str(nested_model_dir)
+
+    def test_parent_export_dir_stays_unchanged_when_multiple_nested_artifacts_exist(self, tmp_path):
+        export_root = tmp_path / "aware_topk_tune_shared"
+        first_nested = export_root / "first-export"
+        second_nested = export_root / "second-export"
+        first_nested.mkdir(parents=True)
+        second_nested.mkdir(parents=True)
+        (first_nested / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+        (second_nested / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+
+        resolved = eval_cli._resolve_exported_model_path(str(export_root))
+
+        assert resolved == str(export_root)
 
     def test_gguf_file_detected_at_file_path(self, monkeypatch, tmp_path):
         gguf_path = tmp_path / "model.gguf"

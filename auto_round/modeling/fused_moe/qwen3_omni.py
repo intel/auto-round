@@ -13,7 +13,7 @@ import torch
 
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
+from auto_round.modeling.fused_moe.utils import _update_parameter, grouped_or_sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,9 @@ class LinearQwen3OmniThinkerSparseMoeBlock(ReplacementModuleBase):
         clear_memory()
 
     def experts_forward(self, hidden_states, top_k_index, top_k_weights):
-        return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, self.experts, self.num_experts)
+        return grouped_or_sequential_moe_forward(
+            hidden_states, top_k_index, top_k_weights, self.experts, self.num_experts
+        )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -88,6 +90,10 @@ class SequentialQwen3OmniThinkerExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Qwen3OmniMoeThinkerTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        # Container-level activation so the grouped experts forward can apply gating.
+        # Store via ``object.__setattr__`` so the activation is NOT registered as a child module
+        # of this ``ModuleList``; otherwise it would appear as an extra expert in iteration/len.
+        object.__setattr__(self, "act_fn", self[0].act_fn)
         register_moe_fusion_spec(
             self,
             build_standard_moe_fusion_spec(

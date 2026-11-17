@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import random
-from typing import Union
+from typing import Any, Optional, Union
 
 import torch
 from torch.amp import autocast
@@ -23,13 +23,14 @@ from auto_round.compressors.config_resolution import LayerConfigResolutionError
 # Explicit compatibility exports for callers that historically imported GGUF and
 # ignore-layer helpers from compressors.utils.
 from auto_round.compressors.layer_config_resolver import get_fp_layer_names
-from auto_round.export.formats.backends.gguf import (
+from auto_round.export.formats.gguf.format import (
     _apply_gguf_shape_fallback,
     _infer_gguf_n_layers_from_model,
     _resolve_gguf_n_layers,
     get_layer_config_by_gguf_format,
     gguf_type_fallback,
 )
+from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -123,7 +124,7 @@ def block_forward(
     amp_dtype: torch.dtype = torch.float16,
     device: torch.device = torch.device("cpu"),
     output_return_id: int = 0,
-) -> Union[torch.Tensor, dict]:
+) -> torch.Tensor | dict:
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -153,11 +154,22 @@ def block_forward(
     input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
 
     # Use the block's actual parameter name for the first positional argument.
-    import inspect as _inspect
-
-    # For DDP-wrapped blocks, inspect the underlying module's signature
+    # For DDP-wrapped blocks, inspect the underlying module's signature.
     _actual_block = getattr(block, "module", block)
-    param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+    # ``inspect.signature`` is relatively expensive and the forward signature is
+    # fixed for the lifetime of a block, yet this runs on *every* batch of every
+    # reference/quantized-input/tuning pass (hundreds of thousands of calls for
+    # large nsamples). Resolve the parameter names once and cache them on the
+    # module so subsequent calls are a single attribute read.
+    param_names = getattr(_actual_block, "_ar_forward_param_names", None)
+    if param_names is None:
+        import inspect as _inspect
+
+        param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+        try:
+            _actual_block._ar_forward_param_names = param_names
+        except (AttributeError, RuntimeError):  # pragma: no cover - exotic module types
+            pass
     block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids
@@ -173,12 +185,70 @@ def block_forward(
                     input_others[param_name] = val
         positional_inputs = ()
 
+    # DDP-mirror device audit (last line of defense): every tensor kwarg must
+    # sit on the same accelerator device as the block's parameters. A stale
+    # kwarg (e.g. an entry recorded on the primary GPU while the replica
+    # lives elsewhere) silently overrides the staged first-arg inside this
+    # function and crashes cross-device inside the block forward -- serial
+    # runs with a single shared device stay unaffected. Move the stragglers
+    # onto the block's device AND name them (fail-visible).
+    try:
+        _block_dev = next(block.parameters()).device
+    except StopIteration:  # pragma: no cover - param-less blocks
+        _block_dev = device
+
+    def _audit(value, prefix, bad):
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                bad.append(f"{prefix}:{value.device}")
+        elif isinstance(value, (list, tuple)):
+            for _i, _v in enumerate(value):
+                _audit(_v, f"{prefix}[{_i}]", bad)
+        elif isinstance(value, dict):
+            for _k, _v in value.items():
+                _audit(_v, f"{prefix}.{_k}", bad)
+
+    def _relocate(value):
+        # Mirror _audit's condition exactly: only accelerator tensors that
+        # mismatch the block device move. A wholesale to_device() here would
+        # also migrate host tensors nested in lists/dicts onto the accelerator
+        # (semantic change + VRAM), which the audit never flagged.
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                return value.to(_block_dev)
+            return value
+        if isinstance(value, list):
+            return [_relocate(_v) for _v in value]
+        if isinstance(value, tuple):
+            return tuple(_relocate(_v) for _v in value)
+        if isinstance(value, dict):
+            return {k: _relocate(v) for k, v in value.items()}
+        return value
+
+    _bad = []
+    for _k, _v in input_others.items():
+        _audit(_v, str(_k), _bad)
+    if _bad:
+        logger.warning(
+            "[block-forward] device sweep: moving %d stale kwarg tensor(s) onto %s: %s%s",
+            len(_bad),
+            _block_dev,
+            ", ".join(_bad[:8]),
+            " ..." if len(_bad) > 8 else "",
+        )
+        for _k in list(input_others.keys()):
+            if torch.is_tensor(input_others[_k]) and input_others[_k].device.type in ("cuda", "xpu", "hpu"):
+                if input_others[_k].device != _block_dev:
+                    input_others[_k] = input_others[_k].to(_block_dev)
+            elif isinstance(input_others[_k], (list, tuple, dict)):
+                input_others[_k] = _relocate(input_others[_k])
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(**input_others)
     else:
         output = block(**input_others)
-    if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
+    if isinstance(output_return_id, int) and isinstance(output, (list, tuple)):
         output = output[output_return_id]
     return output
 
@@ -195,11 +265,11 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None],
-    act_data_type: Union[str, None] = None,
-    act_bits: Union[int, None] = 16,
-    static_kv_dtype: Union[str, None] = None,
-    static_attention_dtype: Union[str, None] = None,
+    is_act_dynamic: bool | None,
+    act_data_type: str | None = None,
+    act_bits: int | None = 16,
+    static_kv_dtype: str | None = None,
+    static_attention_dtype: str | None = None,
 ) -> bool:
     if static_kv_dtype is not None or static_attention_dtype is not None:
         return True
@@ -208,9 +278,7 @@ def check_need_act_calibration(
     # None is dynamic
     if is_act_dynamic is not None and not is_act_dynamic:
         return True
-    if act_data_type is not None and "static" in act_data_type:
-        return True
-    return False
+    return act_data_type is not None and "static" in act_data_type
 
 
 def collect_best_params(block, cache_device="cpu"):
@@ -226,6 +294,267 @@ def collect_best_params(block, cache_device="cpu"):
                 for key in m.params.keys():
                     params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
+
+
+def _wrapper_param_dicts(block: torch.nn.Module) -> list[tuple[str, dict]]:
+    """``(name, params)`` per tuning wrapper: the block itself when it is a wrapper."""
+    if hasattr(block, "orig_layer"):
+        return [("", block.params)]
+    return [(n, m.params) for n, m in block.named_modules() if hasattr(m, "orig_layer")]
+
+
+def _params_nbytes(params: dict) -> int:
+    """Bytes held by the tensors of one wrapper's ``params`` dict."""
+    return sum(t.numel() * t.element_size() for t in params.values() if isinstance(t, torch.Tensor))
+
+
+def _copy_params_local(block: torch.nn.Module) -> dict[str, Any]:
+    """Duplicate every tuning parameter on the device that already hosts it; raises on failure."""
+    copies = {
+        name: {key: p_.data.to(p_.data.device, copy=True) for key, p_ in params.items()}
+        for name, params in _wrapper_param_dicts(block)
+    }
+    return copies[""] if hasattr(block, "orig_layer") else copies
+
+
+def collect_best_params_local(block: torch.nn.Module) -> dict[str, Any]:
+    """Best-params snapshot duplicated on each parameter's own device.
+
+    With a CPU cache device this is not used (host parking is the point of
+    ``low_gpu_mem_usage``). With a non-CPU cache device the historical path
+    copied every parameter to that single device -- concentrating all devices'
+    snapshot bytes on one GPU and paying cross-device copies on every improving
+    iteration. Duplicating each parameter on the device that already hosts it
+    keeps the footprint spread like the weights themselves, removes the
+    cross-device traffic, and makes the unwrap copy-back local. Values and the
+    restore path are unchanged. Falls back to a host snapshot (with a warning)
+    when a local copy fails.
+    """
+    try:
+        return _copy_params_local(block)
+    except RuntimeError as e:
+        logger.warning("[snapshot] local copy failed (%s); parking the snapshot on host", e)
+        return collect_best_params(block, "cpu")
+
+
+def accel_mem_get_info(device: "str | torch.device | None") -> tuple[int, int] | None:
+    """``(free_bytes, total_bytes)`` for an accelerator device, or ``None``.
+
+    Routes through the device-manager abstraction (``get_ar_device``), so
+    cuda, xpu and hpu behave identically; ``None`` means "unknown" (cpu,
+    unavailable backend, failed probe) and every caller keeps its fallback.
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+    if device is None or device.type == "cpu":
+        return None
+    try:
+        from auto_round.utils.device_manager import get_ar_device
+
+        ar_device = get_ar_device(device.type)
+        if not ar_device.is_available():
+            return None
+        free_b, total_b = ar_device.mem_get_info(device.index or 0)
+        return int(free_b), int(total_b)
+    except Exception:  # pylint: disable=broad-except - exotic devices
+        return None
+
+
+def accel_devices_with_room(dev_type: str, need_bytes: int, exclude=()) -> list[torch.device]:
+    """Visible ``dev_type`` devices that can take ``need_bytes``, most free first.
+
+    The single placement probe behind both snapshot ladders (the block
+    ladder in :func:`snapshot_best_params` and the huge-layer slot in
+    :func:`select_snapshot_device`). A candidate still carries a context and
+    allocator fragmentation, so a tenth of its free memory stays untouched.
+    """
+    try:
+        from auto_round.utils.device_manager import get_ar_device
+
+        count = get_ar_device(dev_type).device_count
+        count = count() if callable(count) else count  # property or method
+    except Exception:  # pylint: disable=broad-except - exotic devices
+        return []
+    excluded = {torch.device(d) for d in exclude}
+    ranked = []
+    for index in range(count):
+        candidate = torch.device(dev_type, index)
+        if candidate in excluded:
+            continue
+        info = accel_mem_get_info(candidate)
+        if info is not None and info[0] * 0.9 >= need_bytes:
+            ranked.append((info[0], candidate))
+    ranked.sort(key=lambda kv: kv[0], reverse=True)
+    return [d for _free, d in ranked]
+
+
+def _snapshot_route_log(block, route, msg, *args, warn_first=False, silent=False) -> None:
+    """Log a snapshot routing decision once per change; repeats log nothing.
+
+    The ladder re-runs on every best-params update because free memory moves
+    between iterations; the re-evaluation stays, but an unchanged route (the
+    common case - parameters improving again) says nothing worth reading at
+    any level. ``silent`` records the route for stickiness without logging
+    (the unremarkable beside-the-weights path never logs); ``warn_first``
+    keeps a fallback's first occurrence at WARNING."""
+    last = getattr(block, "_snapshot_route", None)
+    if last == route:
+        return
+    if not silent:
+        (logger.warning if warn_first else logger.info)(msg, *args)
+    block._snapshot_route = route
+
+
+def snapshot_best_params(block: torch.nn.Module, cache_device: "str | torch.device" = "cpu") -> dict[str, Any]:
+    """Collect the best-params snapshot by attempt, falling back device by device.
+
+    Sticky per block: duplicate beside the weights first (per-parameter local
+    copies), then the freest visible accelerator of the same type, then the
+    host with a WARNING. Every step is attempted for real - a failure
+    (typically an out of memory during the clone itself) falls through to
+    the next candidate; a successful route is retried first on later
+    improving iterations, and the host is terminal. A CPU ``cache_device``
+    (``low_gpu_mem_usage``) snapshots on the host directly - VRAM was never
+    budgeted for caching.
+    """
+    try:
+        non_cpu = torch.device(str(cache_device)).type != "cpu"
+    except (ValueError, RuntimeError):
+        non_cpu = False  # unrecognized label: keep the historical path (it will raise as before)
+    if not non_cpu:
+        return collect_best_params(block, cache_device)
+
+    last = getattr(block, "_snapshot_route", None)
+    if last == "host":
+        # terminal: no mid-tune flip-flopping back onto accelerators
+        return collect_best_params(block, "cpu")
+
+    wrapper_params = _wrapper_param_dicts(block)
+    total_need = sum(_params_nbytes(params) for _name, params in wrapper_params)
+    homes = {t.device for _name, params in wrapper_params for t in params.values() if isinstance(t, torch.Tensor)}
+    candidates: list = []
+    if isinstance(last, str) and last.startswith("peer:"):
+        try:
+            candidates.append(torch.device(last[5:]))
+        except (ValueError, RuntimeError):
+            pass
+    # beside the weights (right after a sticky peer route); devices already
+    # hosting the params are covered by this rung, so the peer probe skips them
+    candidates.append("local")
+    for dev in accel_devices_with_room(torch.device(str(cache_device)).type, total_need, exclude=homes):
+        if dev not in candidates:
+            candidates.append(dev)
+
+    for cand in candidates:
+        try:
+            if cand == "local":
+                out = _copy_params_local(block)
+                _snapshot_route_log(
+                    block, "local", "[snapshot] %.2fGiB stays beside the weights", total_need / 2**30, silent=True
+                )
+                return out
+            out = collect_best_params(block, cand)
+            _snapshot_route_log(block, f"peer:{cand}", "[snapshot] cloning %.2fGiB to %s", total_need / 2**30, cand)
+            return out
+        except Exception as e:  # pylint: disable=broad-except - the attempt IS the test
+            logger.debug(
+                "[snapshot] placement on %s failed (%s: %s); trying the next candidate", cand, type(e).__name__, e
+            )
+            continue
+    _snapshot_route_log(
+        block,
+        "host",
+        "[snapshot] no accelerator could hold the %.2fGiB snapshot; parking on host",
+        total_need / 2**30,
+        warn_first=True,
+    )
+    return collect_best_params(block, "cpu")
+
+
+def snapshot_window_floor_bytes(wrapper) -> int:
+    """Minimum free bytes the row-window machinery needs beside the snapshot.
+
+    ``WrapperLinear.row_block_bounds`` never shrinks a window below 1024 rows
+    and keeps about six fp32 row-block-sized arrays live in the quantize and
+    backward math, so a home-resident snapshot must leave that working set
+    room. Both anchors come from the row-block machinery itself; the value is
+    computed from the layer's real shapes.
+    """
+    params = getattr(wrapper, "params", None)
+    value = params.get("value") if params else None
+    if not isinstance(value, torch.Tensor) or value.dim() < 2:
+        return 0
+    in_features = value.shape[-1]
+    return int(1024 * in_features * 4 * 6)
+
+
+def select_snapshot_device(wrapper) -> torch.device:
+    """Device for a huge layer's pre-reserved best-params slot; host fallback.
+
+    Ladder: the layer's own device when the snapshot provably fits beside the
+    row-window floor (``free - snapshot >= window floor``) -- the row windows
+    then size themselves against the reduced free pool, trading window size
+    for keeping the snapshot on-device; otherwise the freest peer accelerator
+    with headroom (:func:`accel_devices_with_room`, the same probe the block
+    ladder uses); otherwise the host. Never raises.
+    """
+    need = _params_nbytes(getattr(wrapper, "params", {}))
+    home = getattr(wrapper, "device", None)
+    if not isinstance(home, torch.device):
+        value = getattr(wrapper, "params", {}).get("value")
+        home = value.device if isinstance(value, torch.Tensor) else None
+    if need <= 0 or home is None or home.type == "cpu":
+        return torch.device("cpu")
+
+    info = accel_mem_get_info(home)
+    if info is not None and info[0] - need >= snapshot_window_floor_bytes(wrapper):
+        return home
+
+    peers = accel_devices_with_room(home.type, need, exclude=(home,))
+    return peers[0] if peers else torch.device("cpu")
+
+
+class BestParamsSlot:
+    """Pre-reserved best-params snapshot for a huge tuning layer.
+
+    Reserved BEFORE the tune loop starts, so the row-window machinery's
+    per-forward free-memory probe sees the reduced pool from iteration 0 and
+    windows shrink in favor of keeping the snapshot -- instead of sizing
+    windows on the full pool and overflowing on the first improving
+    iteration. Refreshing an on-device slot is a copy into existing buffers
+    (an intra-device blip, or a peer-to-peer transfer on a parked peer);
+    the host fallback keeps the historical collect-per-improvement path.
+    """
+
+    def __init__(self, wrapper):
+        self.device = select_snapshot_device(wrapper)
+        self.buffers = None
+        if self.device.type != "cpu":  # any accelerator; the ladder may pick xpu/hpu peers
+            try:
+                self.buffers = {
+                    key: torch.empty_like(t.data, device=self.device)
+                    for key, t in getattr(wrapper, "params", {}).items()
+                }
+            except RuntimeError as e:  # pragma: no cover - reservation OOM
+                logger.warning("[snapshot] slot reservation on %s failed (%s); using the host", self.device, e)
+                self.device = torch.device("cpu")
+                self.buffers = None
+        if self.device.type != "cpu":  # any accelerator; the ladder may pick xpu/hpu peers
+            need = _params_nbytes(self.buffers)
+            logger.info(
+                "[snapshot] best-params slot reserved on %s (%.2f GiB); "
+                "row windows size against the reduced free pool",
+                self.device,
+                need / 2**30,
+            )
+
+    def refresh(self, wrapper):
+        """Copy the current best parameters into the slot; returns the snapshot."""
+        if self.buffers is not None:
+            for key, tensor in self.buffers.items():
+                tensor.copy_(wrapper.params[key].data)
+            return self.buffers
+        return collect_best_params(wrapper, "cpu")
 
 
 def infer_bits_by_data_type(data_type: str):
@@ -395,19 +724,35 @@ class IndexSampler:
         nsamples (int): Total number of samples.
         batch_size (int): Number of indices to return in each batch.
         index (int): Current position in the index list.
-        indices (List[int]): Shuffled list of indices.
+        indices (list[int]): Shuffled list of indices.
     """
 
-    def __init__(self, nsamples: int, batch_size: int) -> None:
+    def __init__(
+        self,
+        nsamples: int,
+        batch_size: int,
+        indices: "list[int] | None" = None,
+        rng: "random.Random | None" = None,
+    ) -> None:
         """Initializes the sampler.
 
         Args:
             nsamples (int): Total number of samples (must be >= batch_size).
             batch_size (int): Number of indices per batch.
+            indices (list[int], optional): Explicit index pool to shuffle
+                (defaults to ``range(nsamples)``). Used by shard-constrained
+                DDP sampling; ``nsamples`` must equal ``len(indices)``.
+            rng (random.Random, optional): Private shuffle generator (defaults
+                to the global ``random`` module). Data-parallel rank threads
+                pass their own so concurrent reshuffles stay reproducible.
 
         Raises:
             ValueError: If batch_size is not in the range (0, nsamples].
         """
+        if indices is None:
+            indices = list(range(nsamples))
+        elif len(indices) != nsamples:
+            raise ValueError(f"indices pool ({len(indices)}) does not match nsamples ({nsamples})")
         if batch_size <= 0 or batch_size > nsamples:
             raise ValueError("batch_size must be > 0 and <= nsamples")
 
@@ -415,8 +760,9 @@ class IndexSampler:
         self.batch_size: int = batch_size
         self.index: int = 0
 
-        self.indices: list[int] = list(range(nsamples))
-        random.shuffle(self.indices)
+        self._rng = rng if rng is not None else random
+        self.indices: list[int] = list(indices)
+        self._rng.shuffle(self.indices)
 
     def next_batch(self) -> list[int]:
         """Returns the next batch of shuffled indices.
@@ -428,7 +774,7 @@ class IndexSampler:
             list[int]: A list of size `batch_size` containing sample indices.
         """
         if self.index + self.batch_size > self.nsamples:
-            random.shuffle(self.indices)
+            self._rng.shuffle(self.indices)
             self.index = 0
 
         batch = self.indices[self.index : self.index + self.batch_size]
@@ -485,11 +831,7 @@ def _get_diffusion_save_folder_name(format) -> str:
     formats = compress_context.formats
     # Use a subfolder only if there are multiple formats
     if len(formats) > 1:
-        return (
-            os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-            if compress_context.is_immediate_saving
-            else os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-        )
+        return os.path.join(compress_context.output_dir, sanitized_format, "transformer")
 
     # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
     return (
@@ -529,7 +871,41 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
     return compress_context.output_dir
 
 
-def immediate_pack(name: str, layer_config: dict):
+def _resolve_pack_device(weight, default_device):
+    """Pack device for a layer: the host when int64 intermediates can't fit VRAM.
+
+    Huge layers (a 248k-vocab lm_head) pack into int64 intermediates of ~8-16
+    bytes/elem: right after its tune the GPU still holds tuning remnants, and
+    the pack OOMs even though the tune itself fit. Probe the live free VRAM
+    and drop to the host when the intermediates cannot fit - the packed
+    output serializes to disk from the host just as well. Body-sized linears
+    stay on the device. Caller-specified devices bypass the probe entirely.
+    """
+    info = accel_mem_get_info(
+        torch.device(default_device) if not isinstance(default_device, torch.device) else default_device
+    )
+    if weight is None or info is None:
+        return default_device
+    free_b = info[0]
+    need_b = weight.numel() * 16
+    if need_b > free_b * 0.9:
+        logger.info(
+            "[pack] packing on cpu: intermediates ~%.1fGiB vs %.1fGiB free on %s",
+            need_b / 2**30,
+            free_b / 2**30,
+            default_device,
+        )
+        return torch.device("cpu")
+    return default_device
+
+
+PACK_WRAP = {"pre": 0.0, "fmt": 0.0}
+
+
+def immediate_pack(name: str, layer_config: dict, device=None):
+    import time as _time
+
+    _t0 = _time.perf_counter()
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
 
@@ -538,10 +914,16 @@ def immediate_pack(name: str, layer_config: dict):
 
     if not compress_context.is_immediate_packing:
         return
+    PACK_WRAP["pre"] += _time.perf_counter() - _t0
+    _t1 = _time.perf_counter()
+    pack_device = _resolve_pack_device(
+        getattr(get_module(model_context.model, name), "weight", None),
+        device if device is not None else device_manager.device,
+    )
     compress_context.formats[0].immediate_pack(
         name=name,
         model=model_context.model,
-        device=device_manager.device,
+        device=pack_device,
         output_dir=_get_save_folder_name(compress_context.formats[0]),
         layer_config=layer_config,
         tokenizer=model_context.tokenizer,
@@ -550,3 +932,4 @@ def immediate_pack(name: str, layer_config: dict):
         image_processor=getattr(model_context, "image_processor", None),
         quant_nontext_module=getattr(model_context, "quant_nontext_module", False),
     )
+    PACK_WRAP["fmt"] += _time.perf_counter() - _t1

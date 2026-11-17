@@ -79,7 +79,6 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
-    @pytest.mark.timeout(90)
     def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
         _, quantized_model_path = ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
@@ -96,7 +95,7 @@ class TestAutoRound:
         # inputs = tokenizer(text, return_tensors="pt").to(model.device)
         # print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    @pytest.mark.skip_ci(reason="time-consuming")
+    @pytest.mark.skip_ci(reason="Architecture: time-consuming")
     def test_small_model_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0, disable_opt_rtn=True)
@@ -104,7 +103,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.skip_ci(reason="time-consuming")
+    @pytest.mark.skip_ci(reason="Architecture: time-consuming")
     def test_small_model_iters1(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=1)
@@ -112,7 +111,6 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.timeout(300)
     def test_small_model_opt_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
@@ -120,7 +118,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.33)
 
-    @pytest.mark.skip_ci(reason="time-consuming")
+    @pytest.mark.skip_ci(reason="Architecture: time-consuming")
     def test_small_model_rtn_with_lm_head(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         layer_config = {"lm_head": {"bits": 4}}
@@ -141,7 +139,7 @@ class TestAutoRound:
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all options in CI")
     def test_fp8_model_gguf_q3(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         from llama_cpp import Llama
 
@@ -154,7 +152,7 @@ class TestAutoRound:
         output = llm("There is a girl who likes adventure,", max_tokens=32)
         print(output)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all options in CI")
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_diff_datatype(self, scheme, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
         model_name = tiny_fp8_qwen_model_path
