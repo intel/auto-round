@@ -389,6 +389,25 @@ an answer, which silently depresses every configuration (see
 | full 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
 | **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
 | full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
+| bf16 (unquantized) | 1249 / 1319 | 94.69% | ±1.21 | — |
+
+Against the unquantized row, all three configurations at 4-bit decode or wider
+are statistically indistinguishable, and everything narrower is not:
+
+| Comparison | Delta | Significant? |
+|---|---|---|
+| prefill 6 / decode 4 - bf16 | +0.91 | no (p = 0.28) |
+| full 6-bit - bf16 | -0.15 | no (p = 0.86) |
+| full 4-bit - bf16 | -0.30 | no (p = 0.73) |
+| MLP x100% (2.96-bit) - bf16 | -2.73 | yes (p = 0.005) |
+| MLP only (2.48-bit) - bf16 | -3.26 | yes (p = 0.001) |
+
+So the lossless threshold is **4-bit decode**, not one particular
+configuration — prefill6/decode4, uniform 4-bit and uniform 6-bit all land on the
+unquantized score. prefill6/decode4 remains the recommended point of the three
+purely on speed (68.2 versus 48.8 tok/s for uniform 6-bit) at equal accuracy,
+which makes uniform 6-bit dominated. The +0.91 above bf16 is noise; with
+N = 1319 the smallest detectable difference is about 1.7 points.
 
 Decode width is what the score tracks. Going from 2-bit to 4-bit decode is worth
 **+21.99 points**; going from 4-bit to 6-bit decode is worth **+0.15**, i.e.
@@ -494,6 +513,86 @@ Two details make this correct rather than approximate:
   `required_rrq_cache_bytes` counts both, so the all-or-nothing cache check stays
   honest.
 
+### MATH-500 accuracy
+
+GSM8K saturates once decode reaches 4 bits, so it cannot show whether prefill
+precision is doing anything. A harder benchmark is needed to separate the two
+phases, and the benchmark has to be one whose *output type* actually exercises
+decode. That rules out MMLU: lm-eval scores it as `loglikelihood`, so every
+forward is a whole context-plus-continuation and `seq_len > prefill_threshold`.
+Under a prefill/decode split, MMLU only ever runs at the **prefill** bit-width.
+It cannot be used to study decode precision at all.
+
+MATH-500 is `generate_until`, so the prompt is prefilled once and then one token
+is fed per step. Instrumenting `RRQLinear._resolve_forward_planes` over MATH-500
+prompts confirms the split is real rather than nominal — at prefill 6 / decode 4,
+**98.4% of forwards are single-token decode** (25200 decodes at 2 planes versus
+400 prefills at 3 planes).
+
+Full test set (500 problems), greedy decoding, 8192-token budget, exact match on
+the final `\boxed{}` after light normalisation. The budget matters: at 4096
+tokens 7.8% of problems were cut off mid-solution and every one of them scored
+zero, which understated the score by five points. Truncated items were re-run at
+the larger budget and merged by problem id.
+
+| Configuration | Correct | MATH-500 accuracy | 95% CI | Truncated |
+|---|---|---|---|---|
+| bf16 (unquantized) | 439 / 500 | 87.80% | ±2.87 | 3 |
+| **prefill 6 / decode 4** | **436 / 500** | **87.20%** | ±2.93 | 6 |
+| uniform 4-bit (prefill 4 / decode 4) | 424 / 500 | 84.80% | ±3.15 | 13 |
+| prefill 6 / decode 2 | 180 / 500 | 36.00% | ±4.21 | 109 |
+
+Two conclusions, and they are different in kind.
+
+**Decode 4-bit is lossless here too.** prefill6/decode4 is 0.60 points below the
+unquantized model, McNemar p = 0.44 — indistinguishable. This is *not* the
+benchmark being too weak to see the difference: prefill6/decode2 collapses to
+36.00%, a 51.8-point drop at p < 0.0001 where decode-4 scores 256 problems the
+decode-2 run cannot solve and decode-2 solves none that decode-4 misses. MATH-500
+separates decode precision very sharply, and 4-bit still lands on the unquantized
+score.
+
+**Prefill 6-bit buys something, but not reasoning quality.** Raising prefill from
+4-bit to 6-bit with decode held at 4-bit is worth **+2.40 points, McNemar
+z = +2.68, p = 0.0073**. Decomposing that gain shows where it comes from:
+
+| Source | Contribution |
+|---|---|
+| the 484 problems both configurations finished | **+0.83** points (z = 1.26, p = 0.21) |
+| 4-bit prefill truncating 7 more problems | **+1.4** points |
+| total | +2.40 points |
+
+On problems both configurations complete, the two are statistically the same.
+The measurable effect is on **output length**, not answer correctness: 4-bit
+prefill makes the model ramble, so it hits the output cap more often.
+
+| Configuration | Mean tokens | p90 tokens |
+|---|---|---|
+| bf16 | 1292 | 2802 |
+| prefill 6 / decode 4 | 1400 | 3084 |
+| prefill 4 / decode 4 | 1530 | 3733 |
+
+So the honest characterisation of prefill precision is **shorter, more reliable
+output** — fewer tokens to serve and fewer answers lost to the budget — rather
+than better arithmetic. That is still a real end-to-end benefit, since served
+latency and truncation loss both improve, but it should not be described as a
+reasoning gain.
+
+Broken down by difficulty, the entire prefill-4 to prefill-6 difference sits at
+the hardest level, and the easier levels are exactly tied:
+
+| Level | n | prefill 6 / decode 4 | prefill 4 / decode 4 | Delta |
+|---|---|---|---|---|
+| 1 | 42 | 92.86% | 92.86% | +0.00 |
+| 2 | 90 | 90.00% | 88.89% | +1.11 |
+| 3 | 104 | 88.46% | 88.46% | +0.00 |
+| 4 | 124 | 88.71% | 88.71% | +0.00 |
+| 5 | 124 | 84.68% | 82.26% | +2.42 |
+
+Reproduce with `--mode p6d4` / `p4d4` / `p6d2` against
+`HuggingFaceH4/MATH-500`; the baseline row loads the unquantized checkpoint in
+bfloat16 and runs the same prompt, scorer and budget.
+
 ## Fused decode kernel
 
 Decode feeds one token per sequence, so each forward is a matrix-vector product
@@ -557,9 +656,11 @@ path, which is useful for bisecting any observed difference.
   Loading the base in float32 requires ~108 GB for a 27B model and OOMs on a
   single 80 GB card, so the base is loaded in bfloat16 (float16 only where bf16
   is unavailable).
-- **Full-precision baseline.** The FP16 reference row is not included in the
-  table above. Only relative comparisons between RRQ operating points are
-  reported; relative-to-FP retention will be added once measured.
+- **Full-precision baseline.** The bf16 reference is measured on MATH-500
+  (87.80%, see *MATH-500 accuracy*) but not on GSM8K, so the GSM8K table above
+  still reports only relative comparisons between RRQ operating points. The
+  MATH-500 result is what establishes that decode-4 is lossless; the GSM8K
+  ordering is consistent with it but is not itself anchored to a bf16 row.
 - **Single model.** These numbers come from one 27B model with one calibration
   setting. Absolute values will differ across models and calibration budgets;
   the qualitative shape (large gain at the first residual plane, saturation
