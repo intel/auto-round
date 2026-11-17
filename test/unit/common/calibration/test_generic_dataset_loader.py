@@ -632,7 +632,7 @@ class TestUltraDataAgentDataset:
 
         def _mock_load_dataset(repo, cfg=None, **kwargs):
             if "data_files" in kwargs:
-                fallback_called.append(kwargs["data_files"])
+                fallback_called.append((repo, kwargs["data_files"]))
                 return working_ds
             if cfg == "Code-Agent":
                 return BrokenIterableDataset()
@@ -648,8 +648,52 @@ class TestUltraDataAgentDataset:
         )
 
         assert len(fallback_called) >= 1
-        assert "data/Code_Agent/*.jsonl" in fallback_called[0]
+        assert fallback_called[0][0] == "json"
+        assert "hf://datasets/openbmb/UltraData-SFT-Agent-2609/data/Code_Agent/*.jsonl" in fallback_called[0][1]
         assert len(ds) >= 1
+
+    def test_select_dataset_clamps_out_of_bound_indices(self):
+        # A dataset of size 17 when selecting range(64) should clamp to 17 without IndexError
+        ds = Dataset.from_dict(
+            {
+                "input_ids": [[1, 2, 3]] * 17,
+                "attention_mask": [[1, 1, 1]] * 17,
+            }
+        )
+        ds.set_format(type="torch")
+        selected = cd.select_dataset(ds, range(64))
+        assert len(selected) == 17
+
+    def test_multidataset_short_dataset_clamps_without_index_error(self, tokenizer, monkeypatch):
+        # When a dataset has fewer samples than requested (e.g. mbpp at seqlen=4096),
+        # get_dataset should clamp and combine without crashing.
+        def _mock_generic_loader(tokenizer, seqlen, dataset_name, **kwargs):
+            if "short_ds" in dataset_name:
+                return Dataset.from_dict(
+                    {
+                        "input_ids": [[10, 11, 12, 13]] * 17,
+                        "attention_mask": [[1, 1, 1, 1]] * 17,
+                    }
+                )
+            return Dataset.from_dict(
+                {
+                    "input_ids": [[20, 21, 22, 23]] * 100,
+                    "attention_mask": [[1, 1, 1, 1]] * 100,
+                }
+            )
+
+        monkeypatch.setattr(cd, "_get_generic_dataset", _mock_generic_loader)
+        monkeypatch.setenv("AR_DISABLE_DATASET_SUBPROCESS", "1")
+        monkeypatch.setenv("AR_CALIB_DATA_MULTIPLIER", "1")
+
+        ds = cd.get_dataset(
+            tokenizer,
+            seqlen=4,
+            dataset_name="custom/short_ds:num=64:fields=text,custom/large_ds:num=100:fields=text",
+            nsamples=164,
+        )
+
+        assert len(ds) == 117  # 17 from short_ds + 100 from large_ds
 
     def test_same_repo_multiple_configs_independent_quotas(self, tokenizer, monkeypatch):
         loaded_configs = []

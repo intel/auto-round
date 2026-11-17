@@ -896,7 +896,13 @@ def get_ultradata_agent_dataset(
     sub_datasets = []
     loaded_configs = []
     for cfg in configs:
-        pattern = f"data/{cfg.replace('-', '_')}/*.jsonl"
+        cfg_dir_name = {
+            "code-agent": "Code_Agent",
+            "general-agent": "General_Agent",
+            "search-agent": "Search_Agent",
+            "tool-use": "Tool_Use",
+        }.get(cfg.lower().replace("_", "-"), cfg.replace("-", "_"))
+        pattern = f"data/{cfg_dir_name}/*.jsonl"
         d = None
         try:
             candidate = load_dataset(hub_repo_id, cfg, split=split, streaming=True)
@@ -913,7 +919,8 @@ def get_ultradata_agent_dataset(
                 pattern,
             )
             try:
-                d = load_dataset(hub_repo_id, data_files=pattern, split=split, streaming=True)
+                data_files = f"hf://datasets/{hub_repo_id}/{pattern}"
+                d = load_dataset("json", data_files=data_files, split=split, streaming=True)
             except Exception as e2:  # noqa: BLE001
                 logger.warning("Failed to load config '%s' of %s via data_files: %s", cfg, hub_repo_id, e2)
                 continue
@@ -1065,9 +1072,16 @@ def get_ultradata_agent_dataset(
                 e,
             )
             if len(candidates) < per_cfg_quota:
-                pattern = f"data/{cfg_name.replace('-', '_')}/*.jsonl"
+                cfg_dir_name = {
+                    "code-agent": "Code_Agent",
+                    "general-agent": "General_Agent",
+                    "search-agent": "Search_Agent",
+                    "tool-use": "Tool_Use",
+                }.get(cfg_name.lower().replace("_", "-"), cfg_name.replace("-", "_"))
+                pattern = f"data/{cfg_dir_name}/*.jsonl"
                 try:
-                    fallback_d = load_dataset(hub_repo_id, data_files=pattern, split=split, streaming=True)
+                    data_files = f"hf://datasets/{hub_repo_id}/{pattern}"
+                    fallback_d = load_dataset("json", data_files=data_files, split=split, streaming=True)
                     try:
                         fallback_d = fallback_d.shuffle(seed=seed, buffer_size=1000)
                     except Exception:
@@ -1788,9 +1802,7 @@ def _get_generic_dataset(
         total_scanned = 0
         skipped = 0
 
-        logger.info(
-            f"Streaming dataset '{dataset_name}': collecting up to {target} samples " f"(timeout={timeout}s)..."
-        )
+        logger.info(f"Streaming dataset '{dataset_name}': collecting up to {target} samples (timeout={timeout}s)...")
 
         # Shuffle the iterable dataset for random sampling
         iter_ds = calib_dataset.shuffle(seed=seed)
@@ -1927,10 +1939,13 @@ def select(dataset, indices):
         to optimize performance.
     """
     indices = set(indices)
+    if not indices:
+        return
+    max_idx = max(indices)
     for idx, sample in enumerate(dataset):
         if idx in indices:
             yield sample
-        if idx > max(indices):
+        if idx >= max_idx:
             break
 
 
@@ -1946,14 +1961,22 @@ def select_dataset(dataset, indices):
         `select` function defined above as a fallback.
     """
     try:
+        if hasattr(dataset, "__len__"):
+            d_len = len(dataset)
+            indices = [idx for idx in indices if idx < d_len]
         return dataset.select(indices)
     except Exception:
         list_data = list(select(dataset, indices))
-        import pandas as pd
-
-        df = pd.DataFrame(list_data)
-        dataset = Dataset.from_pandas(df)
-        return dataset
+        cleaned_data = []
+        for row in list_data:
+            clean_row = {}
+            for k, v in row.items():
+                if hasattr(v, "tolist"):
+                    clean_row[k] = v.tolist()
+                else:
+                    clean_row[k] = v
+            cleaned_data.append(clean_row)
+        return Dataset.from_list(cleaned_data)
 
 
 def _get_dataset_impl(
@@ -2232,10 +2255,11 @@ def _get_dataset_impl(
             # buffer conversion for each indexed Arrow row.
             dataset = cast_dataset_columns(dataset)
             dataset = dataset.filter(filter_func)
+            d_len = get_dataset_len(dataset)
             if num_target is not None:
-                dataset = select_dataset(dataset, range(num_target))
+                dataset = select_dataset(dataset, range(min(num_target, d_len)))
             elif name in data_lens:
-                dataset = select_dataset(dataset, range(data_lens[name]))
+                dataset = select_dataset(dataset, range(min(data_lens[name], d_len)))
         # Format last: tensorizing whole batches during filter/select would run torch ops that
         # are not fork-safe (libgomp) in the preprocessing subprocess.
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
@@ -2280,14 +2304,16 @@ def _get_dataset_impl(
         for i in range(len(datasets)):
             name = dataset_names[i].split(":")[0]
             if spec_target_nums[i] is not None:
-                target_cnt = spec_target_nums[i]
+                target_cnt = min(spec_target_nums[i], lens[i])
+                if target_cnt < spec_target_nums[i]:
+                    cnt -= spec_target_nums[i] - target_cnt
             elif name not in data_lens:
                 target_cnt = (nsamples - cnt) // remaining if remaining > 0 else 0
                 remaining -= 1
                 target_cnt = min(target_cnt, lens[i])
                 cnt += target_cnt
             else:
-                target_cnt = data_lens[name]
+                target_cnt = min(data_lens[name], lens[i])
             datasets[i] = select_dataset(datasets[i], range(target_cnt))
             label = dataset_names[i] if name in dataset_cnt_info else name
             dataset_cnt_info[label] = target_cnt
