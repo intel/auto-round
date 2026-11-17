@@ -1940,7 +1940,7 @@ def select(dataset, indices):
     """
     indices = set(indices)
     if not indices:
-        return
+        raise ValueError("indices must not be empty")
     max_idx = max(indices)
     for idx, sample in enumerate(dataset):
         if idx in indices:
@@ -1960,6 +1960,13 @@ def select_dataset(dataset, indices):
         A subset of the dataset, either using the dataset's `select` method or the
         `select` function defined above as a fallback.
     """
+    indices = list(indices)
+    if not indices:
+        if hasattr(dataset, "select"):
+            return dataset.select([])
+        from datasets import Dataset
+
+        return Dataset.from_list([])
     try:
         if hasattr(dataset, "__len__"):
             d_len = len(dataset)
