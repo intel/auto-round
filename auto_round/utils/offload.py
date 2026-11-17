@@ -1094,6 +1094,12 @@ class OffloadManager:
         Every manager sweeps every prefix, not just its own: ``offload/`` is
         shared by the ``compressor`` and ``autoscheme`` offloaders, so a crash
         in one would otherwise leak a directory the other never touches.
+
+        Known limitation: if the dead owner's pid is later reused by an
+        unrelated process, its directory reads as alive and is kept. That is
+        the safe direction to fail in (see :meth:`_pid_alive`); the space is
+        reclaimed by hand, or by whichever run eventually observes the pid
+        gone.
         """
         try:
             entries = os.listdir(base_dir)
