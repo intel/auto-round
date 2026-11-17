@@ -1,12 +1,12 @@
 from test.helpers import get_model_path, get_tiny_model, transformers_version
 
-import compressed_tensors
 import pytest
 import torch
 import transformers
 from packaging import version
 
 from auto_round import AutoRound
+from auto_round.utils.common import get_library_version
 from auto_round.utils.weight_handler import (
     ModuleWeightType,
     check_and_mark_quantized_module,
@@ -73,7 +73,7 @@ class TestCompressedTensor:
         ), "CompressedLinear layer was not converted to Linear"
 
     @pytest.mark.skipif(
-        version.parse(compressed_tensors.__version__) == version.parse("0.20.1"),
+        get_library_version("compressed-tensors") == "0.20.1",
         reason="Asymmetric zero-point loading is broken in compressed-tensors 0.20.1. See https://github.com/vllm-project/compressed-tensors/pull/1020",
     )
     def test_w4a16(self):
@@ -92,7 +92,7 @@ class TestCompressedTensor:
         ), "CompressedLinear layer was not converted to Linear"
 
     @pytest.mark.skipif(
-        version.parse(compressed_tensors.__version__) == version.parse("0.20.1"),
+        get_library_version("compressed-tensors") == "0.20.1",
         reason="Asymmetric zero-point loading is broken in compressed-tensors 0.20.1. See https://github.com/vllm-project/compressed-tensors/pull/1020",
     )
     def test_w4a16_to_mxfp4(self, tmp_path):
