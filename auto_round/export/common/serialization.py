@@ -476,6 +476,11 @@ def save_model(
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)
+
     apply_post_save_source_fixes(model, save_dir)
 
     config_path = os.path.join(save_dir, "config.json")
@@ -489,11 +494,6 @@ def save_model(
             data["dtype"] = dtype_str
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
-
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
 
 
 def filter_quantization_config(quantization_config):

@@ -15,7 +15,7 @@ import copy
 import math
 import time as _ptime
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -31,7 +31,6 @@ from auto_round.compressors.utils import (
     BestParamsSlot,
     IndexSampler,
     collect_best_params,
-    snapshot_best_params,
 )
 from auto_round.logger import logger
 from auto_round.utils.perf_counters import _PerfCounters
@@ -304,58 +303,44 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
-    def _resolve_tuning_cache_plan(
+    def tuning_session(
         self,
+        block,
+        inputs,
+        others,
+        outputs,
         *,
-        device,
+        nsamples,
+        global_batch_size,
+        iters,
         loss_device,
-        active_inputs,
-        block_fwd,
-        lfq_last_block,
-    ) -> tuple[type | None, Any]:
-        """Decide the opt-in CUDA batch-prefetch staging for a tuning block.
+        lfq_last_block=False,
+        prefetch=True,
+    ):
+        """Build SignRound's context-managed block data interface.
 
-        Returns ``(cache_cls, cache_budget)`` when the prefetch cache is
-        eligible, or ``(None, 0)`` to keep the legacy synchronous gather. This
-        is the single extension point for prefetch-cache variants: the tuning
-        loop never branches on model type. The diffusion vs LLM/VLM class choice
-        is delegated to
-        :func:`auto_round.algorithms.tuning_cache.resolve_tuning_cache_cls`, and
-        subclasses can override this method wholesale to plug in new variants
-        without editing the algorithm.
-
-        Under ``low_gpu_mem_usage`` the calibration pools are parked on the host,
-        so every iteration copies its batch CPU->CUDA on the critical path. The
-        cache double-buffers the batches onto CUDA on a background copy stream so
-        the next transfer overlaps the current forward/backward.
+        Staged TEQ selection replays a fixed slice and restores checkpoints,
+        so its caller disables speculative prefetch for the whole session.
         """
-        from auto_round.algorithms.tuning_cache import resolve_tuning_cache_cls
+        from auto_round.algorithms.tuning import BlockTuningSession
 
-        # Shared hardware eligibility: host-parked pools, a single CUDA device,
-        # and a loss device that matches the compute device.
-        if not (
-            self.compress_context.low_gpu_mem_usage
-            and str(device).startswith("cuda")
-            and len(device_manager.device_list) == 1
-            and (loss_device is None or torch.device(loss_device) == torch.device(device))
-        ):
-            return None, 0
-
-        if getattr(self.model_context, "is_diffusion", False):
-            # Diffusion prefetch is strictly opt-in via diffusion_tuning_cache_size.
-            budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
-            if budget != "auto" and budget <= 0:
-                return None, 0
-        else:
-            # LLM/VLM reconstruction needs a list input pool and a block forward.
-            # The LFQ final-block logit loss concatenates token ids and runs a
-            # different forward, so it keeps the legacy gather.
-            if not (isinstance(active_inputs, list) and block_fwd is not None) or lfq_last_block:
-                return None, 0
-            # Auto-size the staging buffers after one warmup iteration.
-            budget = "auto"
-
-        return resolve_tuning_cache_cls(self.model_context), budget
+        return BlockTuningSession(
+            block,
+            self.block_forward,
+            inputs,
+            others,
+            outputs,
+            nsamples=nsamples,
+            global_batch_size=global_batch_size,
+            iters=iters,
+            device=device_manager.device,
+            loss_device=loss_device,
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+            parallel=self.parallel,
+            lfq_last_block=lfq_last_block,
+            prefetch=prefetch,
+        )
 
     def quantize_block(
         self,
@@ -576,46 +561,24 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = self.parallel.prepare_gradients(self, block)
-        index_sampler = self.parallel.index_sampler(nsamples, global_batch_size)
-        block_fwd = self.block_forward
         staged_selection_indices = list(range(global_batch_size)) if teq_mode == "staged_refine" else None
-
-        # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
-        # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
-        # through CPU (cache_device="cpu") and the very next line moves it back to
-        # loss_device — a wasteful GPU→CPU→GPU roundtrip on every batch × iteration.
-        # pred_output is a transient single-batch tensor consumed immediately for the
-        # loss and then freed, so keeping it on the compute device costs no persistent
-        # extra memory.  Pass it as a per-call override so self.cache_device is unchanged.
-        _fwd_cache_device = (
-            device
-            if getattr(self.compress_context, "low_gpu_mem_usage", False) and not str(device).startswith("cpu")
-            else None
-        )
-
-        tuning_cache = None
-        # The LFQ final-block logit loss concatenates token ids and runs a
-        # different forward, so it is excluded from the prefetch staging path.
-        _lfq_last_block = (
-            getattr(self, "enable_lfq", False)
-            and input_ids is not None
-            and block_ctx.block_index == block_ctx.block_cnt - 1
-            and self._is_text_decoder_block(block_ctx.block_name)
-        )
-        # Single, variant-free extension point: the plan hook owns all model-type
-        # gating (diffusion vs LLM/VLM) and returns the cache class + budget.
-        cache_cls, cache_budget = self._resolve_tuning_cache_plan(
-            device=device,
+        tuning_session = self.tuning_session(
+            block,
+            active_inputs,
+            input_others,
+            fp_outputs,
+            nsamples=nsamples,
+            global_batch_size=global_batch_size,
+            iters=run_iters,
+            prefetch=teq_mode != "staged_refine",
             loss_device=loss_device,
-            active_inputs=active_inputs,
-            block_fwd=block_fwd,
-            lfq_last_block=_lfq_last_block,
+            lfq_last_block=(
+                getattr(self, "enable_lfq", False)
+                and input_ids is not None
+                and block_ctx.block_index == block_ctx.block_cnt - 1
+                and self._is_text_decoder_block(block_ctx.block_name)
+            ),
         )
-        use_prefetch_cache = cache_cls is not None
-        if teq_mode == "staged_refine":
-            # Staged selection restores snapshots and replays one fixed slice.
-            # Keep that path independent of the prefetch cache's mutable state.
-            use_prefetch_cache = False
 
         # LFQ with lfq_num_blocks > 1: a non-final KD block's output must pass
         # through the remaining (FP) blocks before reaching the final norm/lm_head.
@@ -654,29 +617,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         # retention from shapes alone. Declined pulls keep the per-batch
         # gather.
         self.maybe_adapt_moe_implementation(block, active_inputs, batch_size)
-        _entry_dev = str(getattr(block_fwd, "device", device)) if block_fwd is not None else str(device)
-        if isinstance(active_inputs, list):
-            active_inputs = self.pull_tuning_pool(
-                active_inputs,
-                _entry_dev,
-                block,
-                batch_size,
-                "tune] block input activations",
-                charge_activation=True,
-            )
-        # the diffusion tuning cache requires its pools on the host (it
-        # stages batches to the GPU itself via pinned slots); a bulk pull
-        # onto the loss device would put the cached reference outputs on
-        # cuda and the cache would decline every batch signature
-        if fp_outputs and loss_device is not None and not use_prefetch_cache:
-            fp_outputs = self.pull_tuning_pool(
-                fp_outputs,
-                loss_device,
-                block,
-                batch_size,
-                "tune] fp reference outputs",
-                charge_activation=False,
-            )
 
         def _restore_staged_params(saved_params):
             for name, module in block.named_modules():
@@ -702,7 +642,9 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                     _sel, str(loss_device) if loss_device is not None else str(_sel[0].device)
                 )
                 ref_output = torch.cat(_gather, dim=0).to(loss_device)
-                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                pred_output = self.block_forward.forward(
+                    block, active_inputs, input_others, indices, tuning_session.forward_device
+                )
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
                 if (
@@ -717,8 +659,13 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 selection_loss += loss.item() / selection_num_elm
             return selection_loss
 
-        try:
-            for i in range(run_iters):
+        with ExitStack() as stack:
+            # Close staging before releasing downstream blocks, including on errors.
+            for module in reversed(lfq_downstream_blocks):
+                stack.callback(mv_module_from_gpu, module)
+            tuning = stack.enter_context(tuning_session)
+            active_inputs, fp_outputs = tuning.pull_pools(self.pull_tuning_pool, batch_size)
+            for i in tuning.iterations():
                 is_final_refinement_candidate = (
                     teq_mode in {"joint", "frozen_ar_refine"} and i == run_iters - 1 and run_iters > baseline_iters
                 )
@@ -758,20 +705,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         if teq_mode == "staged_refine":
                             for param in teq_params:
                                 param.data.zero_()
-                # Auto observes a complete forward/backward/optimizer iteration
-                # on the legacy path before allocating any extra GPU buffers.
-                if use_prefetch_cache and i == (1 if cache_budget == "auto" else 0):
-                    tuning_cache = cache_cls.create(
-                        block,
-                        block_fwd,
-                        active_inputs,
-                        input_others,
-                        fp_outputs,
-                        index_sampler,
-                        run_iters - i,
-                        cache_budget,
-                        device,
-                    )
                 if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                     for n, m in block.named_modules():
                         m.cur_iter = i
@@ -780,7 +713,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 global_indices = (
                     staged_selection_indices
                     if teq_mode == "staged_refine" and baseline_iters <= i <= refine_end
-                    else self.parallel.sample_indices(index_sampler)
+                    else tuning.next_batch()
                 )
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
@@ -802,22 +735,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
                     _perf.start("s_fwd")
-                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        # fp_outputs may be sharded across park devices
-                        # (--calibration_data_device): gather onto one device
-                        # before cat. Uniform-device selections are returned
-                        # untouched (byte-identical to the single-device path);
-                        # tensors are immutable, so concurrent gather is safe.
-                        _sel = [fp_outputs[i] for i in indices]
-                        _gather = BlockForwardRunner._gather_same_device(
-                            _sel, str(loss_device) if loss_device is not None else str(_sel[0].device)
-                        )
-                        ref_output = torch.cat(_gather, dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                    else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                    pred_output, ref_output = tuning.forward(indices)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
                     _perf.stop("s_fwd")
@@ -903,19 +821,11 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         # and the fresh clone reuses the freed storage when
                         # shapes match, so the swap leaves no fragmentation
                         best_params = None
-                        best_params = (
-                            tuning_cache.collect_best_params()
-                            if tuning_cache is not None and tuning_cache.best is not None
-                            else snapshot_best_params(block, self.compress_context.cache_device)
-                        )
+                        best_params = tuning.collect_best_params()
                         last_best_iter = i
                 if teq_mode == "staged_refine" and baseline_iters <= i <= refine_end and total_loss < refine_best_loss:
                     refine_best_loss = total_loss
-                    refine_best_params = (
-                        tuning_cache.collect_best_params()
-                        if tuning_cache is not None and tuning_cache.best is not None
-                        else snapshot_best_params(block, self.compress_context.cache_device)
-                    )
+                    refine_best_params = tuning.collect_best_params()
                 if teq_mode is not None and i + 1 == baseline_iters and not self.not_use_best_mse:
                     baseline_loss = best_loss
                     baseline_params = copy.deepcopy(best_params)
@@ -925,11 +835,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                                 layer_params["teq_log_alpha"].zero_()
                 if self.not_use_best_mse and i == run_iters - 1:
                     best_params = None
-                    best_params = (
-                        tuning_cache.collect_best_params()
-                        if tuning_cache is not None and tuning_cache.best is not None
-                        else snapshot_best_params(block, self.compress_context.cache_device)
-                    )
+                    best_params = tuning.collect_best_params()
 
                 _perf.stop("snap")
                 _perf.start("step")
@@ -961,20 +867,12 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         lr_schedule = copy.deepcopy(self.lr_scheduler)
                     optimizer.zero_grad()
                     second_ar_best_loss = total_loss
-                    second_ar_best_params = (
-                        tuning_cache.collect_best_params()
-                        if tuning_cache is not None and tuning_cache.best is not None
-                        else snapshot_best_params(block, self.compress_context.cache_device)
-                    )
+                    second_ar_best_params = tuning.collect_best_params()
                     second_ar_best_iter = i
                     continue
                 if teq_mode == "staged_refine" and i > refine_end and total_loss < second_ar_best_loss:
                     second_ar_best_loss = total_loss
-                    second_ar_best_params = (
-                        tuning_cache.collect_best_params()
-                        if tuning_cache is not None and tuning_cache.best is not None
-                        else snapshot_best_params(block, self.compress_context.cache_device)
-                    )
+                    second_ar_best_params = tuning.collect_best_params()
                     second_ar_best_iter = i
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
@@ -986,12 +884,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         )
                 _perf.stop("step")
 
-        finally:
-            if tuning_cache is not None:
-                tuning_cache.close()
-            for m in lfq_downstream_blocks:
-                mv_module_from_gpu(m)
-            del lfq_teacher_final
+        del lfq_teacher_final
 
         _perf.stop("loop")
         _perf.start("tail")
