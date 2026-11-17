@@ -676,7 +676,6 @@ def _collect_quantized_source_layers(
 
 
 def _collect_indexed_quantized_source_layers(
-    raw_tensors: dict[str, torch.Tensor],
     weight_map: dict[str, str],
 ) -> set[str]:
     """Detect quantized source layers from indexed weight/scale tensor names."""
@@ -688,7 +687,7 @@ def _collect_indexed_quantized_source_layers(
                 indexed_scale_prefixes.add(".".join(parts[:index]))
 
     layers: set[str] = set()
-    for name in raw_tensors:
+    for name in weight_map:
         if name.endswith(".weight_packed"):
             layer_name = name[: -len(".weight_packed")]
         elif name.endswith(".weight"):
@@ -706,16 +705,11 @@ def _collect_indexed_quantized_source_layers(
 
 
 def _raise_if_ignored_quantized_source(
-    raw_tensors: dict[str, torch.Tensor],
+    weight_map: dict[str, str],
     matcher: _PatternMatcher,
-    model_type: str | None = None,
-    shard_name: str | None = None,
-    weight_map: dict[str, str] | None = None,
 ) -> None:
-    """Reject ignored source layers that would otherwise be silently dequantized."""
-    quantized_layers = _collect_quantized_source_layers(raw_tensors, model_type=model_type)
-    if weight_map:
-        quantized_layers.update(_collect_indexed_quantized_source_layers(raw_tensors, weight_map))
+    """Reject ignored quantized source layers before any shard is processed."""
+    quantized_layers = _collect_indexed_quantized_source_layers(weight_map)
     ignored_quantized = sorted(
         layer_name for layer_name in quantized_layers if matcher.matches_ignore_pattern(f"{layer_name}.weight")
     )
@@ -725,9 +719,8 @@ def _raise_if_ignored_quantized_source(
     examples = ", ".join(ignored_quantized[:10])
     if len(ignored_quantized) > 10:
         examples += f", ... ({len(ignored_quantized)} total)"
-    shard_prefix = f"[{shard_name}] " if shard_name else ""
     raise ValueError(
-        f"{shard_prefix}ignore_layers matches already-quantized source layer(s): {examples}. "
+        f"ignore_layers matches already-quantized source layer(s): {examples}. "
         "Model-free cannot ignore quantized source weights. Remove these layers from --ignore_layers and set "
         "--layer_config to a target quantization scheme (for example, '{layer_name: W4A16}') to convert them, "
         "or use '{layer_name: BF16}' to dequantize and keep them in BF16."
@@ -1871,18 +1864,8 @@ def _hydrate_missing_fp8_scales_from_index(
     # Donor shards are looked up in donor_shard_dir (defaults to idx_dir).
     donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
 
-    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
-    if not os.path.exists(index_path):
-        candidates = sorted(
-            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
-        )
-        if not candidates:
-            return raw_tensors
-        index_path = candidates[0]
-
-    try:
-        weight_map = _load_weight_map_from_index(index_path)
-    except Exception:
+    weight_map = _load_index_weight_map(idx_dir)
+    if not weight_map:
         return raw_tensors
 
     current_shard = os.path.basename(shard_path)
@@ -1931,17 +1914,57 @@ def _hydrate_missing_fp8_scales_from_index(
 
 
 def _find_index_path(idx_dir: str) -> str | None:
-    """Return the path of the ``*.safetensors.index.json`` file in *idx_dir*."""
-    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
-    if os.path.exists(index_path):
-        return index_path
+    """Return the weight index in *idx_dir*, preferring safetensors over PyTorch ``.bin`` indices."""
     try:
-        candidates = sorted(
-            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
-        )
+        names = sorted(os.listdir(idx_dir))
     except OSError:
         return None
-    return candidates[0] if candidates else None
+    for standard_name, suffix in (
+        ("model.safetensors.index.json", ".safetensors.index.json"),
+        ("pytorch_model.bin.index.json", ".bin.index.json"),
+    ):
+        if standard_name in names:
+            return os.path.join(idx_dir, standard_name)
+        match = next((name for name in names if name.endswith(suffix)), None)
+        if match is not None:
+            return os.path.join(idx_dir, match)
+    return None
+
+
+def _load_index_weight_map(idx_dir: str) -> dict[str, str]:
+    """Return the ``weight_map`` of the index in *idx_dir*, or ``{}`` when absent or unreadable."""
+    index_path = _find_index_path(idx_dir)
+    if index_path is None:
+        return {}
+    try:
+        return _load_weight_map_from_index(index_path)
+    except Exception as exc:
+        logger.warning_once(f"Could not load weight_map from '{index_path}': {exc}")
+        return {}
+
+
+def load_source_weight_map(source_dir: str, shard_names: list[str] | None = None) -> dict[str, str]:
+    """Map every source tensor name to its shard without loading tensor data.
+
+    Uses the checkpoint index when present; otherwise reads the headers of the local
+    safetensors shards in *shard_names*. Shards that are not local (e.g. not yet
+    streamed) are skipped, so the result may be ``{}``.
+    """
+    weight_map = _load_index_weight_map(source_dir)
+    if weight_map:
+        return weight_map
+
+    from safetensors import safe_open
+
+    for shard_name in shard_names or ():
+        if not shard_name.endswith(".safetensors"):
+            continue
+        shard_path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
+        if not os.path.isfile(shard_path):
+            continue
+        with safe_open(shard_path, framework="pt") as shard:
+            weight_map.update(dict.fromkeys(shard.keys(), shard_name))
+    return weight_map
 
 
 def _inkling_nvfp4_bases_from_weight_map(weight_map: dict[str, str]) -> set[str]:
@@ -2044,15 +2067,7 @@ def _hydrate_and_clean_inkling_nvfp4_aux(
     idx_dir = index_dir if index_dir is not None else shard_dir
     donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
 
-    index_path = _find_index_path(idx_dir)
-    if index_path is None:
-        return raw_tensors
-
-    try:
-        weight_map = _load_weight_map_from_index(index_path)
-    except Exception:
-        return raw_tensors
-
+    weight_map = _load_index_weight_map(idx_dir)
     bases = _inkling_nvfp4_bases_from_weight_map(weight_map)
     if not bases:
         return raw_tensors
@@ -2607,24 +2622,6 @@ def _process_shard(
             index_dir=index_dir,
             donor_shard_dir=donor_shard_dir,
         )
-
-    weight_map: dict[str, str] = {}
-    if shard_path.endswith(".safetensors"):
-        idx_dir = index_dir if index_dir is not None else os.path.dirname(shard_path)
-        index_path = _find_index_path(idx_dir)
-        if index_path is not None:
-            try:
-                weight_map = _load_weight_map_from_index(index_path)
-            except Exception:
-                logger.debug("Unable to load weight map for quantized-source ignore validation.", exc_info=True)
-
-    _raise_if_ignored_quantized_source(
-        raw_tensors,
-        matcher,
-        model_type=model_type,
-        shard_name=shard_name,
-        weight_map=weight_map,
-    )
 
     # Snapshot candidate weight layer names *before* any preprocessing. 1D
     # weights (for example LayerNorm) are not quantization targets, while 3D
@@ -4015,11 +4012,13 @@ def _source_config_to_ct(qc: dict | None) -> dict | None:
     return None
 
 
-def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+def _detect_nvfp4_source(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> str | None:
     """Return why the source checkpoint looks NVFP4-quantized, or None.
 
-    Relies on the model name and the source quantization config (config.json / hf_quant_config.json & co.)
-    because the first shards may not contain any NVFP4 tensor.
+    Relies on the model name, the source quantization config (config.json / hf_quant_config.json & co.)
+    and the source tensor names, because the first shards may not contain any NVFP4 tensor.
     """
     if "nvfp4" in os.path.basename(str(model_name_or_path).rstrip("/\\")).lower():
         return f"model name '{model_name_or_path}'"
@@ -4034,10 +4033,17 @@ def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | No
         layer_cfgs = [qc.get("global_quant_config"), *(qc.get("layer_quant_config") or {}).values()]
         if any(_is_nvfp4_ct_group(_quark_layer_to_ct_group(cfg)[1] or {}) for cfg in layer_cfgs):
             return "source quantization config"
+    # ModelOpt NVFP4 global scales and Inkling packed-weight scales are NVFP4-only tensor names.
+    if weight_map and (
+        any(name.endswith(".weight_scale_2") for name in weight_map) or _inkling_nvfp4_bases_from_weight_map(weight_map)
+    ):
+        return "source tensor names"
     return None
 
 
-def _detect_fp8_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+def _detect_fp8_source(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> str | None:
     """Return why the source checkpoint looks FP8-quantized (DeepSeek-V3 style), or None."""
     qc = source_quant_config or {}
     if (
@@ -4046,21 +4052,25 @@ def _detect_fp8_source(model_name_or_path: str, source_quant_config: dict | None
         or str(qc.get("fmt") or "").startswith("e4m3")
     ):
         return "source quantization config"
+    if weight_map and any(name.endswith(".weight_scale_inv") for name in weight_map):
+        return "source tensor names"
     return None
 
 
-# Source dtype name -> detector(model_name_or_path, source_quant_config) returning a reason or None.
+# Source dtype name -> detector(model_name_or_path, source_quant_config, weight_map) returning a reason or None.
 _SOURCE_DTYPE_DETECTORS = {
     "nvfp4": _detect_nvfp4_source,
     "fp8": _detect_fp8_source,
 }
 
 
-def detect_model_dtypes(model_name_or_path: str, source_quant_config: dict | None) -> dict[str, str]:
+def detect_model_dtypes(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> dict[str, str]:
     """Return ``{source_dtype: reason}`` for every low-precision dtype detected in the source checkpoint."""
     detected = {}
     for dtype_name, detector in _SOURCE_DTYPE_DETECTORS.items():
-        reason = detector(model_name_or_path, source_quant_config)
+        reason = detector(model_name_or_path, source_quant_config, weight_map)
         if reason is not None:
             detected[dtype_name] = reason
     return detected
