@@ -3,3 +3,4 @@ gguf
 sentencepiece
 diffusers
 compressed-tensors
+hypothesis
