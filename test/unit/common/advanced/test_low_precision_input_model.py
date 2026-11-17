@@ -1,22 +1,16 @@
 from test.helpers import get_model_path, get_tiny_model, transformers_version
 
+import compressed_tensors
 import pytest
 import torch
 import transformers
 from packaging import version
 
 from auto_round import AutoRound
-from auto_round.utils.common import get_library_version
 from auto_round.utils.weight_handler import (
     ModuleWeightType,
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
-)
-
-skip_compressed_tensors_0201 = pytest.mark.skipif(
-    get_library_version("compressed-tensors") == "0.20.1",
-    reason="Asymmetric zero-point loading is broken in compressed-tensors 0.20.1; "
-    "see https://github.com/vllm-project/compressed-tensors/pull/1020",
 )
 
 
@@ -78,7 +72,10 @@ class TestCompressedTensor:
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
         ), "CompressedLinear layer was not converted to Linear"
 
-    @skip_compressed_tensors_0201
+    @pytest.mark.skipif(
+        version.parse(compressed_tensors.__version__) == version.parse("0.20.1"),
+        reason="Asymmetric zero-point loading is broken in compressed-tensors 0.20.1. See https://github.com/vllm-project/compressed-tensors/pull/1020",
+    )
     def test_w4a16(self):
         model = get_tiny_model(get_model_path(self.w4a16_model_path))
         assert (
@@ -94,7 +91,10 @@ class TestCompressedTensor:
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
         ), "CompressedLinear layer was not converted to Linear"
 
-    @skip_compressed_tensors_0201
+    @pytest.mark.skipif(
+        version.parse(compressed_tensors.__version__) == version.parse("0.20.1"),
+        reason="Asymmetric zero-point loading is broken in compressed-tensors 0.20.1. See https://github.com/vllm-project/compressed-tensors/pull/1020",
+    )
     def test_w4a16_to_mxfp4(self, tmp_path):
         model = get_tiny_model(get_model_path(self.w4a16_model_path))
         model.config.name_or_path = None  # Clear the name_or_path to avoid MTP copying issues
