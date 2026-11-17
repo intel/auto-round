@@ -675,17 +675,49 @@ def _collect_quantized_source_layers(
     return layers
 
 
+def _collect_indexed_quantized_source_layers(
+    raw_tensors: dict[str, torch.Tensor],
+    weight_map: dict[str, str],
+) -> set[str]:
+    """Detect quantized source layers from indexed weight/scale tensor names."""
+    indexed_scale_prefixes = set()
+    for key in weight_map:
+        parts = key.split(".")
+        for index, part in enumerate(parts):
+            if "scale" in part.lower() and index:
+                indexed_scale_prefixes.add(".".join(parts[:index]))
+
+    layers: set[str] = set()
+    for name in raw_tensors:
+        if name.endswith(".weight_packed"):
+            layer_name = name[: -len(".weight_packed")]
+        elif name.endswith(".weight"):
+            layer_name = name[: -len(".weight")]
+        elif name.endswith(".qweight"):
+            layer_name = name[: -len(".qweight")]
+        elif name in weight_map and "scale" not in name.lower():
+            layer_name = name
+        else:
+            continue
+
+        if layer_name in indexed_scale_prefixes:
+            layers.add(layer_name)
+    return layers
+
+
 def _raise_if_ignored_quantized_source(
     raw_tensors: dict[str, torch.Tensor],
     matcher: _PatternMatcher,
     model_type: str | None = None,
     shard_name: str | None = None,
+    weight_map: dict[str, str] | None = None,
 ) -> None:
     """Reject ignored source layers that would otherwise be silently dequantized."""
+    quantized_layers = _collect_quantized_source_layers(raw_tensors, model_type=model_type)
+    if weight_map:
+        quantized_layers.update(_collect_indexed_quantized_source_layers(raw_tensors, weight_map))
     ignored_quantized = sorted(
-        layer_name
-        for layer_name in _collect_quantized_source_layers(raw_tensors, model_type=model_type)
-        if matcher.matches_ignore_pattern(f"{layer_name}.weight")
+        layer_name for layer_name in quantized_layers if matcher.matches_ignore_pattern(f"{layer_name}.weight")
     )
     if not ignored_quantized:
         return
@@ -2576,11 +2608,22 @@ def _process_shard(
             donor_shard_dir=donor_shard_dir,
         )
 
+    weight_map: dict[str, str] = {}
+    if shard_path.endswith(".safetensors"):
+        idx_dir = index_dir if index_dir is not None else os.path.dirname(shard_path)
+        index_path = _find_index_path(idx_dir)
+        if index_path is not None:
+            try:
+                weight_map = _load_weight_map_from_index(index_path)
+            except Exception:
+                logger.debug("Unable to load weight map for quantized-source ignore validation.", exc_info=True)
+
     _raise_if_ignored_quantized_source(
         raw_tensors,
         matcher,
         model_type=model_type,
         shard_name=shard_name,
+        weight_map=weight_map,
     )
 
     # Snapshot candidate weight layer names *before* any preprocessing. 1D

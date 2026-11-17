@@ -66,6 +66,7 @@ from auto_round.utils.model_free_utils import (
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
+    _collect_indexed_quantized_source_layers,
     _convert_auto_scheme_layer_config,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
@@ -1017,6 +1018,83 @@ def test_model_free_llmc_nvfp4_is_not_renormalized(tmp_path):
 
     # llm-compressor global scales are already in the expected convention.
     assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([4.0], dtype=torch.float32))
+
+
+def test_automatic_ignore_rejects_quantized_lm_head(tmp_path):
+    prefix = "lm_head"
+    tensors = _nvfp4_source_tensors(prefix)
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+    matcher = _PatternMatcher(
+        ignore_patterns=["lm_head"],
+        layer_config={},
+        default_scheme=_DEFAULT_SCHEME,
+    )
+
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _process_shard(
+            shard_path,
+            _DEFAULT_SCHEME,
+            {},
+            ["lm_head"],
+            matcher=matcher,
+        )
+
+
+@pytest.mark.parametrize(
+    "weight_name,scale_names",
+    [
+        ("model.layers.0.mlp.down_proj.weight_packed", ["model.layers.0.mlp.down_proj.weight_scale_2"]),
+        ("model.layers.0.mlp.up_proj.weight", ["model.layers.0.mlp.up_proj.custom_SCALE_block"]),
+        (
+            "layers.0.mlp.experts.w13_weight",
+            ["layers.0.mlp.experts.w13_weight.scale", "layers.0.mlp.experts.w13_weight.scale2"],
+        ),
+    ],
+)
+def test_index_detects_quantized_source_with_scale_companions(weight_name, scale_names):
+    layer_name = weight_name.rsplit(".", 1)[0] if weight_name.endswith((".weight", ".weight_packed")) else weight_name
+    raw_tensors = {weight_name: torch.empty(1, dtype=torch.uint8)}
+    weight_map = {weight_name: "weights-00001.safetensors"}
+    weight_map.update({name: "weights-00002.safetensors" for name in scale_names})
+
+    assert _collect_indexed_quantized_source_layers(raw_tensors, weight_map) == {layer_name}
+
+
+def test_index_detects_ignored_quantized_weight_before_cross_shard_hydration(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    shard_path = tmp_path / "model-00001-of-00002.safetensors"
+    save_file({f"{prefix}.weight_packed": torch.ones((2, 2), dtype=torch.uint8)}, str(shard_path))
+    index_path = tmp_path / "model.safetensors.index.json"
+    with open(index_path, "w") as index_file:
+        json.dump(
+            {
+                "weight_map": {
+                    f"{prefix}.weight_packed": shard_path.name,
+                    f"{prefix}.weight_scale": "model-00002-of-00002.safetensors",
+                    f"{prefix}.weight_scale_2": "model-00002-of-00002.safetensors",
+                }
+            },
+            index_file,
+        )
+
+    matcher = _PatternMatcher(
+        ignore_patterns=["down_proj"],
+        layer_config={},
+        default_scheme=_DEFAULT_SCHEME,
+    )
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _process_shard(str(shard_path), _DEFAULT_SCHEME, {}, ["down_proj"], matcher=matcher)
+
+
+def test_index_scale_for_child_layer_does_not_match_parent():
+    raw_tensors = {"model.layers.0.weight": torch.empty(1)}
+    weight_map = {
+        "model.layers.0.weight": "model-00001-of-00002.safetensors",
+        "model.layers.0.mlp.down_proj.weight_scale": "model-00002-of-00002.safetensors",
+    }
+
+    assert _collect_indexed_quantized_source_layers(raw_tensors, weight_map) == set()
 
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
