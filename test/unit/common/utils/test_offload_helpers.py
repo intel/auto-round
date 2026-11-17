@@ -535,3 +535,93 @@ class TestOffloadStaleDirSweep:
             pytest.skip("OverflowError from os.kill is POSIX-specific")
         assert OffloadManager._pid_alive(2**64) is True
         assert OffloadManager._pid_alive(0) is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform liveness probe
+# ---------------------------------------------------------------------------
+class TestPidAlivePerPlatform:
+    """The Windows branch must never reach ``os.kill``.
+
+    Windows CI (``.azure-pipelines/compatibility-test.yml``) only runs an import
+    smoke test, so these cases are simulated on any platform: ``sys.platform``
+    is patched and ``os.kill`` is replaced by a spy that both records the call
+    and raises if it is ever reached.
+    """
+
+    @staticmethod
+    def _spy_kill(monkeypatch) -> list:
+        calls = []
+
+        def fake_kill(pid, sig):
+            calls.append((pid, sig))
+            raise AssertionError(f"os.kill({pid}, {sig}) must not be called on Windows")
+
+        monkeypatch.setattr("auto_round.utils.offload.os.kill", fake_kill)
+        return calls
+
+    def test_windows_uses_psutil_instead_of_kill(self, monkeypatch):
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setattr(offload_mod.sys, "platform", "win32")
+        calls = self._spy_kill(monkeypatch)
+        seen = []
+
+        def fake_pid_exists(pid):
+            seen.append(pid)
+            return pid == 4321
+
+        monkeypatch.setattr(offload_mod, "_windows_pid_alive", fake_pid_exists)
+
+        assert offload_mod.OffloadManager._pid_alive(4321) is True
+        assert offload_mod.OffloadManager._pid_alive(1234) is False
+        assert seen == [4321, 1234]
+        assert calls == [], "os.kill is a TerminateProcess on Windows, not a probe"
+
+    def test_windows_pid_alive_calls_psutil_pid_exists(self, monkeypatch):
+        """The real helper delegates to psutil rather than shelling out.
+
+        ``psutil`` arrives transitively rather than from ``requirements.txt``,
+        so a stub module is injected instead of importing it for real.
+        """
+        import types
+
+        from auto_round.utils import offload as offload_mod
+
+        seen = []
+
+        def pid_exists(pid):
+            seen.append(pid)
+            return pid == 4321
+
+        stub = types.ModuleType("psutil")
+        stub.pid_exists = pid_exists
+        monkeypatch.setitem(sys.modules, "psutil", stub)
+        calls = self._spy_kill(monkeypatch)
+
+        assert offload_mod._windows_pid_alive(4321) is True
+        assert offload_mod._windows_pid_alive(1234) is False
+        assert seen == [4321, 1234]
+        assert calls == []
+
+    def test_windows_without_psutil_assumes_alive(self, monkeypatch):
+        """No psutil => "assume alive"; never fall back to os.kill."""
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        calls = self._spy_kill(monkeypatch)
+
+        assert offload_mod._windows_pid_alive(1234) is True
+        assert calls == [], "falling back to os.kill here would kill pid 1234"
+
+    def test_posix_still_probes_with_signal_zero(self, monkeypatch):
+        """The POSIX path keeps using the cheap kill(pid, 0) probe."""
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setattr(offload_mod.sys, "platform", "linux")
+        calls = []
+        monkeypatch.setattr(offload_mod.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+        monkeypatch.setattr(offload_mod, "_is_zombie", lambda pid: False)
+
+        assert offload_mod.OffloadManager._pid_alive(4321) is True
+        assert calls == [(4321, 0)]
