@@ -49,6 +49,8 @@ def split_inputs(
         return input_ids, input_others
     input_ids = inputs.get(first_input_name, None)
     inputs.pop(first_input_name, None)
+    if first_input_name == "input_ids" and "_ar_block_token_ids" in inputs:
+        inputs["input_ids"] = inputs.pop("_ar_block_token_ids")
     input_others = inputs
     return input_ids, input_others
 
