@@ -609,7 +609,11 @@ class LLMCalibrator(Calibrator):
 
             for key, value in kwargs.items():
                 value = self.parallel.replicated(value)
-                if isinstance(value, (torch.Tensor, list, tuple)):
+                # V4 supplies RoPE as a dict of main/compress tensor tuples.
+                # Shared structured kwargs must survive capture just like tuples.
+                if isinstance(value, (torch.Tensor, list, tuple)) or (
+                    key in self.shared_cache_keys and isinstance(value, dict)
+                ):
                     if (
                         self.has_variable_block_shape
                         and name not in self.blocks_requiring_input_ids
