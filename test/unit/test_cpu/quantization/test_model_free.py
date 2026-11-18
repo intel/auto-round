@@ -66,6 +66,7 @@ from auto_round.utils.model_free_utils import (
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
+    _collect_indexed_quantized_source_layers,
     _convert_auto_scheme_layer_config,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
@@ -78,6 +79,7 @@ from auto_round.utils.model_free_utils import (
     _quantize_weight_mxfp,
     _quantize_weight_nvfp4_e5m3,
     _quantize_weight_nvfp4_e5m3_gs,
+    _raise_if_ignored_quantized_source,
     _validate_auto_scheme_options,
     is_model_free_supported_scheme,
 )
@@ -931,6 +933,7 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
     core.source_quantization_config = None
     core.enable_torch_compile = False
     core.disable_opt_rtn = True
+    core._load_source_weight_map()
     core._build_cross_shard_deps()
     core._prepare_fused_gs_groups()
 
@@ -1071,6 +1074,140 @@ def test_model_free_llmc_nvfp4_is_not_renormalized(tmp_path):
 
     # llm-compressor global scales are already in the expected convention.
     assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([4.0], dtype=torch.float32))
+
+
+def test_automatic_ignore_rejects_quantized_lm_head(tmp_path):
+    weight_map = {
+        "lm_head.weight_packed": "model-00001-of-00002.safetensors",
+        "lm_head.weight_scale": "model-00002-of-00002.safetensors",
+    }
+    matcher = _PatternMatcher(
+        ignore_patterns=["lm_head"],
+        layer_config={},
+        default_scheme=_DEFAULT_SCHEME,
+    )
+
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _raise_if_ignored_quantized_source(weight_map, matcher)
+
+
+@pytest.mark.parametrize(
+    "weight_name,scale_names",
+    [
+        ("model.layers.0.mlp.down_proj.weight_packed", ["model.layers.0.mlp.down_proj.weight_scale_2"]),
+        ("model.layers.0.mlp.up_proj.weight", ["model.layers.0.mlp.up_proj.custom_SCALE_block"]),
+        (
+            "layers.0.mlp.experts.w13_weight",
+            ["layers.0.mlp.experts.w13_weight.scale", "layers.0.mlp.experts.w13_weight.scale2"],
+        ),
+    ],
+)
+def test_index_detects_quantized_source_with_scale_companions(weight_name, scale_names):
+    layer_name = weight_name.rsplit(".", 1)[0] if weight_name.endswith((".weight", ".weight_packed")) else weight_name
+    raw_tensors = {weight_name: torch.empty(1, dtype=torch.uint8)}
+    weight_map = {weight_name: "weights-00001.safetensors"}
+    weight_map.update({name: "weights-00002.safetensors" for name in scale_names})
+
+    assert _collect_indexed_quantized_source_layers(weight_map) == {layer_name}
+
+
+@pytest.mark.parametrize("shard_name", ["model.safetensors", "pytorch_model.bin"])
+def test_process_shard_without_index_rejects_ignored_quantized_source(tmp_path, shard_name):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = _nvfp4_source_tensors(prefix)
+    shard_path = str(tmp_path / shard_name)
+    if shard_name.endswith(".bin"):
+        torch.save(tensors, shard_path)
+    else:
+        save_file(tensors, shard_path)
+
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _process_shard(shard_path, _DEFAULT_SCHEME, {}, ["down_proj"])
+
+
+def test_model_type_passthrough_source_is_not_rejected_when_ignored():
+    weight_map = {
+        "model.layers.1.engram.embed.weight": "model.safetensors",
+        "model.layers.1.engram.embed.scale": "model.safetensors",
+    }
+    matcher = _PatternMatcher(ignore_patterns=["embed"], layer_config={}, default_scheme=_DEFAULT_SCHEME)
+
+    _raise_if_ignored_quantized_source(weight_map, matcher, model_type="deepseek_v41")
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _raise_if_ignored_quantized_source(weight_map, matcher, model_type="llama")
+
+
+def test_index_detects_ignored_quantized_weight_before_cross_shard_hydration(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    shard_path = tmp_path / "model-00001-of-00002.safetensors"
+    save_file({f"{prefix}.weight_packed": torch.ones((2, 2), dtype=torch.uint8)}, str(shard_path))
+    index_path = tmp_path / "model.safetensors.index.json"
+    with open(index_path, "w") as index_file:
+        json.dump(
+            {
+                "weight_map": {
+                    f"{prefix}.weight_packed": shard_path.name,
+                    f"{prefix}.weight_scale": "model-00002-of-00002.safetensors",
+                    f"{prefix}.weight_scale_2": "model-00002-of-00002.safetensors",
+                }
+            },
+            index_file,
+        )
+
+    matcher = _PatternMatcher(
+        ignore_patterns=["down_proj"],
+        layer_config={},
+        default_scheme=_DEFAULT_SCHEME,
+    )
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _raise_if_ignored_quantized_source(
+            {
+                f"{prefix}.weight_packed": shard_path.name,
+                f"{prefix}.weight_scale": "model-00002-of-00002.safetensors",
+                f"{prefix}.weight_scale_2": "model-00002-of-00002.safetensors",
+            },
+            matcher,
+        )
+
+
+def test_index_scale_for_child_layer_does_not_match_parent():
+    weight_map = {
+        "model.layers.0.weight": "model-00001-of-00002.safetensors",
+        "model.layers.0.mlp.down_proj.weight_scale": "model-00002-of-00002.safetensors",
+    }
+
+    assert _collect_indexed_quantized_source_layers(weight_map) == set()
+
+
+def test_load_source_weight_map_prefers_index_then_safetensors_headers(tmp_path):
+    from auto_round.utils.model_free_utils import load_source_weight_map
+
+    save_file({"a.weight": torch.zeros(1)}, str(tmp_path / "s1.safetensors"))
+    save_file({"b.weight": torch.zeros(1)}, str(tmp_path / "s2.safetensors"))
+    shard_names = ["s1.safetensors", "s2.safetensors", "missing.safetensors"]
+    assert load_source_weight_map(str(tmp_path), shard_names) == {
+        "a.weight": "s1.safetensors",
+        "b.weight": "s2.safetensors",
+    }
+
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"x.weight": "s1.safetensors"}}))
+    assert load_source_weight_map(str(tmp_path), shard_names) == {"x.weight": "s1.safetensors"}
+
+
+@pytest.mark.parametrize(
+    "weight_map, expected",
+    [
+        ({"l.weight": "s", "l.weight_scale": "s", "l.weight_scale_2": "s"}, {"nvfp4"}),
+        ({"x": "s", "x.scale": "s", "x.scale2": "s"}, {"nvfp4"}),
+        ({"l.weight": "s", "l.weight_scale_inv": "s"}, {"fp8"}),
+        ({"l.weight": "s", "l.weight_scale": "s", "l.input_scale": "s"}, set()),
+    ],
+    ids=["modelopt_nvfp4", "inkling_nvfp4", "deepseek_fp8", "ct_fp8_static"],
+)
+def test_detect_model_dtypes_from_tensor_names(weight_map, expected):
+    from auto_round.utils.model_free_utils import detect_model_dtypes
+
+    assert set(detect_model_dtypes("source_model", None, weight_map)) == expected
 
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
@@ -1497,6 +1634,7 @@ class TestModelFreeQuantize:
                 "_detect_fp8_source",
                 "_resolve_model_type",
                 "_discover_shards",
+                "_load_source_weight_map",
                 "_build_cross_shard_deps",
                 "_reorder_shards_by_dependency",
             ):
@@ -2089,10 +2227,23 @@ class TestNVFP4ToMXFP4:
     # ------------------------------------------------------------------
 
     @require_compressed_tensors
-    def test_ignored_nvfp4_layer_is_dequantized_and_added_to_ignore(self, tmp_path):
+    def test_ignoring_quantized_nvfp4_layer_requires_layer_config(self, tmp_path):
         source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
         model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
-        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+        with pytest.raises(ValueError, match=r"already-quantized source layer.*layer_config.*BF16"):
+            _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+    @require_compressed_tensors
+    def test_quantized_nvfp4_layer_can_be_explicitly_kept_in_bf16(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(
+            model_dir,
+            str(tmp_path / "out"),
+            ignore_layers="down_proj",
+            layer_config={"down_proj": "BF16"},
+        )
 
         _assert_mxfp4_layer(tensors, _NV_MLP_UP)
         assert tensors[f"{_NV_MLP}.weight"].dtype == torch.bfloat16

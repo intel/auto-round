@@ -119,6 +119,14 @@ _WARNING_INDEX_PLACEHOLDER = "<idx>"
 # tensors. Splitting these would break loading for such architectures.
 _KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
 
+# model_type -> name fragments of already-quantized source tensors the target loader reads by their
+# source key and layout, so they are never dequantized, renamed or requantized.
+# DeepSeek-V4.1 Engram n-gram table: vLLM maps ``engram.embed.scale`` (not ``.weight_scale``).
+_MODEL_TYPE_PASSTHROUGH_SOURCE: dict[str, tuple[str, ...]] = {
+    "deepseek_v4": (".engram.embed.",),
+    "deepseek_v41": (".engram.embed.",),
+}
+
 
 # _normalize_tensor_name_for_warning moved to auto_round.utils.common to
 # avoid circular imports; keep compatibility by importing it from there.
@@ -548,6 +556,13 @@ class _PatternMatcher:
         self._ignore_cache[tensor_name] = result
         return result
 
+    def matches_ignore_pattern(self, tensor_name: str) -> bool:
+        """Check configured ignore patterns without applying source-only filtering."""
+        layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        if self._matches_layer_config(layer_name):
+            return False
+        return bool(self._ignore_re and self._ignore_re.search(layer_name))
+
     def _matches_layer_config(self, layer_name: str) -> bool:
         return any(
             (compiled is not None and compiled.search(layer_name)) or (plain is not None and plain in layer_name)
@@ -634,6 +649,115 @@ def _collect_nvfp4_source_layers(raw_tensors: dict[str, torch.Tensor]) -> set[st
         elif f"{name}.scale" in raw_tensors and f"{name}.scale2" in raw_tensors:
             layers.add(name)
     return layers
+
+
+def _collect_quantized_source_layers(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None = None,
+) -> set[str]:
+    """Return source layers whose weights are stored in a supported quantized format."""
+    layers = {entry[0] for entry in _collect_mxfp_source_entries(raw_tensors)}
+    layers.update(_collect_nvfp4_source_layers(raw_tensors))
+
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        layer_name = name[: -len(".weight")]
+        if (
+            tensor.dtype == torch.float8_e4m3fn
+            and any(f"{layer_name}.{suffix}" in raw_tensors for suffix in ("weight_scale_inv", "weight_scale", "scale"))
+            or (
+                (model_type or "").lower() == "deepseek_v4"
+                and tensor.dtype in (torch.int8, torch.uint8)
+                and f"{layer_name}.scale" in raw_tensors
+            )
+            or (
+                tensor.dtype in (torch.int8, torch.uint8)
+                and f"{layer_name}.weight_scale" in raw_tensors
+                and any(
+                    f"{layer_name}.{suffix}" in raw_tensors
+                    for suffix in ("weight_scale_2", "input_scale", "weight_global_scale", "input_global_scale")
+                )
+            )
+        ):
+            layers.add(layer_name)
+
+    if (model_type or "").lower() == "kimi_k25":
+        layers.update(entry[0] for entry in _collect_kimi_k25_int4_source_entries(raw_tensors))
+
+    return layers
+
+
+def _collect_indexed_quantized_source_layers(
+    weight_map: dict[str, str],
+) -> set[str]:
+    """Detect quantized source layers from indexed weight/scale tensor names."""
+    indexed_scale_prefixes = set()
+    for key in weight_map:
+        parts = key.split(".")
+        for index, part in enumerate(parts):
+            if "scale" in part.lower() and index:
+                indexed_scale_prefixes.add(".".join(parts[:index]))
+
+    layers: set[str] = set()
+    for name in weight_map:
+        if name.endswith(".weight_packed"):
+            layer_name = name[: -len(".weight_packed")]
+        elif name.endswith(".weight"):
+            layer_name = name[: -len(".weight")]
+        elif name.endswith(".qweight"):
+            layer_name = name[: -len(".qweight")]
+        elif name in weight_map and "scale" not in name.lower():
+            layer_name = name
+        else:
+            continue
+
+        if layer_name in indexed_scale_prefixes:
+            layers.add(layer_name)
+    return layers
+
+
+def _is_model_type_passthrough_source(name: str, model_type: str | None) -> bool:
+    """Return True for already-quantized source tensors that *model_type* must keep in their source layout."""
+    return any(fragment in name for fragment in _MODEL_TYPE_PASSTHROUGH_SOURCE.get((model_type or "").lower(), ()))
+
+
+def _extract_model_type_passthrough_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None,
+) -> dict[str, torch.Tensor]:
+    """Pop the source tensors *model_type* keeps unchanged (source key, dtype and layout)."""
+    return {
+        name: raw_tensors.pop(name)
+        for name in [n for n in raw_tensors if _is_model_type_passthrough_source(n, model_type)]
+    }
+
+
+def _raise_if_ignored_quantized_source(
+    weight_map: dict[str, str],
+    matcher: _PatternMatcher,
+    model_type: str | None = None,
+) -> None:
+    """Reject ignored quantized source layers before any shard is processed."""
+    quantized_layers = _collect_indexed_quantized_source_layers(weight_map)
+    ignored_quantized = sorted(
+        layer_name
+        for layer_name in quantized_layers
+        if matcher.matches_ignore_pattern(f"{layer_name}.weight")
+        and not _is_model_type_passthrough_source(f"{layer_name}.", model_type)
+    )
+    if not ignored_quantized:
+        return
+
+    examples = ", ".join(ignored_quantized[:10])
+    if len(ignored_quantized) > 10:
+        examples += f", ... ({len(ignored_quantized)} total)"
+    raise ValueError(
+        f"ignore_layers matches already-quantized source layer(s): {examples}. "
+        "Model-free cannot ignore quantized source weights. Remove these layers from --ignore_layers and set "
+        "--layer_config to a target quantization scheme (for example, '{layer_name: W4A16}') to convert them, "
+        "or use '{layer_name: BF16}' to dequantize and keep them in BF16."
+    )
 
 
 def _normalize_nvfp4_source_tensors(
@@ -891,6 +1015,7 @@ def _handle_nvfp4_source_tensors(
 
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
         if scheme is None:
+            dequant_layers.append(layer_name)
             continue
         scheme_bits = scheme.get("bits")
         scheme_data_type = (scheme.get("data_type") or "").lower()
@@ -1772,18 +1897,8 @@ def _hydrate_missing_fp8_scales_from_index(
     # Donor shards are looked up in donor_shard_dir (defaults to idx_dir).
     donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
 
-    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
-    if not os.path.exists(index_path):
-        candidates = sorted(
-            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
-        )
-        if not candidates:
-            return raw_tensors
-        index_path = candidates[0]
-
-    try:
-        weight_map = _load_weight_map_from_index(index_path)
-    except Exception:
+    weight_map = _load_index_weight_map(idx_dir)
+    if not weight_map:
         return raw_tensors
 
     current_shard = os.path.basename(shard_path)
@@ -1832,17 +1947,57 @@ def _hydrate_missing_fp8_scales_from_index(
 
 
 def _find_index_path(idx_dir: str) -> str | None:
-    """Return the path of the ``*.safetensors.index.json`` file in *idx_dir*."""
-    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
-    if os.path.exists(index_path):
-        return index_path
+    """Return the weight index in *idx_dir*, preferring safetensors over PyTorch ``.bin`` indices."""
     try:
-        candidates = sorted(
-            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
-        )
+        names = sorted(os.listdir(idx_dir))
     except OSError:
         return None
-    return candidates[0] if candidates else None
+    for standard_name, suffix in (
+        ("model.safetensors.index.json", ".safetensors.index.json"),
+        ("pytorch_model.bin.index.json", ".bin.index.json"),
+    ):
+        if standard_name in names:
+            return os.path.join(idx_dir, standard_name)
+        match = next((name for name in names if name.endswith(suffix)), None)
+        if match is not None:
+            return os.path.join(idx_dir, match)
+    return None
+
+
+def _load_index_weight_map(idx_dir: str) -> dict[str, str]:
+    """Return the ``weight_map`` of the index in *idx_dir*, or ``{}`` when absent or unreadable."""
+    index_path = _find_index_path(idx_dir)
+    if index_path is None:
+        return {}
+    try:
+        return _load_weight_map_from_index(index_path)
+    except Exception as exc:
+        logger.warning_once(f"Could not load weight_map from '{index_path}': {exc}")
+        return {}
+
+
+def load_source_weight_map(source_dir: str, shard_names: list[str] | None = None) -> dict[str, str]:
+    """Map every source tensor name to its shard without loading tensor data.
+
+    Uses the checkpoint index when present; otherwise reads the headers of the local
+    safetensors shards in *shard_names*. Shards that are not local (e.g. not yet
+    streamed) are skipped, so the result may be ``{}``.
+    """
+    weight_map = _load_index_weight_map(source_dir)
+    if weight_map:
+        return weight_map
+
+    from safetensors import safe_open
+
+    for shard_name in shard_names or ():
+        if not shard_name.endswith(".safetensors"):
+            continue
+        shard_path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
+        if not os.path.isfile(shard_path):
+            continue
+        with safe_open(shard_path, framework="pt") as shard:
+            weight_map.update(dict.fromkeys(shard.keys(), shard_name))
+    return weight_map
 
 
 def _inkling_nvfp4_bases_from_weight_map(weight_map: dict[str, str]) -> set[str]:
@@ -1945,15 +2100,7 @@ def _hydrate_and_clean_inkling_nvfp4_aux(
     idx_dir = index_dir if index_dir is not None else shard_dir
     donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
 
-    index_path = _find_index_path(idx_dir)
-    if index_path is None:
-        return raw_tensors
-
-    try:
-        weight_map = _load_weight_map_from_index(index_path)
-    except Exception:
-        return raw_tensors
-
+    weight_map = _load_index_weight_map(idx_dir)
     bases = _inkling_nvfp4_bases_from_weight_map(weight_map)
     if not bases:
         return raw_tensors
@@ -2150,11 +2297,10 @@ def _handle_mxfp_source_tensors(
 
     for layer_name, weight_key, scale_key, bits in entries:
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
-        is_ignored = matcher.should_ignore(f"{layer_name}.weight")
         target_is_same_mxfp = (
             scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == bits
         )
-        if target_is_same_mxfp and not is_ignored:
+        if target_is_same_mxfp:
             passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
             passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
             passthrough_layers.append(layer_name)
@@ -2477,6 +2623,8 @@ def _process_shard(
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
     quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
+    # Without an index the preflight weight_map may miss this shard, so check its own tensor names.
+    check_ignored_quantized = _find_index_path(index_dir or os.path.dirname(shard_path)) is None
 
     if shard_path.endswith(".bin"):
         # No unrestricted fallback: this pickle comes from an untrusted artifact.
@@ -2484,11 +2632,16 @@ def _process_shard(
         # Flatten nested state-dict wrappers if present.
         if not isinstance(raw_tensors, dict):
             raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")
+        if check_ignored_quantized:
+            _raise_if_ignored_quantized_source(dict.fromkeys(raw_tensors, shard_path), matcher, model_type)
     else:
         from safetensors import safe_open
 
         with safe_open(shard_path, framework="pt", device="cpu") as f:
-            raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
+            tensor_names = list(f.keys())
+            if check_ignored_quantized:
+                _raise_if_ignored_quantized_source(dict.fromkeys(tensor_names, shard_path), matcher, model_type)
+            raw_tensors = {name: f.get_tensor(name) for name in tensor_names}
 
     raw_tensors = split_fused_expert_tensors(raw_tensors, model_type=model_type)
     # Dequantized sources are FP32 in-flight; those left high-precision are saved as BF16.
@@ -2528,10 +2681,10 @@ def _process_shard(
         )
     )
 
+    output_tensors.update(_extract_model_type_passthrough_tensors(raw_tensors, model_type))
+
     # Preserve original tensors for predefined skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
-    # User-specified ignore layers should still flow through the dequant path
-    # so the saved model exports them in full precision.
     preserved_prefixes: set[str] = set()
     for tname in raw_tensors:
         if tname.endswith((".weight", ".weight_packed", ".qweight")) and matcher.should_skip(tname):
@@ -2624,10 +2777,6 @@ def _process_shard(
         hydrate_only=matcher.nvfp_source_only,
     )
     raw_tensors.update(preserved_tensors)
-    # The Engram table is predefined-skipped and preserved above, so it does not
-    # flow through preprocess_model_type_source_tensors(); apply the U8 scale
-    # bitcast here as well for the actual shard path.
-    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
@@ -3910,11 +4059,13 @@ def _source_config_to_ct(qc: dict | None) -> dict | None:
     return None
 
 
-def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+def _detect_nvfp4_source(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> str | None:
     """Return why the source checkpoint looks NVFP4-quantized, or None.
 
-    Relies on the model name and the source quantization config (config.json / hf_quant_config.json & co.)
-    because the first shards may not contain any NVFP4 tensor.
+    Relies on the model name, the source quantization config (config.json / hf_quant_config.json & co.)
+    and the source tensor names, because the first shards may not contain any NVFP4 tensor.
     """
     if "nvfp4" in os.path.basename(str(model_name_or_path).rstrip("/\\")).lower():
         return f"model name '{model_name_or_path}'"
@@ -3929,10 +4080,17 @@ def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | No
         layer_cfgs = [qc.get("global_quant_config"), *(qc.get("layer_quant_config") or {}).values()]
         if any(_is_nvfp4_ct_group(_quark_layer_to_ct_group(cfg)[1] or {}) for cfg in layer_cfgs):
             return "source quantization config"
+    # ModelOpt NVFP4 global scales and Inkling packed-weight scales are NVFP4-only tensor names.
+    if weight_map and (
+        any(name.endswith(".weight_scale_2") for name in weight_map) or _inkling_nvfp4_bases_from_weight_map(weight_map)
+    ):
+        return "source tensor names"
     return None
 
 
-def _detect_fp8_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+def _detect_fp8_source(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> str | None:
     """Return why the source checkpoint looks FP8-quantized (DeepSeek-V3 style), or None."""
     qc = source_quant_config or {}
     if (
@@ -3941,21 +4099,25 @@ def _detect_fp8_source(model_name_or_path: str, source_quant_config: dict | None
         or str(qc.get("fmt") or "").startswith("e4m3")
     ):
         return "source quantization config"
+    if weight_map and any(name.endswith(".weight_scale_inv") for name in weight_map):
+        return "source tensor names"
     return None
 
 
-# Source dtype name -> detector(model_name_or_path, source_quant_config) returning a reason or None.
+# Source dtype name -> detector(model_name_or_path, source_quant_config, weight_map) returning a reason or None.
 _SOURCE_DTYPE_DETECTORS = {
     "nvfp4": _detect_nvfp4_source,
     "fp8": _detect_fp8_source,
 }
 
 
-def detect_model_dtypes(model_name_or_path: str, source_quant_config: dict | None) -> dict[str, str]:
+def detect_model_dtypes(
+    model_name_or_path: str, source_quant_config: dict | None, weight_map: dict[str, str] | None = None
+) -> dict[str, str]:
     """Return ``{source_dtype: reason}`` for every low-precision dtype detected in the source checkpoint."""
     detected = {}
     for dtype_name, detector in _SOURCE_DTYPE_DETECTORS.items():
-        reason = detector(model_name_or_path, source_quant_config)
+        reason = detector(model_name_or_path, source_quant_config, weight_map)
         if reason is not None:
             detected[dtype_name] = reason
     return detected
@@ -4591,24 +4753,6 @@ def _expand_e8m0_block_scale(
     )
 
 
-# Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
-# ``.weight`` stays float8_e4m3fn and its ``.scale`` is bitcast to uint8 (the
-# compressed-tensors E8M0 container) under the source key; see
-# ``preprocess_model_type_source_tensors``.
-_DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
-
-
-def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) -> None:
-    """Store DeepSeek-V4.1 Engram E8M0 scales in the compressed-tensors uint8 container.
-
-    The conversion is a bitcast: the E8M0 exponent bytes are preserved verbatim.
-    ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
-    """
-    for name, tensor in list(raw_tensors.items()):
-        if _DEEPSEEK_ENGRAM_TABLE in name and name.endswith(".scale") and tensor.dtype == torch.float8_e8m0fnu:
-            raw_tensors[name] = tensor.contiguous().view(torch.uint8)
-
-
 def preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
@@ -4622,20 +4766,9 @@ def preprocess_model_type_source_tensors(
     if not is_deepseek_v4:
         return raw_tensors, {}
 
-    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
-
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
-            continue
-        if _DEEPSEEK_ENGRAM_TABLE in name:
-            # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
-            # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
-            # the table has hundreds of millions of rows, so neither renaming nor
-            # dequantizing is an option. Keep the source key and float8 weight, and store
-            # the E8M0 scale in the compressed-tensors uint8 container via the bitcast
-            # helper above (the bytes are preserved). ``engram.wkv`` and the other Engram
-            # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]
         scale_name = f"{layer_name}.scale"

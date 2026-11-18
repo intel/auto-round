@@ -139,6 +139,7 @@ from auto_round.utils.model_free_utils import (
     _convert_auto_scheme_layer_config,
     _download_metadata_files,
     _download_single_shard,
+    _find_index_path,
     _fused_nvfp4_projection_groups,
     _get_model_cache_status,
     _is_full_precision_default,
@@ -148,11 +149,11 @@ from auto_round.utils.model_free_utils import (
     _list_weight_shards,
     _load_config,
     _load_source_quant_config,
-    _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
     _PatternMatcher,
     _process_shard,
+    _raise_if_ignored_quantized_source,
     _resolve_source_dir,
     _validate_auto_scheme_options,
     _validate_safetensors_file,
@@ -162,6 +163,7 @@ from auto_round.utils.model_free_utils import (
     detect_model_dtypes,
     handle_model_type_low_precision_source_tensors,
     is_model_free_supported_scheme,
+    load_source_weight_map,
     preprocess_model_type_source_tensors,
 )
 from auto_round.utils.path_safety import resolve_within_directory
@@ -728,6 +730,7 @@ class _ModelFreeCompressorCore:
             _load_source_quant_config(
                 self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
             ),
+            self.source_weight_map,
         ).get("nvfp4")
         if reason is None:
             return
@@ -930,7 +933,7 @@ class _ModelFreeCompressorCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.source_quantization_config
-        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config, self.source_weight_map):
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
                 f"Detected FP8 source model (block_size={self.fp8_block_size}, "
@@ -956,9 +959,7 @@ class _ModelFreeCompressorCore:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         # Source indices live in the isolated metadata cache; never infer streamed
         # source names from output shards, or include remote files outside the index.
-        has_source_index = any(
-            name.endswith((".safetensors.index.json", ".bin.index.json")) for name in os.listdir(search_dir)
-        )
+        has_source_index = _find_index_path(search_dir) is not None
         self.shard_names = _list_weight_shards(search_dir) if not self.is_streaming or has_source_index else []
         if self.is_streaming and not has_source_index:
             from auto_round.utils.model_free_utils import _list_remote_weight_shards
@@ -971,43 +972,22 @@ class _ModelFreeCompressorCore:
         if not self.shard_names:
             raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
 
-    def _build_cross_shard_deps(self) -> None:
-        """Build cross-shard FP8 scale_inv dependency map from index.json.
+    def _load_source_weight_map(self) -> None:
+        """Load the tensor-name -> shard map once so preflight checks never touch tensor data."""
+        search_dir = self.work_dir if self.is_streaming else self.source_dir
+        self.source_weight_map = load_source_weight_map(search_dir, self.shard_names)
 
-        Identifies triples (recipient_shard, donor_shard, scale_inv_tensor) by
-        comparing ``.weight`` and ``.weight_scale_inv`` entries in weight_map.
+    def _build_cross_shard_deps(self) -> None:
+        """Build cross-shard scale dependency maps from ``self.source_weight_map``.
+
+        Identifies triples (recipient_shard, donor_shard, scale_tensor) for FP8
+        ``.weight_scale_inv`` and Inkling NVFP4 ``.scale``/``.scale2`` tensors.
         Stored in ``self.cross_shard_deps`` and ``self.donor_shard_tensors`` for
         use by the shard scheduler and quantization workers.
         """
-        search_dir = self.work_dir if self.is_streaming else self.source_dir
-        # Find the first *.safetensors.index.json in search_dir.
-        index_path: str | None = None
-        st_std = os.path.join(search_dir, "model.safetensors.index.json")
-        if os.path.exists(st_std):
-            index_path = st_std
-        else:
-            candidates = sorted(
-                os.path.join(search_dir, f) for f in os.listdir(search_dir) if f.endswith(".safetensors.index.json")
-            )
-            if candidates:
-                index_path = candidates[0]
-
-        if not index_path:
-            self.cross_shard_deps = {}
-            self.donor_shard_tensors = {}
-            return
-
-        try:
-            weight_map = _load_weight_map_from_index(index_path)
-        except Exception as e:
-            logger.warning(f"Could not load weight_map for cross-shard dep analysis: {e}")
-            self.source_weight_map = {}
-            self.cross_shard_deps = {}
-            self.donor_shard_tensors = {}
-            return
-
-        self.source_weight_map = weight_map
-        self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(
+            self.source_weight_map
+        )
         if self.cross_shard_deps:
             n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
             logger.info(
@@ -1015,6 +995,12 @@ class _ModelFreeCompressorCore:
                 f"{len(self.cross_shard_deps)} recipient shard(s), "
                 f"{len(self.donor_shard_tensors)} donor shard(s)."
             )
+
+    def _check_ignored_quantized_source(self) -> None:
+        """Reject ignored quantized layers before starting any shard workers."""
+        if self.source_weight_map:
+            matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
+            _raise_if_ignored_quantized_source(self.source_weight_map, matcher, self.model_type)
 
     def _prepare_fused_gs_groups(self) -> None:
         """Find fused NVFP4 GS groups split across shards; workers compute their shared GS."""
@@ -1837,13 +1823,17 @@ class _ModelFreeCompressorCore:
 
         # ---- source resolution ----
         self._resolve_source()
-        self._detect_nvfp4_source_model()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
-        self._detect_fp8_source()
         self._resolve_model_type()
         self._discover_shards()
+
+        # ---- index/header-driven preflight (no tensor data is loaded) ----
+        self._load_source_weight_map()
+        self._detect_nvfp4_source_model()
+        self._detect_fp8_source()
         self._build_cross_shard_deps()
+        self._check_ignored_quantized_source()
         self._reorder_shards_by_dependency()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
         self._prepare_resume_state()
