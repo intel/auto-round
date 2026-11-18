@@ -119,6 +119,14 @@ _WARNING_INDEX_PLACEHOLDER = "<idx>"
 # tensors. Splitting these would break loading for such architectures.
 _KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
 
+# model_type -> name fragments of already-quantized source tensors the target loader reads by their
+# source key and layout, so they are never dequantized, renamed or requantized.
+# DeepSeek-V4.1 Engram n-gram table: vLLM maps ``engram.embed.scale`` (not ``.weight_scale``).
+_MODEL_TYPE_PASSTHROUGH_SOURCE: dict[str, tuple[str, ...]] = {
+    "deepseek_v4": (".engram.embed.",),
+    "deepseek_v41": (".engram.embed.",),
+}
+
 
 # _normalize_tensor_name_for_warning moved to auto_round.utils.common to
 # avoid circular imports; keep compatibility by importing it from there.
@@ -709,14 +717,34 @@ def _collect_indexed_quantized_source_layers(
     return layers
 
 
+def _is_model_type_passthrough_source(name: str, model_type: str | None) -> bool:
+    """Return True for already-quantized source tensors that *model_type* must keep in their source layout."""
+    return any(fragment in name for fragment in _MODEL_TYPE_PASSTHROUGH_SOURCE.get((model_type or "").lower(), ()))
+
+
+def _extract_model_type_passthrough_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None,
+) -> dict[str, torch.Tensor]:
+    """Pop the source tensors *model_type* keeps unchanged (source key, dtype and layout)."""
+    return {
+        name: raw_tensors.pop(name)
+        for name in [n for n in raw_tensors if _is_model_type_passthrough_source(n, model_type)]
+    }
+
+
 def _raise_if_ignored_quantized_source(
     weight_map: dict[str, str],
     matcher: _PatternMatcher,
+    model_type: str | None = None,
 ) -> None:
     """Reject ignored quantized source layers before any shard is processed."""
     quantized_layers = _collect_indexed_quantized_source_layers(weight_map)
     ignored_quantized = sorted(
-        layer_name for layer_name in quantized_layers if matcher.matches_ignore_pattern(f"{layer_name}.weight")
+        layer_name
+        for layer_name in quantized_layers
+        if matcher.matches_ignore_pattern(f"{layer_name}.weight")
+        and not _is_model_type_passthrough_source(f"{layer_name}.", model_type)
     )
     if not ignored_quantized:
         return
@@ -2269,11 +2297,10 @@ def _handle_mxfp_source_tensors(
 
     for layer_name, weight_key, scale_key, bits in entries:
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
-        is_ignored = matcher.should_ignore(f"{layer_name}.weight")
         target_is_same_mxfp = (
             scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == bits
         )
-        if target_is_same_mxfp and not is_ignored:
+        if target_is_same_mxfp:
             passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
             passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
             passthrough_layers.append(layer_name)
@@ -2596,6 +2623,8 @@ def _process_shard(
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
     quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
+    # Without an index the preflight weight_map may miss this shard, so check its own tensor names.
+    check_ignored_quantized = _find_index_path(index_dir or os.path.dirname(shard_path)) is None
 
     if shard_path.endswith(".bin"):
         # No unrestricted fallback: this pickle comes from an untrusted artifact.
@@ -2603,11 +2632,16 @@ def _process_shard(
         # Flatten nested state-dict wrappers if present.
         if not isinstance(raw_tensors, dict):
             raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")
+        if check_ignored_quantized:
+            _raise_if_ignored_quantized_source(dict.fromkeys(raw_tensors, shard_path), matcher, model_type)
     else:
         from safetensors import safe_open
 
         with safe_open(shard_path, framework="pt", device="cpu") as f:
-            raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
+            tensor_names = list(f.keys())
+            if check_ignored_quantized:
+                _raise_if_ignored_quantized_source(dict.fromkeys(tensor_names, shard_path), matcher, model_type)
+            raw_tensors = {name: f.get_tensor(name) for name in tensor_names}
 
     raw_tensors = split_fused_expert_tensors(raw_tensors, model_type=model_type)
     # Dequantized sources are FP32 in-flight; those left high-precision are saved as BF16.
@@ -2647,10 +2681,10 @@ def _process_shard(
         )
     )
 
+    output_tensors.update(_extract_model_type_passthrough_tensors(raw_tensors, model_type))
+
     # Preserve original tensors for predefined skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
-    # User-specified ignore layers should still flow through the dequant path
-    # so the saved model exports them in full precision.
     preserved_prefixes: set[str] = set()
     for tname in raw_tensors:
         if tname.endswith((".weight", ".weight_packed", ".qweight")) and matcher.should_skip(tname):
@@ -2743,10 +2777,6 @@ def _process_shard(
         hydrate_only=matcher.nvfp_source_only,
     )
     raw_tensors.update(preserved_tensors)
-    # The Engram table is predefined-skipped and preserved above, so it does not
-    # flow through preprocess_model_type_source_tensors(); apply the U8 scale
-    # bitcast here as well for the actual shard path.
-    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
@@ -4723,24 +4753,6 @@ def _expand_e8m0_block_scale(
     )
 
 
-# Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
-# ``.weight`` stays float8_e4m3fn and its ``.scale`` is bitcast to uint8 (the
-# compressed-tensors E8M0 container) under the source key; see
-# ``preprocess_model_type_source_tensors``.
-_DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
-
-
-def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) -> None:
-    """Store DeepSeek-V4.1 Engram E8M0 scales in the compressed-tensors uint8 container.
-
-    The conversion is a bitcast: the E8M0 exponent bytes are preserved verbatim.
-    ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
-    """
-    for name, tensor in list(raw_tensors.items()):
-        if _DEEPSEEK_ENGRAM_TABLE in name and name.endswith(".scale") and tensor.dtype == torch.float8_e8m0fnu:
-            raw_tensors[name] = tensor.contiguous().view(torch.uint8)
-
-
 def preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
@@ -4754,20 +4766,9 @@ def preprocess_model_type_source_tensors(
     if not is_deepseek_v4:
         return raw_tensors, {}
 
-    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
-
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
-            continue
-        if _DEEPSEEK_ENGRAM_TABLE in name:
-            # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
-            # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
-            # the table has hundreds of millions of rows, so neither renaming nor
-            # dequantizing is an option. Keep the source key and float8 weight, and store
-            # the E8M0 scale in the compressed-tensors uint8 container via the bitcast
-            # helper above (the bytes are preserved). ``engram.wkv`` and the other Engram
-            # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]
         scale_name = f"{layer_name}.scale"

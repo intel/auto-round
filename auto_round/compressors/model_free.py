@@ -1000,7 +1000,7 @@ class _ModelFreeCompressorCore:
         """Reject ignored quantized layers before starting any shard workers."""
         if self.source_weight_map:
             matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
-            _raise_if_ignored_quantized_source(self.source_weight_map, matcher)
+            _raise_if_ignored_quantized_source(self.source_weight_map, matcher, self.model_type)
 
     def _prepare_fused_gs_groups(self) -> None:
         """Find fused NVFP4 GS groups split across shards; workers compute their shared GS."""

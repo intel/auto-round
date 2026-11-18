@@ -1111,6 +1111,32 @@ def test_index_detects_quantized_source_with_scale_companions(weight_name, scale
     assert _collect_indexed_quantized_source_layers(weight_map) == {layer_name}
 
 
+@pytest.mark.parametrize("shard_name", ["model.safetensors", "pytorch_model.bin"])
+def test_process_shard_without_index_rejects_ignored_quantized_source(tmp_path, shard_name):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = _nvfp4_source_tensors(prefix)
+    shard_path = str(tmp_path / shard_name)
+    if shard_name.endswith(".bin"):
+        torch.save(tensors, shard_path)
+    else:
+        save_file(tensors, shard_path)
+
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _process_shard(shard_path, _DEFAULT_SCHEME, {}, ["down_proj"])
+
+
+def test_model_type_passthrough_source_is_not_rejected_when_ignored():
+    weight_map = {
+        "model.layers.1.engram.embed.weight": "model.safetensors",
+        "model.layers.1.engram.embed.scale": "model.safetensors",
+    }
+    matcher = _PatternMatcher(ignore_patterns=["embed"], layer_config={}, default_scheme=_DEFAULT_SCHEME)
+
+    _raise_if_ignored_quantized_source(weight_map, matcher, model_type="deepseek_v41")
+    with pytest.raises(ValueError, match="already-quantized source layer"):
+        _raise_if_ignored_quantized_source(weight_map, matcher, model_type="llama")
+
+
 def test_index_detects_ignored_quantized_weight_before_cross_shard_hydration(tmp_path):
     prefix = "model.layers.0.mlp.down_proj"
     shard_path = tmp_path / "model-00001-of-00002.safetensors"
