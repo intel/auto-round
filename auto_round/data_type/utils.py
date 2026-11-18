@@ -554,7 +554,7 @@ def register_act_max_hooks(block: Module, act_data_type=None) -> list:
         inputs, _, _ = reshape_pad_tensor_by_group_size(inputs, module.act_group_size)
         act_max = inputs.abs().amax(dim=-1)
         if is_nvfp:
-            act_max = act_max.amax().reshape(1)
+            act_max = act_max.amax().reshape(1) * envs.AR_NVFP_ACT_AMAX_ALPHA
         previous = getattr(module, "act_max", None)
         if previous is not None and previous.numel():
             act_max = act_max.to(previous.device)

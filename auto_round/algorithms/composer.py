@@ -431,6 +431,7 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
+        from auto_round import envs
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
         from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
 
@@ -450,6 +451,8 @@ class AlgorithmComposer:
                 continue
             inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
             act_max = torch.max(torch.abs(inp), dim=-1).values
+            if is_act_nv_fp_flag:
+                act_max = act_max * envs.AR_NVFP_ACT_AMAX_ALPHA
 
             if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
                 layer.act_max = act_max
