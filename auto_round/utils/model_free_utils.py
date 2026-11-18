@@ -3280,10 +3280,11 @@ def _build_mxfp_quantization_config(
             qconfig.update(_get_llm_compressor_metadata())
             return qconfig
         if is_nv_fp(actual_dt):
-            fmt = "nvfp4-pack-quantized"
+            scheme_name, fmt = "NVFP4", "nvfp4-pack-quantized"
+        elif actual_bits == 4:
+            scheme_name, fmt = "MXFP4", "mxfp4-pack-quantized"
         else:
-            fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
-        scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
+            scheme_name, fmt = "MXFP8", "mxfp8-quantized"
         qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
         if is_fp_default and scheme_groups:
             targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
