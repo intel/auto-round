@@ -199,7 +199,7 @@ def validate_adapter_provenance(
             if source.lora_down.shape[0] != output_rank:
                 raise ValueError(
                     f"{record.prefix} source rank={source.lora_down.shape[0]} must equal output rank={output_rank}; "
-                    "the Nunchaku schema stores one configured rank, so adapters must recompose effective source "
+                    "SVDQuant export stores one configured rank, so adapters must recompose effective source "
                     "weights and decompose them at that configured rank; exact rank-sum fusion is unsupported"
                 )
             referenced_ids.add(id(source))
