@@ -171,6 +171,57 @@ lm-eval，完整测试集，bf16 forward。
 配置 A 总耗时 26 分 21 秒；配置 B 因为要对基础平面做 sign-SGD 调优，额外多花 6
 小时。
 
+配置 A 就是 [量化命令](#量化命令) 那一节的单次命令，它会同时写出 `base/` 和
+`residual/`：
+
+```bash
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round:rrq --alg_configs rrq --iters 0 \
+    --ignore_layers mtp \
+    --nsamples 128 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/A
+```
+
+配置 B 分两步：先用 sign-SGD 调优基础平面，再由它派生残差平面。注意这里基础平面
+用的是 `--format auto_round` 而不是 `auto_round:rrq`——RRQ 导出器会在一次流程中
+同时写基础与残差平面，并且残差也用 RTN 生成，这不是 B 想要的结果。
+
+```bash
+# 第一步：用完整 AutoRound 调优生成基础平面（4 卡约 6 小时 09 分）
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round --alg_configs auto_round --iters 1000 \
+    --ignore_layers mtp \
+    --nsamples 512 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/B_base
+```
+
+```python
+# 第二步：由该基础模型生成残差平面（8 卡约 5 分 10 秒）
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/B_base",
+    raw_model="Qwen/Qwen3.8-27B",
+    output_dir="./rrq_out/B_residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+两种配置的加载方式：
+
+```python
+from auto_round import load_rrq_model
+
+# A：基础与残差由同一次导出产生，是同级目录
+model = load_rrq_model("./rrq_out/A/base", "./rrq_out/A/residual", active_bits=4)
+
+# B：残差是单独生成的，路径与基础模型无关
+model = load_rrq_model("./rrq_out/B_base", "./rrq_out/B_residual", active_bits=4)
+```
+
 ### 精度对比
 
 lm-eval，完整测试集，bf16 前向，评测流程完全一致。

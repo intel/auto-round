@@ -185,6 +185,60 @@ the base plane was produced.
 Configuration A takes 26 min 21 s in total; B costs an additional 6 h because of
 the sign-SGD tuning of the base plane.
 
+Configuration A is the one-pass command from
+[Quantization command](#quantization-command) — it writes `base/` and
+`residual/` together:
+
+```bash
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round:rrq --alg_configs rrq --iters 0 \
+    --ignore_layers mtp \
+    --nsamples 128 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/A
+```
+
+Configuration B is two steps: tune the base with sign-SGD, then derive the
+residual planes from it. Note that `--format auto_round` is used for the base
+here, not `auto_round:rrq` — the RRQ exporter writes base and residual in one
+pass and would also run the residual generation with RTN, which is not what B
+wants.
+
+```bash
+# Step 1: base plane with full AutoRound tuning (6 h 09 m on 4 GPUs)
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round --alg_configs auto_round --iters 1000 \
+    --ignore_layers mtp \
+    --nsamples 512 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/B_base
+```
+
+```python
+# Step 2: residual planes from that base (5 min 10 s on 8 GPUs)
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/B_base",
+    raw_model="Qwen/Qwen3.8-27B",
+    output_dir="./rrq_out/B_residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+Loading either configuration:
+
+```python
+from auto_round import load_rrq_model
+
+# A: base and residual are siblings from the one-pass export
+model = load_rrq_model("./rrq_out/A/base", "./rrq_out/A/residual", active_bits=4)
+
+# B: the residual was generated separately, so its path is independent
+model = load_rrq_model("./rrq_out/B_base", "./rrq_out/B_residual", active_bits=4)
+```
+
 ### Accuracy comparison
 
 lm-eval, full test sets, bf16 forward, identical evaluation harness.
