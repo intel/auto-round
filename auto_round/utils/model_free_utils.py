@@ -35,9 +35,12 @@ import torch
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.formats.compressed_tensors.utils import add_routed_experts_if_moe as _add_routed_experts_if_moe
+from auto_round.export.formats.compressed_tensors.utils import assign_config_group_targets
 from auto_round.export.formats.compressed_tensors.utils import (
     ignore_fused_experts_for_vllm as _ignore_fused_experts_for_vllm,
 )
+from auto_round.export.formats.compressed_tensors.utils import normalize_expert_groups as _normalize_expert_groups
+from auto_round.export.formats.compressed_tensors.utils import select_fallback_group
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
@@ -47,6 +50,7 @@ from auto_round.utils.path_safety import (
     sanitize_shard_name,
     validate_weight_map,
 )
+from auto_round.utils.regex import compress_autoround_extra_config
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
 _NVFP4_E5M3_GS_DATA_TYPE = "nvfp4_v2_gs"
@@ -62,7 +66,8 @@ _SUPPORTED_INT_BITS = (2, 4, 8)
 #   "head"     – DeepSeek v4
 #   "embed_out" – Pythia / Dolly
 #   "output"   – some InternLM variants
-_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output")
+#   "proj_out" – diffusion component output (matched only at the root)
+_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output", "proj_out")
 SUPPORTED_PRESET_SCHEMES = (
     "W2A16",
     "W2A16G32",
@@ -2738,6 +2743,10 @@ def _process_shard(
         hydrate_only=matcher.nvfp_source_only,
     )
     raw_tensors.update(preserved_tensors)
+    # The Engram table is predefined-skipped and preserved above, so it does not
+    # flow through preprocess_model_type_source_tensors(); apply the U8 scale
+    # bitcast here as well for the actual shard path.
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
@@ -3209,6 +3218,7 @@ def _build_mxfp_quantization_config(
     quantized_layers: list[str],
     ignored_layers: list[str],
     layer_config: dict | None = None,
+    largest_group_fallback: bool = True,
 ) -> dict:
     """Build a compressed-tensors / llm-compressor style quantization_config
     dict for MXFP4 / MXFP8 model-free output, including mixed-precision cases.
@@ -3217,9 +3227,10 @@ def _build_mxfp_quantization_config(
     data_type (e.g. some layers are MXFP8 while the default is MXFP4, or
     some layers use NVFP4_E5M3 while the default is MXFP8), the function
     creates one ``config_group`` per distinct ``(bits, data_type)`` pair.
-    Override groups list their layers explicitly; the default group uses
-    ``targets=["Linear"]`` as a catch-all.  The top-level ``"format"`` is
-    set to ``"mixed-precision"`` when more than one group is produced.
+    When a default group exists, the largest group (or the default group when
+    ``largest_group_fallback`` is False) uses ``targets=["Linear"]`` as a
+    catch-all and the others list their layers explicitly.  The top-level
+    ``"format"`` is set to ``"mixed-precision"`` when more than one group is produced.
 
     Mirrors the per-group format produced by
     :mod:`auto_round.export.formats.compressed_tensors.float`.
@@ -3300,27 +3311,29 @@ def _build_mxfp_quantization_config(
         return qconfig
 
     # Mixed precision: build one config_group per distinct (bits, data_type).
-    # Override groups (non-default key) come first, default group last,
-    # ordered by descending bit-width within each partition so that the
-    # higher-precision group gets the lower group index.
+    # Explicit groups come first and the catch-all group last, ordered by
+    # descending bit-width so that the higher-precision group gets the lower index.
     default_key = (bits, default_data_type)
+    fallback_key = None
+    if default_key in scheme_groups:
+        fallback_key = select_fallback_group(scheme_groups, default_key) if largest_group_fallback else default_key
+    group_targets = assign_config_group_targets(
+        scheme_groups, ["Linear"] if fallback_key is not None else None, fallback_key
+    )
     override_items = sorted(
-        [(key, layers) for key, layers in scheme_groups.items() if key != default_key],
+        [(key, layers) for key, layers in scheme_groups.items() if key != fallback_key],
         key=lambda x: x[0][0],
         reverse=True,
     )
-    default_item = (default_key, scheme_groups[default_key]) if default_key in scheme_groups else None
-    ordered = override_items + ([default_item] if default_item else [])
+    fallback_item = (fallback_key, scheme_groups[fallback_key]) if fallback_key is not None else None
+    ordered = override_items + ([fallback_item] if fallback_item else [])
 
     config_groups: dict = {}
     group_formats: dict[str, str] = {}
     for idx, ((group_bits, group_dt), layer_names) in enumerate(ordered):
         group_name = f"group_{idx}"
-        is_default_group = (group_bits, group_dt) == default_key
-        targets = ["Linear"] if is_default_group else layer_names
-        targets = _add_routed_experts_if_moe(targets, layer_names)
         group_scheme, fmt = _get_mxfp_group_scheme_and_format(group_bits, group_dt, ignore)
-        group_scheme.targets = targets
+        group_scheme.targets = group_targets[(group_bits, group_dt)]
         config_groups[group_name] = group_scheme
         group_formats[group_name] = fmt
 
@@ -3446,6 +3459,7 @@ def _build_mxfp_autoround_quantization_config(
             lm_head_cfg = (layer_config or {}).get(lm_head_name, default_scheme)
             extra_config[lm_head_name] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
 
+    extra_config = compress_autoround_extra_config(extra_config, set(quantized_layers) | set(ignored_layers))
     if extra_config:
         qconfig["extra_config"] = extra_config
 
@@ -3671,7 +3685,7 @@ def _build_quantization_config(
             qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = "nvfp4-pack-quantized"
         qconfig.update(_get_llm_compressor_metadata())
-        return _ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers)
+        return _normalize_expert_groups(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -3686,6 +3700,8 @@ def _build_quantization_config(
             quantized_layers=quantized_layers,
             ignored_layers=ignored_layers,
             layer_config=layer_config,
+            # Source conversion treats the catch-all group as the default MXFP scheme.
+            largest_group_fallback=source_quant_config is None,
         )
         source_ct = _source_config_to_ct(source_quant_config)
         if source_ct:
@@ -3695,7 +3711,7 @@ def _build_quantization_config(
             "compressed-tensors"
         ):
             qconfig = _explicit_mxfp_targets(qconfig, quantized_layers)
-        return _ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers)
+        return _normalize_expert_groups(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
 
     # When the default is full-precision (BF16/FP16) but INT layers were
     # quantized via layer_config, derive the dominant INT scheme and use it as
@@ -3778,6 +3794,7 @@ def _build_quantization_config(
             lm_head_cfg = layer_config.get(lm_head_name, default_scheme)
             extra_config[lm_head_name] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
 
+    extra_config = compress_autoround_extra_config(extra_config, quantized_layer_set | set(ignored_layers))
     if extra_config:
         qconfig["extra_config"] = extra_config
 
@@ -4706,6 +4723,24 @@ def _expand_e8m0_block_scale(
     )
 
 
+# Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
+# ``.weight`` stays float8_e4m3fn and its ``.scale`` is bitcast to uint8 (the
+# compressed-tensors E8M0 container) under the source key; see
+# ``preprocess_model_type_source_tensors``.
+_DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
+
+
+def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) -> None:
+    """Store DeepSeek-V4.1 Engram E8M0 scales in the compressed-tensors uint8 container.
+
+    The conversion is a bitcast: the E8M0 exponent bytes are preserved verbatim.
+    ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
+    """
+    for name, tensor in list(raw_tensors.items()):
+        if _DEEPSEEK_ENGRAM_TABLE in name and name.endswith(".scale") and tensor.dtype == torch.float8_e8m0fnu:
+            raw_tensors[name] = tensor.contiguous().view(torch.uint8)
+
+
 def preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
@@ -4715,13 +4750,24 @@ def preprocess_model_type_source_tensors(
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
-    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v4 = model_type in ("deepseek_v4", "deepseek_v41")
     if not is_deepseek_v4:
         return raw_tensors, {}
+
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
 
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
+            continue
+        if _DEEPSEEK_ENGRAM_TABLE in name:
+            # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
+            # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
+            # the table has hundreds of millions of rows, so neither renaming nor
+            # dequantizing is an option. Keep the source key and float8 weight, and store
+            # the E8M0 scale in the compressed-tensors uint8 container via the bitcast
+            # helper above (the bytes are preserved). ``engram.wkv`` and the other Engram
+            # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]
         scale_name = f"{layer_name}.scale"

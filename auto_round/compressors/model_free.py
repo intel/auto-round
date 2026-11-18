@@ -807,6 +807,9 @@ class _ModelFreeCompressorCore:
                 pattern_in_config = any(
                     key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
                 )
+                # Anchor only the component output; Flux block projections must remain quantizable.
+                if lm_head_pattern == "proj_out":
+                    lm_head_pattern = "^proj_out$"
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:
                     ignore_patterns.append(lm_head_pattern)
 

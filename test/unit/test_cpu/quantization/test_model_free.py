@@ -504,6 +504,60 @@ class TestBuildIgnorePatterns:
         core._build_ignore_patterns()
         assert "output" not in core.ignore_patterns
 
+    @pytest.mark.parametrize(
+        "layer_name", ["proj_out", "single_transformer_blocks.0.proj_out", "blocks.0.attn.proj_out"]
+    )
+    @pytest.mark.parametrize("override", [None, "quant_lm_head", "layer_config"])
+    def test_proj_out(self, tmp_path, layer_name, override):
+        # Only the component output is excluded; Flux block projections remain quantized.
+        core = self._make_core(
+            quant_lm_head=override == "quant_lm_head",
+            layer_config={layer_name: {"bits": 4}} if override == "layer_config" else None,
+        )
+        core._build_ignore_patterns()
+        matcher = _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme)
+        excluded = layer_name == "proj_out" and override is None
+        assert matcher.should_ignore(layer_name + ".weight") == excluded
+        assert not matcher.should_skip(layer_name + ".weight")
+        weight = torch.randn(32, 128)
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({layer_name + ".weight": weight}, shard_path)
+        output, quantized, ignored = _process_shard(
+            shard_path,
+            core.default_scheme,
+            core.layer_config,
+            core.ignore_patterns,
+            enable_torch_compile=False,
+        )
+        if excluded:
+            assert layer_name in ignored and layer_name not in quantized
+            assert torch.equal(output[layer_name + ".weight"], weight)
+        else:
+            assert layer_name in quantized and layer_name not in ignored
+            assert layer_name + ".qweight" in output
+
+    @pytest.mark.parametrize("scheme", ["W4A16", "MXFP4", "NVFP4_E5M3"])
+    @pytest.mark.parametrize("override", ["quant_lm_head", "layer_config"])
+    def test_quantized_proj_out_in_extra_config(self, scheme, override):
+        core = self._make_core(scheme=scheme, quant_lm_head=override == "quant_lm_head")
+        if override == "layer_config":
+            core.layer_config["proj_out"] = dict(core.default_scheme)
+        core._build_ignore_patterns()
+        assert not _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme).should_ignore(
+            "proj_out.weight"
+        )
+        qconfig = _build_quantization_config(
+            core.default_scheme,
+            core.layer_config,
+            core.ignore_patterns,
+            quantized_layers=["blocks.0.fc1", "proj_out"],
+            ignored_layers=[],
+            block_name_to_quantize="blocks",
+        )
+        assert qconfig["extra_config"]["proj_out"] == {
+            key: value for key, value in core.default_scheme.items() if value is not None and not key.startswith("_")
+        }
+
 
 # ===========================================================================
 #  _process_shard
@@ -2203,7 +2257,11 @@ class TestNVFP4ToMXFP4:
             _assert_mxfp4_layer(tensors, expert)
         targets = next(iter(qc["config_groups"].values()))["targets"]
         assert "Linear" not in targets
-        assert sorted(targets) == sorted(experts + ["RoutedExperts"])
+        assert "RoutedExperts" in targets
+        assert experts[0] in targets
+        regexes = [re.compile(t[3:]) for t in targets if t.startswith("re:")]
+        assert any(p.fullmatch(experts[1]) for p in regexes)
+        assert not any(p.fullmatch("model.layers.0.block_sparse_moe.experts.2.w1") for p in regexes)
 
     @pytest.mark.parametrize(
         "qc",
