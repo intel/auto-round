@@ -135,7 +135,10 @@ class CustomizedTritonAutoTuner(triton.KernelInterface):
                 timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
                 bench_end = time.time()
                 self.bench_time = bench_end - bench_start
-                self.cache[key] = builtins.min(timings, key=timings.get)
+                # `do_bench` returns a list of quantiles while the OutOfResources path
+                # returns a tuple, so comparing the values directly raises TypeError once
+                # two configs tie on the first element. Compare them as tuples instead.
+                self.cache[key] = builtins.min(timings, key=lambda config: tuple(timings[config]))
                 self.hook(args)
                 self.configs_timings = timings
             config = self.cache[key]
