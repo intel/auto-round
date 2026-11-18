@@ -170,7 +170,9 @@ def quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq=None, tra
 class QuantLinearFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, qweight, scales, qzeros, g_idx, bits, maxq):
-        output = quant_matmul_248(input, qweight, scales, qzeros, g_idx, bits, maxq)
+        from auto_round_extension.triton.triton_utils.kernels import quant_matmul_248 as fused_matmul
+
+        output = fused_matmul(input, qweight, scales, qzeros, g_idx, bits, maxq)
         ctx.save_for_backward(qweight, scales, qzeros, g_idx)
         ctx.bits, ctx.maxq = bits, maxq
         return output
@@ -182,5 +184,7 @@ class QuantLinearFunction(torch.autograd.Function):
         grad_input = None
 
         if ctx.needs_input_grad[0]:
-            grad_input = quant_matmul_248(grad_output, qweight, scales, qzeros, g_idx, bits, maxq, transpose=True)
+            from auto_round_extension.triton.triton_utils.kernels import transpose_quant_matmul_248 as fused_transposed
+
+            grad_input = fused_transposed(grad_output, qweight, scales, qzeros, g_idx, bits, maxq)
         return grad_input, None, None, None, None, None, None
