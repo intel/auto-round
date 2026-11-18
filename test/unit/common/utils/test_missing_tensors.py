@@ -402,6 +402,18 @@ class TestQuantizeWeightRtn:
         z = (qz[:, :, None].to(torch.int64) >> (torch.arange(8, dtype=torch.int32) * 4)[None, None, :]) & 0xF
         assert (z == 7).all()
 
+    @pytest.mark.parametrize("packing,stored_zp", [("auto_round:auto_gptq", 7), ("auto_round", 8)])
+    def test_sym_opt_rtn_matches_qdq_scale(self, packing, stored_zp):
+        from auto_round.data_type.int import quant_tensor_opt_rtn_sym
+
+        torch.manual_seed(5)
+        w = torch.randn(16, 64)
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=32, sym=True, disable_opt_rtn=False, packing=packing)
+        _, ref_scale, _ = quant_tensor_opt_rtn_sym(w, bits=4, group_size=32)
+        assert torch.equal(sc, ref_scale.reshape(16, 2).t().to(torch.float16))
+        _, z, _ = self._unpack_4bit(qw, qz, sc)
+        assert (z == stored_zp).all()
+
     def test_output_shapes_8bit(self):
         out_f, in_f, bits, gs = 16, 128, 8, 128
         qw, qz, sc = quantize_weight_rtn(

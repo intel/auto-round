@@ -538,7 +538,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=[],
             format="llm_compressor",
@@ -552,7 +551,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=["model.layers.0.mlp.down_proj"],
             ignored_layers=[],
             format="llm_compressor",
@@ -566,7 +564,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
             format="llm_compressor",
@@ -719,7 +716,6 @@ class TestBuildQuantizationConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=[],
             ignored_layers=ignored,
         )
@@ -1420,7 +1416,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=[],
             format="auto_round",
@@ -1434,7 +1429,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=["lm_head"],
             format="llm_compressor",

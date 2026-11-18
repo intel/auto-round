@@ -59,7 +59,8 @@ from safetensors.torch import save_file
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _ModelFreeCompressorCore,
-    _process_single_shard_task,
+    _prefetch_shard,
+    _quantize_local_shard_task,
 )
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils.model_free_utils import (
@@ -464,7 +465,9 @@ class TestBuildIgnorePatterns:
         """Without quant_lm_head or an explicit layer_config entry, lm_head is skipped."""
         core = self._make_core()
         core._build_ignore_patterns()
-        assert "lm_head" in core.ignore_patterns
+        matcher = _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme)
+        assert matcher.should_ignore("lm_head.weight")
+        assert not matcher.should_ignore("model.layers.0.self_attn.output.dense.weight")
 
     def test_lm_head_not_ignored_when_quant_lm_head_true(self):
         """quant_lm_head=True removes lm_head from ignore list."""
@@ -490,7 +493,9 @@ class TestBuildIgnorePatterns:
         core._build_ignore_patterns()
         # 'lm_head' itself is unblocked, but 'head' (deepseek v4) remains ignored
         assert "lm_head" not in core.ignore_patterns
-        assert "head" in core.ignore_patterns
+        matcher = _PatternMatcher(core.ignore_patterns, core.layer_config, core.default_scheme)
+        assert matcher.should_ignore("model.head.weight")
+        assert not matcher.should_ignore("model.layers.0.self_attn.output.dense.weight")
 
     def test_embed_out_not_ignored_when_in_layer_config(self):
         """Pythia/Dolly models use 'embed_out' as the lm_head layer name."""
@@ -549,7 +554,6 @@ class TestBuildIgnorePatterns:
         qconfig = _build_quantization_config(
             core.default_scheme,
             core.layer_config,
-            core.ignore_patterns,
             quantized_layers=["blocks.0.fc1", "proj_out"],
             ignored_layers=[],
             block_name_to_quantize="blocks",
@@ -946,6 +950,12 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
     downloads = []
     overrides = {}
     retained_donor_tensors = {}
+    fused_scale_computations = []
+    original_compute_scales = module._compute_cross_shard_fused_global_scales
+
+    def compute_scales(groups, *args, **kwargs):
+        fused_scale_computations.extend(tuple(group) for group in groups)
+        return original_compute_scales(groups, *args, **kwargs)
 
     def prefetch(_model, shard_name, *_args):
         downloads.append(shard_name)
@@ -962,6 +972,7 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
         return {}, [], []
 
     monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_compute_cross_shard_fused_global_scales", compute_scales)
     monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
     monkeypatch.setattr(module, "_process_shard", process_shard)
     monkeypatch.setattr(module, "_write_output_shard", lambda *_args: None)
@@ -970,6 +981,8 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
     core._process_all_shards_streaming_pipeline()
 
     assert downloads == shard_names
+    assert len(fused_scale_computations) == len(pairs)
+    assert len(set(fused_scale_computations)) == len(pairs)
     for gate, up, donor, recipient, gate_weight, up_weight in pairs:
         expected_scale = min(
             calculate_gparam_e5m3(gate_weight.float() * 0.5, group_size=16).item(),
@@ -1427,19 +1440,18 @@ class TestModelFreeQuantize:
             _fake_download_single_shard,
         )
 
-        result = _process_single_shard_task(
-            shard_idx=0,
-            shard_name=shard_name,
-            model_name_or_path="org/dummy-model",
-            work_dir=output_dir,
-            source_dir="",
-            is_streaming=True,
+        source_path = _prefetch_shard("org/dummy-model", shard_name, output_dir, "", True)
+        result = _quantize_local_shard_task(
+            0,
+            shard_name,
+            shard_path=source_path,
             device="cpu",
             default_scheme=_DEFAULT_SCHEME,
             layer_config={},
             ignore_patterns=["lm_head"],
             fp8_block_size=None,
             model_type=None,
+            source_quantization_config=None,
             quant_output_dir=output_dir,
             total_shards=1,
         )
@@ -1636,7 +1648,6 @@ class TestModelFreeQuantize:
                 "_discover_shards",
                 "_load_source_weight_map",
                 "_build_cross_shard_deps",
-                "_reorder_shards_by_dependency",
             ):
                 monkeypatch.setattr(core, method_name, lambda: None)
             monkeypatch.setattr(core, "_resolve_shard_parallelism", lambda: (1, "test"))
