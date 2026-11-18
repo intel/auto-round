@@ -113,6 +113,16 @@
 <td align="center">58.00</td>
 <td align="center">43.80</td>
 </tr>
+<tr>
+<td>mix_d</td>
+<td align="center">98.00<br><sub>100 / 100 / 100 / 93.33 / 96.67</sub></td>
+<td align="center">89.80<br><sub>89.39 / 89.39 / 90.91 / 90.40 / 88.89</sub></td>
+<td align="center">–</td>
+<td align="center">85.41</td>
+<td align="center">91.18</td>
+<td align="center">66.00</td>
+<td align="center">–</td>
+</tr>
 </tbody>
 </table>
 
@@ -201,6 +211,14 @@
 <td align="center">68.75<br><sub>67.7 / 69.8</sub></td>
 <td align="center">77.00</td>
 <td align="center"><b>73.50</b></td>
+</tr>
+<tr>
+<td>mix_d</td>
+<td align="center">65.33<br><sub>66.67 / 60 / 63.33 / 63.33 / 73.33</sub></td>
+<td align="center">61.42<br><sub>57.58 / 62.63 / 62.63 / 60.10 / 64.14</sub></td>
+<td align="center">–</td>
+<td align="center">76.20</td>
+<td align="center">58.39</td>
 </tr>
 </tbody>
 </table>
