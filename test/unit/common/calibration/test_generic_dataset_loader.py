@@ -483,3 +483,17 @@ class TestGetDatasetIntegration:
 
         assert len(ds) >= 1
         assert "input_ids" in ds.column_names
+
+    @pytest.mark.parametrize("dataset_name", ["HuggingFaceFW/fineweb", "pytest/code", "pytest/math"])
+    def test_unregistered_name_is_not_matched_by_substring(self, tokenizer, monkeypatch, dataset_name):
+        # "fineweb" is a substring of the registered "HuggingFaceFW/fineweb-edu",
+        # "code" of "codeparrot/github-code-clean" and "math" of
+        # "qwedsacf/competition_math", but these are different datasets and
+        # must go to the generic loader with the name the user gave.
+        samples = [{"text": "abcdefghij"} for _ in range(3)]
+        calls = []
+        monkeypatch.setattr(cd, "load_dataset", _make_load_dataset(FakeIterableDataset(samples), calls))
+
+        cd.get_dataset(tokenizer, seqlen=5, dataset_name=dataset_name, nsamples=10)
+
+        assert calls and all(c["args"][0] == dataset_name for c in calls)
