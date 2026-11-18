@@ -138,8 +138,10 @@ def quant_tensor_rtn_sym(
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
         group_size: Number of elements to share scale for quantization
-        v: Rounding value perturbation
         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+        min_scale: Minimum scale coefficient for tensor
+        max_scale: Maximum scale coefficient for tensor
+        scale_dtype: dtype of the quantized scale
 
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
