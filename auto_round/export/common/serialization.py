@@ -460,7 +460,24 @@ def save_model(
         _save_model_configs(model, save_dir)
     else:
         export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        native_v4_export = (
+            getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4"
+            and isinstance(getattr(model.config, "quantization_config", None), dict)
+            and model.config.quantization_config.get("quant_method") == "compressed-tensors"
+        )
+        if native_v4_export:
+            from auto_round.export.common.deepseek_v4_names import prepare_native_export
+
+            export_state_dict = prepare_native_export(
+                model,
+                model.state_dict() if export_state_dict is None else export_state_dict,
+                _resolve_model_source_dir(model),
+            )
         save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
+        if native_v4_export:
+            # Only restore names. Reversing FP8 dequantization or expert fusion
+            # would reinterpret packed NVFP4 bytes and corrupt their payload.
+            save_kwargs["save_original_format"] = False
         try:
             model.save_pretrained(
                 save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
