@@ -62,7 +62,8 @@ _SUPPORTED_INT_BITS = (2, 4, 8)
 #   "head"     – DeepSeek v4
 #   "embed_out" – Pythia / Dolly
 #   "output"   – some InternLM variants
-_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output")
+#   "proj_out" – diffusion component output (matched only at the root)
+_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output", "proj_out")
 SUPPORTED_PRESET_SCHEMES = (
     "W2A16",
     "W2A16G32",
