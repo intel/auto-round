@@ -2132,7 +2132,11 @@ class TestNVFP4ToMXFP4:
             _assert_mxfp4_layer(tensors, expert)
         targets = next(iter(qc["config_groups"].values()))["targets"]
         assert "Linear" not in targets
-        assert sorted(targets) == sorted(experts + ["RoutedExperts"])
+        assert "RoutedExperts" in targets
+        assert experts[0] in targets
+        regexes = [re.compile(t[3:]) for t in targets if t.startswith("re:")]
+        assert any(p.fullmatch(experts[1]) for p in regexes)
+        assert not any(p.fullmatch("model.layers.0.block_sparse_moe.experts.2.w1") for p in regexes)
 
     @pytest.mark.parametrize(
         "qc",

@@ -477,6 +477,7 @@ class TestBuildMxfpQuantizationConfigMixedPrecisionMoe:
         dense_layers = [
             "model.layers.0.mlp.down_proj",
             "model.layers.0.mlp.up_proj",
+            "model.layers.0.mlp.gate_proj",
         ]
         all_layers = moe_layers + dense_layers
 
@@ -569,26 +570,24 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
             ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
             format="llm_compressor",
         )
-        assert qconfig["ignore"] == [r"re:^model\.layers\.2\.mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+        assert qconfig["ignore"] == [
+            f"model.layers.2.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")
+        ]
 
 
 class TestIgnoreFusedExpertsForVllm:
-    _ENTRY = r"re:^model\.layers\.0\.mlp\.experts\.\d+\.(gate|up|down)_proj$"
+    _ENTRIES = [f"model.layers.0.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")]
 
     def _qconfig(self, targets):
         return {"config_groups": {"group_0": {"targets": targets}}, "ignore": ["lm_head"]}
 
     def test_adds_entry_matching_vllm_probe_names(self):
-        import re
-
         qconfig = _ignore_fused_experts_for_vllm(
             self._qconfig(["Linear", "RoutedExperts"]),
             ["model.layers.0.mlp.experts.w13_weight", "model.layers.0.mlp.experts.w2_weight"],
             [],
         )
-        assert qconfig["ignore"] == ["lm_head", self._ENTRY]
-        for proj in ("gate_proj", "up_proj", "down_proj"):
-            assert re.match(self._ENTRY[3:], f"model.layers.0.mlp.experts.0.{proj}")
+        assert qconfig["ignore"] == ["lm_head", *self._ENTRIES]
 
     def test_no_routed_experts_no_change(self):
         qconfig = _ignore_fused_experts_for_vllm(
