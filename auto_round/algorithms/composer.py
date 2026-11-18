@@ -452,7 +452,7 @@ class AlgorithmComposer:
             inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
             act_max = torch.max(torch.abs(inp), dim=-1).values
             if is_act_nv_fp_flag:
-                act_max = act_max * envs.AR_NVFP_ACT_AMAX_ALPHA
+                act_max = act_max.to(torch.float32) * envs.AR_NVFP_ACT_AMAX_ALPHA
 
             if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
                 layer.act_max = act_max

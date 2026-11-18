@@ -13,10 +13,14 @@
 # limitations under the License.
 """Tests for ``AR_NVFP_ACT_AMAX_ALPHA``, which scales the collected NVFP activation amax."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from auto_round import envs
+from auto_round.algorithms.composer import AlgorithmComposer
+from auto_round.algorithms.quantization.utils import register_act_max_hooks as register_alternate_act_max_hooks
 from auto_round.data_type.utils import register_act_max_hooks
 from auto_round.experimental.kv_cache import QuantizedKVParameterCache
 
@@ -69,6 +73,51 @@ def test_repeated_collection_does_not_compound(monkeypatch):
     for handle in handles:
         handle.remove()
     assert layer.act_max.item() == pytest.approx(6.0)
+
+
+def _nvfp_identity_layer():
+    layer = torch.nn.Identity()
+    layer.bits, layer.act_bits, layer.act_dynamic = 4, 4, False
+    layer.data_type = layer.act_data_type = "nv_fp4_with_static_gs"
+    layer.act_group_size = 16
+    return layer
+
+
+def test_half_precision_act_max_scaling_stays_finite(monkeypatch):
+    monkeypatch.setenv(ENV_NAME, "2")
+    layer = _nvfp_identity_layer()
+    handles = register_act_max_hooks(layer)
+    inputs = torch.full((1, 16), 60000.0, dtype=torch.float16)
+    layer(inputs)
+    layer(inputs)
+    for handle in handles:
+        handle.remove()
+    torch.testing.assert_close(layer.act_max, torch.tensor([120000.0]))
+
+
+def test_outside_block_act_max_scales_half_precision_inputs(monkeypatch):
+    monkeypatch.setenv(ENV_NAME, "2")
+    layer = SimpleNamespace(
+        act_group_size=16,
+        group_size=16,
+        act_data_type="nv_fp4_with_static_gs",
+        data_type="nv_fp4_with_static_gs",
+    )
+    composer = object.__new__(AlgorithmComposer)
+    inputs = [torch.full((1, 16), 60000.0, dtype=torch.float16)]
+    composer._attach_act_max_for_outside_layer(layer, inputs, None)
+    torch.testing.assert_close(layer.act_max, torch.tensor([120000.0]))
+
+
+def test_alternate_act_max_hook_scales_half_precision_inputs(monkeypatch):
+    monkeypatch.setenv(ENV_NAME, "2")
+    layer = _nvfp_identity_layer()
+    quantizer = SimpleNamespace(act_group_size=16, layer_config={})
+    handles = register_alternate_act_max_hooks(quantizer, layer)
+    layer(torch.full((1, 16), 60000.0, dtype=torch.float16))
+    for handle in handles:
+        handle.remove()
+    torch.testing.assert_close(layer.act_max, torch.tensor([120000.0]))
 
 
 def test_non_nvfp_act_max_is_not_scaled(monkeypatch):
