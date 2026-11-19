@@ -186,10 +186,13 @@ def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch)
 
 
 def test_expand_deepseek_v4_checkpoint_aliases_skips_invalid_reverse_patterns(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("auto_round.utils.common.logger.warning_once", lambda msg, *args: warnings.append(msg % args))
+    invalid_pattern = r"^layers\.(\d+)\.self_attn\.\2\.q_a_proj\."
     monkeypatch.setattr(
         "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
         lambda model: {
-            r"^layers\.(\d+)\.self_attn\.\2\.q_a_proj\.": r"layers.\1.self_attn.(.*?).wq_a.",
+            invalid_pattern: r"layers.\1.self_attn.(.*?).wq_a.",
             r"^layers\.(\d+)\.mlp\.": r"layers.\1.ffn.",
         },
     )
@@ -204,6 +207,10 @@ def test_expand_deepseek_v4_checkpoint_aliases_skips_invalid_reverse_patterns(mo
     expanded = expand_layer_config_for_weight_renames(layer_config, model_type="deepseek_v4", to_model_names=False)
 
     assert expanded == {**layer_config, checkpoint_name: layer_config[model_name]}
+    diagnostics = [warning for warning in warnings if "Skipping invalid reverse checkpoint patterns" in warning]
+    assert len(diagnostics) == 1
+    assert "deepseek_v4" in diagnostics[0] and repr(invalid_pattern) in diagnostics[0]
+    assert "invalid group reference" in diagnostics[0]
 
 
 def test_preserve_original_visual_block_name():

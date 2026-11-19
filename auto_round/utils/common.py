@@ -1537,12 +1537,19 @@ def expand_layer_config_for_weight_renames(
             # that exists only in the forward rule. They cannot be used as
             # standalone regexes for model-free layer aliases.
             valid_mapping = {}
+            invalid_patterns = []
             for pattern, targets in key_mapping.items():
                 try:
                     re.compile(pattern)
-                except re.error:
+                except re.error as error:
+                    invalid_patterns.append(f"{pattern!r} ({error})")
                     continue
                 valid_mapping[pattern] = targets
+            if invalid_patterns:
+                logger.warning_once(
+                    "Skipping invalid reverse checkpoint patterns for deepseek_v4: %s",
+                    ", ".join(invalid_patterns),
+                )
             key_mapping = valid_mapping
         convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)
 
