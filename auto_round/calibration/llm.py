@@ -572,6 +572,10 @@ class LLMCalibrator(Calibrator):
         The returned function expects to be bound as ``module.forward = partial(fn, module)``.
         """
 
+        from auto_round.modeling.deepseek_v4 import is_deepseek_v4
+
+        native_v4 = is_deepseek_v4(getattr(self, "model", None))
+
         def post_process_cache_data(batch_size, data, data_name):
             new_data = data
             if data_name in self.shared_cache_keys:
@@ -612,7 +616,7 @@ class LLMCalibrator(Calibrator):
                 # V4 supplies RoPE as a dict of main/compress tensor tuples.
                 # Shared structured kwargs must survive capture just like tuples.
                 if isinstance(value, (torch.Tensor, list, tuple)) or (
-                    key in self.shared_cache_keys and isinstance(value, dict)
+                    native_v4 and key in self.shared_cache_keys and isinstance(value, dict)
                 ):
                     if (
                         self.has_variable_block_shape

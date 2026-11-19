@@ -1249,8 +1249,8 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-def get_checkpoint_conversion_mapping(model, *, renames_only=False):
-    """Get checkpoint conversion rules, optionally excluding tensor conversions."""
+def get_checkpoint_conversion_mapping(model):
+    """Get the checkpoint conversion mapping for a given model, if it exists."""
     checkpoint_conversion_mapping = {}
 
     # transformers <= 5.3.0 use _checkpoint_conversion_mapping
@@ -1275,10 +1275,6 @@ def get_checkpoint_conversion_mapping(model, *, renames_only=False):
                 conversion_mappings = transformers_get_checkpoint_conversion_mapping(text_model_type)
 
         if conversion_mappings is not None:
-            if renames_only:
-                from transformers.core_model_loading import WeightRenaming
-
-                conversion_mappings = [rule for rule in conversion_mappings if isinstance(rule, WeightRenaming)]
             for conversion_mapping in conversion_mappings:
                 for source_pattern in conversion_mapping.source_patterns:
                     checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
@@ -1608,36 +1604,22 @@ def expand_layer_config_for_weight_renames(
     if model is None:
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
+    if to_model_names and getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+        from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+        return expand_layer_config(expanded)
+
     if to_model_names:
-        is_deepseek_v4 = getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4"
-        # Keep the existing reverse-map path for other models (e.g. Gemma4,
-        # issue #2489): loaded-model rules and PrefixChange filtering can
-        # differ from the unscoped model-type forward registry.
-        # Only V4 needs forward renames: swapping its reverse replacements
-        # creates invalid regex backreferences (\1/\2).
-        key_mapping = get_checkpoint_conversion_mapping(model, renames_only=True) if is_deepseek_v4 else {}
-        if not key_mapping:
-            reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
-            key_mapping = {}
-            for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
-                if isinstance(target_patterns, str):
-                    target_patterns = [target_patterns]
-                for target_pattern in target_patterns:
-                    key_mapping.setdefault(target_pattern, []).append(source_pattern)
-
-        def convert_name(name):
-            name = apply_checkpoint_conversion_mapping(name, key_mapping)
-            if is_deepseek_v4:
-                # AutoRound unfuses experts into per-expert Linears. The HF
-                # WeightConverter instead stacks/fuses them and drops the ID;
-                # that operation is not a valid layer-config alias.
-                name = re.sub(
-                    r"(\.experts\.\d+)\.w([123])(?=\.|$)",
-                    lambda match: match[1] + "." + {"1": "gate_proj", "2": "down_proj", "3": "up_proj"}[match[2]],
-                    name,
-                )
-            return name
-
+        # get_reverse_checkpoint_conversion_mapping is intended.
+        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
+        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        key_mapping = {}
+        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+            if isinstance(target_patterns, str):
+                target_patterns = [target_patterns]
+            for target_pattern in target_patterns:
+                key_mapping.setdefault(target_pattern, []).append(source_pattern)
+        convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
     else:
         key_mapping = get_reverse_checkpoint_conversion_mapping(model)
         convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)

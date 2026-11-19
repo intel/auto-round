@@ -204,20 +204,18 @@ def test_rename_only_mapping_preserves_default_tensor_conversions():
         pytest.skip("installed transformers has no DeepSeek V4 mapping")
     model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
     full = get_checkpoint_conversion_mapping(model)
-    renames = get_checkpoint_conversion_mapping(model, renames_only=True)
     expected = {
         source: rule.target_patterns
         for rule in rules
         if isinstance(rule, WeightRenaming)
         for source in rule.source_patterns
     }
-    assert renames == expected
     converter_sources = {
         source for rule in rules if isinstance(rule, WeightConverter) for source in rule.source_patterns
     }
     assert converter_sources
     assert converter_sources <= full.keys()
-    assert not (converter_sources & renames.keys())
+    assert not (converter_sources & expected.keys())
 
 
 @pytest.mark.parametrize("model_type", ["gemma4_unified", "qwen3_5_text", "qwen3_omni_moe", "glm5_next"])

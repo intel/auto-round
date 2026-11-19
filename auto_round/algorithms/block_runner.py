@@ -147,6 +147,7 @@ class BlockForwardRunner:
         output_config: list[str] | None = None,
         enable_torch_compile: bool = True,
         parallel_execution=None,
+        shared_cache_selector=None,
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -159,6 +160,7 @@ class BlockForwardRunner:
         self.output_config = output_config if output_config is not None else ["hidden_states"]
         self.enable_torch_compile = enable_torch_compile
         self.parallel_execution = parallel_execution
+        self.shared_cache_selector = shared_cache_selector
         self.last_output_dict = None
         self.block_forward = block_forward
         # Keep the uncompiled function available for calibration passes that
@@ -180,6 +182,9 @@ class BlockForwardRunner:
         model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
         output_config = getattr(model_ctx, "output_config", None) if model_ctx else None
+        from auto_round.modeling.deepseek_v4 import is_deepseek_v4, select_shared_rope
+
+        shared_selector = select_shared_rope if is_deepseek_v4(getattr(model_ctx, "model", None)) else None
 
         return cls(
             batch_dim=getattr(orchestrator, "batch_dim", 0),
@@ -193,6 +198,7 @@ class BlockForwardRunner:
             output_config=output_config,
             enable_torch_compile=enable_torch_compile,
             parallel_execution=getattr(orchestrator, "parallel_execution", None),
+            shared_cache_selector=shared_selector,
         )
 
     # ── Core forward ─────────────────────────────────────────────────────────
@@ -535,40 +541,20 @@ class BlockForwardRunner:
             """Within-batch row slice of one shared-cache entry (batch pick already done)."""
             if isinstance(entry, torch.Tensor):
                 return _take_rows(entry, rows)
-            if isinstance(entry, dict):
-                return {key: _slice_shared_entry(value, rows) for key, value in entry.items()}
             if isinstance(entry, tuple) and entry and all(torch.is_tensor(t) for t in entry):
                 return tuple(_take_rows(t, rows) for t in entry)
             return entry
-
-        def _cat_shared_entries(entries):
-            """Combine nested, single-sample shared kwargs in draw order."""
-            first = entries[0]
-            if isinstance(first, torch.Tensor):
-                return _cat_device_safe(entries, dim=batch_dim)
-            if isinstance(first, dict):
-                return {key: _cat_shared_entries([entry[key] for entry in entries]) for key in first}
-            if isinstance(first, tuple):
-                return tuple(_cat_shared_entries([entry[i] for entry in entries]) for i in range(len(first)))
-            return first
 
         for key, val in input_others.items():
             if "positional_inputs" in key:
                 continue
             if key in shared_cache_keys:
-                if isinstance(val, dict):
-                    selected_others[key] = _slice_shared_entry(val, torch.tensor(idx_list, dtype=torch.long))
-                elif isinstance(val, list) and val and all(isinstance(entry, dict) for entry in val):
-                    # Capture stores one whole dict per collection batch, not
-                    # per sample. Draw and slice each owning batch before
-                    # concatenating; arbitrary reordered draws can span batches.
-                    count = self._count_samples(inputs)
-                    per_entry = max(1, -(-count // len(val)))
-                    picks = [
-                        _slice_shared_entry(val[i // per_entry], torch.tensor([i % per_entry], dtype=torch.long))
-                        for i in idx_list
-                    ]
-                    selected_others[key] = _cat_shared_entries(picks)
+                if self.shared_cache_selector is not None and (
+                    isinstance(val, dict) or (isinstance(val, list) and val and isinstance(val[0], dict))
+                ):
+                    selected_others[key] = self.shared_cache_selector(
+                        val, idx_list, self._count_samples(inputs), batch_dim
+                    )
                 elif isinstance(val, list) and len(val) == 1:
                     selected_others[key] = val[0]
                 elif isinstance(val, list) and len(val) > 1 and inputs is not None and len(indices) >= 1:

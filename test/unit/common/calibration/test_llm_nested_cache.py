@@ -11,11 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from types import SimpleNamespace
+
 import pytest
 import torch
 
 from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.calibration.llm import LLMCalibrator
+from auto_round.modeling.deepseek_v4 import select_shared_rope
 from auto_round.parallel.execution import ParallelExecution
 
 
@@ -25,9 +28,41 @@ class NestedRopeBlock(torch.nn.Module):
         return hidden_states + rope["main"][0] + rope["compress"][1]
 
 
+def test_non_v4_runner_does_not_select_nested_dicts():
+    rope = {"main": (torch.randn(2, 4, 8), torch.randn(2, 4, 8))}
+    runner = BlockForwardRunner(amp=False, shared_cache_keys=("position_embeddings",), enable_torch_compile=False)
+    _, others = runner.select_batch([torch.zeros(1, 4, 8)] * 2, {"position_embeddings": rope}, torch.tensor([1]))
+    assert others["position_embeddings"] is rope
+
+
+def test_non_v4_capture_does_not_enable_nested_rope():
+    calibrator = object.__new__(LLMCalibrator)
+    calibrator.model = SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+    calibrator.parallel = ParallelExecution()
+    calibrator.inputs = {}
+    calibrator.batch_dim = 0
+    calibrator.batch_size = 1
+    calibrator.shared_cache_keys = ("position_embeddings",)
+    calibrator.has_variable_block_shape = False
+    calibrator._should_stop_cache_forward = lambda name: True
+    capture = calibrator._make_block_forward_func("block")
+    with pytest.raises(NotImplementedError):
+        capture(NestedRopeBlock(), torch.zeros(1, 4, 8), position_embeddings={"main": (torch.ones(1, 4, 8),)})
+    assert "position_embeddings" not in calibrator.inputs["block"]
+
+
+@pytest.mark.parametrize("model_type,enabled", [("deepseek_v4", True), ("llama", False)])
+def test_runner_factory_selects_v4_adapter_only(model_type, enabled):
+    model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+    orchestrator = SimpleNamespace(model_context=SimpleNamespace(model=model))
+    runner = BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=False)
+    assert (runner.shared_cache_selector is select_shared_rope) == enabled
+
+
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_capture_and_replay_nested_shared_rope(batch_size):
     calibrator = object.__new__(LLMCalibrator)
+    calibrator.model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
     calibrator.parallel = ParallelExecution()
     calibrator.inputs = {}
     calibrator.batch_dim = 0
@@ -51,7 +86,11 @@ def test_capture_and_replay_nested_shared_rope(batch_size):
     assert "position_embeddings" in cached
     inputs = cached.pop("hidden_states")
     runner = BlockForwardRunner(
-        batch_size=batch_size, amp=False, shared_cache_keys=calibrator.shared_cache_keys, enable_torch_compile=False
+        batch_size=batch_size,
+        amp=False,
+        shared_cache_keys=calibrator.shared_cache_keys,
+        enable_torch_compile=False,
+        shared_cache_selector=select_shared_rope,
     )
     selections = [[index] for index in range(batch_size * 2)] + [[batch_size, 0], [batch_size * 2 - 1, 0, batch_size]]
     for indices in selections:
@@ -79,6 +118,7 @@ def test_nested_rope_selects_rows_within_collection_batches(batch_dim, collectio
         batch_dim=batch_dim,
         amp=False,
         shared_cache_keys=("position_embeddings",),
+        shared_cache_selector=select_shared_rope,
         enable_torch_compile=False,
     )
     cached = entries[0] if collection_batches == 1 else entries
