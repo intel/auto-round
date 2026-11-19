@@ -3224,7 +3224,9 @@ def _get_mxfp_group_scheme_and_format(
         # compressed-tensors. Reuse that preset so metadata matches tensor
         # layout when model-free does NVFP4 passthrough.
         tmp_qconfig = initialize_quantization(scheme="NVFP4", ignore=ignore)
-        return tmp_qconfig.config_groups["group_0"], "nvfp4-pack-quantized"
+        scheme = tmp_qconfig.config_groups["group_0"]
+        scheme.format = "nvfp4-pack-quantized"
+        return scheme, "nvfp4-pack-quantized"
 
     if group_data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
         # NVFP4_E5M3(_GS) is not a compressed-tensors preset; use its dedicated builder.
@@ -3235,12 +3237,15 @@ def _get_mxfp_group_scheme_and_format(
 
         raw_scheme = nvfp4_dict["config_groups"]["group_0"]
         scheme_obj = QuantizationScheme.model_validate(raw_scheme)
+        scheme_obj.format = nvfp4_dict["format"]
         return scheme_obj, nvfp4_dict["format"]
     else:
         scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
         fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
         tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
-        return tmp_qconfig.config_groups["group_0"], fmt
+        scheme = tmp_qconfig.config_groups["group_0"]
+        scheme.format = fmt
+        return scheme, fmt
 
 
 def _build_mxfp_quantization_config(
