@@ -185,6 +185,27 @@ def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch)
     assert expanded[checkpoint_name]["bits"] == 4
 
 
+def test_expand_deepseek_v4_checkpoint_aliases_skips_invalid_reverse_patterns(monkeypatch):
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda model: {
+            r"^layers\.(\d+)\.self_attn\.\2\.q_a_proj\.": r"layers.\1.self_attn.(.*?).wq_a.",
+            r"^layers\.(\d+)\.mlp\.": r"layers.\1.ffn.",
+        },
+    )
+    native_name = "ffn.experts"
+    model_name = "layers.0.mlp.shared_experts.w1"
+    checkpoint_name = "layers.0.ffn.shared_experts.w1"
+    layer_config = {
+        native_name: {"scheme": "NVFP4_E5M3"},
+        model_name: {"scheme": "MXFP8"},
+    }
+
+    expanded = expand_layer_config_for_weight_renames(layer_config, model_type="deepseek_v4", to_model_names=False)
+
+    assert expanded == {**layer_config, checkpoint_name: layer_config[model_name]}
+
+
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"

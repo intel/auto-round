@@ -1532,6 +1532,18 @@ def expand_layer_config_for_weight_renames(
         convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
     else:
         key_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        if getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+            # Some V4 reverse attention patterns reference a capture group
+            # that exists only in the forward rule. They cannot be used as
+            # standalone regexes for model-free layer aliases.
+            valid_mapping = {}
+            for pattern, targets in key_mapping.items():
+                try:
+                    re.compile(pattern)
+                except re.error:
+                    continue
+                valid_mapping[pattern] = targets
+            key_mapping = valid_mapping
         convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)
 
     if not key_mapping:
