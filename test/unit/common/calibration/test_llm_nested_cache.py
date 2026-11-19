@@ -1,3 +1,16 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import pytest
 import torch
 
@@ -40,7 +53,43 @@ def test_capture_and_replay_nested_shared_rope(batch_size):
     runner = BlockForwardRunner(
         batch_size=batch_size, amp=False, shared_cache_keys=calibrator.shared_cache_keys, enable_torch_compile=False
     )
-    for index in range(batch_size * 2):
-        selected, others = runner.select_batch(inputs, cached, torch.tensor([index]))
+    selections = [[index] for index in range(batch_size * 2)] + [[batch_size, 0], [batch_size * 2 - 1, 0, batch_size]]
+    for indices in selections:
+        selected, others = runner.select_batch(inputs, cached, torch.tensor(indices))
         actual = runner._forward_one_batch(block, selected, others, eager=True)
-        torch.testing.assert_close(actual, expected[index // batch_size][index % batch_size : index % batch_size + 1])
+        reference = torch.cat(
+            [expected[index // batch_size][index % batch_size : index % batch_size + 1] for index in indices]
+        )
+        torch.testing.assert_close(actual, reference)
+
+
+@pytest.mark.parametrize("batch_dim", [0, 1])
+@pytest.mark.parametrize("collection_batches", [1, 3])
+def test_nested_rope_selects_rows_within_collection_batches(batch_dim, collection_batches):
+    collection_size = 2
+    shape = (collection_size, 3, 4) if batch_dim == 0 else (3, collection_size, 4)
+    hidden = torch.zeros(shape)
+    inputs = [sample for _ in range(collection_batches) for sample in hidden.split(1, dim=batch_dim)]
+    entries = []
+    for batch in range(collection_batches):
+        value = torch.arange(hidden.numel()).reshape(shape) + 100 * batch
+        entries.append({"nested": {"main": (value, value + 1)}, "metadata": "shared"})
+    runner = BlockForwardRunner(
+        batch_size=2,
+        batch_dim=batch_dim,
+        amp=False,
+        shared_cache_keys=("position_embeddings",),
+        enable_torch_compile=False,
+    )
+    cached = entries[0] if collection_batches == 1 else entries
+    for indices in ([1], [1, 0], [len(inputs) - 1, 0, 1]):
+        _, others = runner.select_batch(inputs, {"position_embeddings": cached}, torch.tensor(indices))
+        expected = torch.cat(
+            [
+                entries[i // collection_size]["nested"]["main"][0].narrow(batch_dim, i % collection_size, 1)
+                for i in indices
+            ],
+            dim=batch_dim,
+        )
+        torch.testing.assert_close(others["position_embeddings"]["nested"]["main"][0], expected)
+        assert others["position_embeddings"]["metadata"] == "shared"

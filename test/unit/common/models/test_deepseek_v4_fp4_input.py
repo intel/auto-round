@@ -55,7 +55,12 @@ def test_packed_fp4_values_survive_dequantize_and_unfuse():
     weight = dequantizer._dequantize_one(packed, scales, output_dtype=torch.bfloat16)
     torch.testing.assert_close(weight.float(), expected, rtol=0, atol=0)
 
-    experts = nn.Module()
+    # Unfusion adds methods to the experts' class. Never mutate nn.Module
+    # itself: that leaks expert-only __len__ into unrelated models/tests.
+    class PackedExperts(nn.Module):
+        pass
+
+    experts = PackedExperts()
     experts.gate_up_proj = nn.Parameter(weight)
     experts.down_proj = nn.Parameter(torch.ones(2, 64, 4, dtype=torch.bfloat16))
     experts.is_transposed = False

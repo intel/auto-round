@@ -1,3 +1,16 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -51,7 +64,8 @@ def test_unmapped_names_fail_closed():
         restore_tensor_name("model.unknown.weight_packed", {}, {}, {})
 
 
-def test_save_model_disables_reverse_numeric_conversions(tmp_path):
+@pytest.mark.parametrize("remote", [False, True])
+def test_save_model_disables_reverse_numeric_conversions(tmp_path, remote):
     from auto_round.export.common.serialization import save_model
 
     source = tmp_path / "source"
@@ -61,9 +75,10 @@ def test_save_model_disables_reverse_numeric_conversions(tmp_path):
     )
     model = MagicMock()
     model.dtype = torch.bfloat16
-    model.name_or_path = str(source)
+    model.name_or_path = "org/DeepSeek-V4-Flash" if remote else str(source)
     model.config = SimpleNamespace(
         model_type="deepseek_v4",
+        _commit_hash="pinned-source-commit",
         quantization_config={
             "quant_method": "compressed-tensors",
             "config_groups": {"nvfp4": {"targets": ["model.layers.0.mlp.experts.0.gate_proj"]}},
@@ -74,8 +89,17 @@ def test_save_model_disables_reverse_numeric_conversions(tmp_path):
     with (
         patch("auto_round.export.common.serialization.apply_post_save_source_fixes"),
         patch("auto_round.export.common.serialization._save_source_config"),
+        patch(
+            "transformers.utils.hub.cached_file", return_value=str(source / "model.safetensors.index.json")
+        ) as cached,
     ):
         save_model(model, str(tmp_path / "output"))
+    if remote:
+        cached.assert_called_once_with(
+            model.name_or_path, "model.safetensors.index.json", revision="pinned-source-commit"
+        )
+    else:
+        cached.assert_not_called()
     kwargs = model.save_pretrained.call_args.kwargs
     assert kwargs["save_original_format"] is False
     assert kwargs["state_dict"]["layers.0.ffn.experts.0.w1.weight_packed"] is packed

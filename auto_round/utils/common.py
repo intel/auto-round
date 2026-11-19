@@ -1249,8 +1249,8 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-def get_checkpoint_conversion_mapping(model):
-    """Get the checkpoint conversion mapping for a given model, if it exists."""
+def get_checkpoint_conversion_mapping(model, *, renames_only=False):
+    """Get checkpoint conversion rules, optionally excluding tensor conversions."""
     checkpoint_conversion_mapping = {}
 
     # transformers <= 5.3.0 use _checkpoint_conversion_mapping
@@ -1275,6 +1275,10 @@ def get_checkpoint_conversion_mapping(model):
                 conversion_mappings = transformers_get_checkpoint_conversion_mapping(text_model_type)
 
         if conversion_mappings is not None:
+            if renames_only:
+                from transformers.core_model_loading import WeightRenaming
+
+                conversion_mappings = [rule for rule in conversion_mappings if isinstance(rule, WeightRenaming)]
             for conversion_mapping in conversion_mappings:
                 for source_pattern in conversion_mapping.source_patterns:
                     checkpoint_conversion_mapping[source_pattern] = conversion_mapping.target_patterns
@@ -1608,7 +1612,7 @@ def expand_layer_config_for_weight_renames(
         # A regex replacement is not a regex: swapping a reverse rule's sides
         # turns backreferences into invalid patterns (DeepSeek V4 uses \1/\2).
         # Prefer the original forward rules, which preserve the capture groups.
-        key_mapping = get_checkpoint_conversion_mapping(model)
+        key_mapping = get_checkpoint_conversion_mapping(model, renames_only=True)
         if not key_mapping:
             # Retain the legacy fallback for models exposing only reverse rules.
             reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
@@ -1618,7 +1622,20 @@ def expand_layer_config_for_weight_renames(
                     target_patterns = [target_patterns]
                 for target_pattern in target_patterns:
                     key_mapping.setdefault(target_pattern, []).append(source_pattern)
-        convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
+
+        def convert_name(name):
+            name = apply_checkpoint_conversion_mapping(name, key_mapping)
+            if getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+                # AutoRound unfuses experts into per-expert Linears. The HF
+                # WeightConverter instead stacks/fuses them and drops the ID;
+                # that operation is not a valid layer-config alias.
+                name = re.sub(
+                    r"(\.experts\.\d+)\.w([123])(?=\.|$)",
+                    lambda match: match[1] + "." + {"1": "gate_proj", "2": "down_proj", "3": "up_proj"}[match[2]],
+                    name,
+                )
+            return name
+
     else:
         key_mapping = get_reverse_checkpoint_conversion_mapping(model)
         convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)

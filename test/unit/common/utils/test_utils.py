@@ -8,6 +8,7 @@ import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
     compress_layer_names,
     expand_layer_config_for_weight_renames,
+    get_checkpoint_conversion_mapping,
     get_reverse_checkpoint_conversion_mapping,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
@@ -178,12 +179,45 @@ def test_expand_layer_config_for_deepseek_v4_actual_forward_mapping():
         "mlp.experts": {"scheme": "NVFP4"},
         "layers.3.attn.wq_a.weight": {"bits": 8},
         "layers.3.attn.compressor.wkv.weight": {"bits": 16},
+        "layers.3.ffn.experts.0.w1.weight": {"bits": 4},
+        "layers.3.ffn.experts.255.w2": {"bits": 8},
+        "layers.3.ffn.experts.4.w3.weight": {"bits": 16},
     }
     expanded = expand_layer_config_for_weight_renames(config, model=model, to_model_names=True)
     assert expanded["mlp.experts"] == {"scheme": "NVFP4"}
     assert expanded["layers.3.self_attn.q_a_proj.weight"] == {"bits": 8}
     assert expanded["layers.3.self_attn.compressor.kv_proj.weight"] == {"bits": 16}
+    assert expanded["layers.3.mlp.experts.0.gate_proj.weight"] == {"bits": 4}
+    assert expanded["layers.3.mlp.experts.255.down_proj"] == {"bits": 8}
+    assert expanded["layers.3.mlp.experts.4.up_proj.weight"] == {"bits": 16}
+    assert "layers.3.mlp.experts.gate_up_proj" not in expanded
     assert all(expanded[k] == v for k, v in config.items())
+
+
+def test_rename_only_mapping_preserves_default_tensor_conversions():
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+    from transformers.core_model_loading import WeightConverter, WeightRenaming
+
+    rules = tf_mapping("deepseek_v4")
+    if not rules:
+        pytest.skip("installed transformers has no DeepSeek V4 mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
+    full = get_checkpoint_conversion_mapping(model)
+    renames = get_checkpoint_conversion_mapping(model, renames_only=True)
+    expected = {
+        source: rule.target_patterns
+        for rule in rules
+        if isinstance(rule, WeightRenaming)
+        for source in rule.source_patterns
+    }
+    assert renames == expected
+    converter_sources = {
+        source for rule in rules if isinstance(rule, WeightConverter) for source in rule.source_patterns
+    }
+    assert converter_sources
+    assert converter_sources <= full.keys()
+    assert not (converter_sources & renames.keys())
 
 
 def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):

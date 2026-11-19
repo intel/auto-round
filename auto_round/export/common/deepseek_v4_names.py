@@ -1,5 +1,16 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Rename DeepSeek V4 exports without reversing lossy weight conversions."""
 
@@ -85,7 +96,16 @@ def restore_quantization_names(config, modules, tensor_names):
 
 def prepare_native_export(model, state_dict, source_dir):
     """Return a rename-only state dict, preserving each tensor object and dtype."""
-    index_path = os.path.join(source_dir, "model.safetensors.index.json")
+    if source_dir is None:
+        raise ValueError("DeepSeek V4 native export requires a source checkpoint directory or Hub ID")
+    if os.path.isdir(source_dir):
+        index_path = os.path.join(source_dir, "model.safetensors.index.json")
+    else:
+        from transformers.utils.hub import cached_file
+
+        index_path = cached_file(
+            source_dir, "model.safetensors.index.json", revision=getattr(model.config, "_commit_hash", None)
+        )
     with open(index_path, encoding="utf-8") as stream:
         source_keys = json.load(stream)["weight_map"]
     aliases, modules = build_checkpoint_name_maps(source_keys)
