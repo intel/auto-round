@@ -104,6 +104,85 @@ def test_int4_graph_replay_updates_inputs_and_routing(phase, activation_dtype, t
 
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(not has_moe_gemm_decode(), reason="MoE decode kernel unavailable")
+@pytest.mark.skipif(
+    not all(hasattr(getattr(torch, "xpu", None), api_name) for api_name in ("XPUGraph", "graph", "Stream")),
+    reason="Required XPU graph APIs unavailable",
+)
+@pytest.mark.parametrize("asym", (False, True), ids=("repack", "activation_sums"))
+@pytest.mark.parametrize("scratch_state", ("cold", "warm", "grow"))
+def test_int4_decode_graph_scratch_growth(monkeypatch, asym, scratch_state):
+    """Only growth of an existing decode scratch slab is rejected during capture."""
+    monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+    monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+    monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+    monkeypatch.setenv("ARK_MOE_DECODE_INT4_REPACK_CACHE", "0")
+
+    dtype = torch.bfloat16
+    activations = torch.ones((8, 128), dtype=dtype).to("xpu")
+    weights = (torch.arange(1 + int(asym), 5 + int(asym), dtype=torch.uint8) * 0x11).reshape(4, 1, 1)
+    weights = weights.expand(4, 128, 64).contiguous().to("xpu")
+    scales = torch.full((4, 128, 1), 1.0 / 128, dtype=dtype).to("xpu")
+    zeros = torch.ones_like(scales) if asym else None
+    counts = torch.full((4,), 2, dtype=torch.int32).to("xpu")
+    small_counts = torch.ones((4,), dtype=torch.int32).to("xpu")
+    small_weights = weights[:, :64].contiguous()
+    small_scales = scales[:, :64].contiguous()
+
+    def apply_gemm(small=False):
+        return ark.moe_gemm_decode(
+            activations[:4] if small and asym else activations,
+            small_weights if small and not asym else weights,
+            small_counts if small and asym else counts,
+            scales=small_scales if small and not asym else scales,
+            zeros=zeros,
+            weight_bits=4,
+            group_size=128,
+            asym=asym,
+        )
+
+    warmup_stream = torch.xpu.Stream()
+    capture_stream = torch.xpu.Stream()
+    warmup_stream.wait_stream(torch.xpu.current_stream())
+    with torch.xpu.stream(warmup_stream):
+        for warmup_index in range(3):
+            apply_gemm()
+    warmup_stream.synchronize()
+
+    capture_stream.wait_stream(torch.xpu.current_stream())
+    if scratch_state != "cold":
+        with torch.xpu.stream(capture_stream):
+            for warmup_index in range(3):
+                apply_gemm(small=scratch_state == "grow")
+        capture_stream.synchronize()
+
+    graph = torch.xpu.XPUGraph()
+    if scratch_state == "grow":
+        with pytest.raises(RuntimeError, match="cannot grow device scratch during XPU graph capture"):
+            with torch.xpu.graph(graph, stream=capture_stream):
+                apply_gemm()
+        del graph
+        with torch.xpu.stream(capture_stream):
+            eager_output = apply_gemm()
+        capture_stream.synchronize()
+        expected = torch.arange(1, 5, dtype=torch.float32).repeat_interleave(2)
+        torch.testing.assert_close(eager_output.cpu(), expected.unsqueeze(1).expand(8, 128).to(dtype))
+        graph = torch.xpu.XPUGraph()
+
+    with torch.xpu.graph(graph, stream=capture_stream):
+        captured_output = apply_gemm()
+
+    for input_value, host_counts in ((1, [2, 2, 2, 2]), (2, [0, 4, 0, 4])):
+        activations.copy_(torch.full((8, 128), input_value, dtype=dtype))
+        counts.copy_(torch.tensor(host_counts, dtype=torch.int32))
+        graph.replay()
+        torch.xpu.synchronize()
+        expert_outputs = torch.arange(1, 5, dtype=torch.float32) * input_value
+        expected = expert_outputs.repeat_interleave(torch.tensor(host_counts)).unsqueeze(1).expand(8, 128)
+        torch.testing.assert_close(captured_output.cpu(), expected.to(dtype))
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
 @pytest.mark.skipif(not has_moe_gemm(), reason="MOE GEMM kernel not built (need ARK_SYCL_TLA=ON)")
 class TestMoEGemm:
     """Unit tests for MOE GEMM kernel."""
