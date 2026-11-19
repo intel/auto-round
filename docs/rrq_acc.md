@@ -283,15 +283,53 @@ Configuration B precision ladder:
 B saturates one step earlier than A: a better base plane means the first residual
 plane closes almost the whole gap, so planes 3 and 4 are pure noise.
 
+### Confirmation on reasoning benchmarks
+
+The five-task average is a shallow probe: the +3.74 gain at 2-bit is real but
+modest, and none of those tasks require sustained multi-step reasoning. Two
+harder benchmarks make the same comparison under prefill6/decode2, where the base
+plane is the only thing carrying the model:
+
+| Benchmark | A: all RTN | B: AutoRound base | Delta | Significance |
+|---|---|---|---|---|
+| GSM8K (n=1319) | 78.32% | **85.97%** | **+7.66** | p = 2.5e-07 |
+| MATH-500 (n=500) | 36.00% | **60.60%** | **+24.60** | p = 7.9e-26 |
+
+On MATH-500 the paired comparison is lopsided: B solves 130 problems that A
+cannot, while A solves only 7 that B cannot (McNemar z = +10.51). Excluding
+truncated generations, B reaches 72.49% against A's 46.04%.
+
+The gain grows with task difficulty — +7.66 on grade-school arithmetic, +24.60 on
+competition mathematics — which is what one expects if the base plane sets a
+ceiling that residual planes only partially repair. The shallow five-task average
+understated this by roughly 2x on GSM8K and more on MATH.
+
+A second effect shows up in generation length. At decode-2 the tuned base
+produces **2503** mean tokens on MATH-500 against **4119** for the RTN base, and
+truncation drops from 21.8% to 16.4%. Tuning the base therefore does not only
+improve correctness at this width, it also keeps the model from degenerating into
+longer, less productive reasoning — worth as much as the accuracy gain when the
+output budget is fixed.
+
+**Caveat on the 4-bit claim.** The conclusion below that the two bases converge
+from 4-bit up is measured only on the five shallow tasks, at uniform widths. The
+B-group runs at prefill6/decode4 and uniform 4-bit on GSM8K and MATH-500 were
+started and cancelled before producing results, so 4-bit equivalence is
+**unverified on the reasoning benchmarks**. The 2-bit conclusion, by contrast, is
+now supported by three independent benchmarks.
+
 ### Observations
 
 1. **Tuning the base plane only pays off at 2-bit** (+3.74), where it buys
    ~3.7 accuracy points for 6 extra hours of quantization time. HellaSwag gains
-   the most (+4.91), then ARC-challenge (+4.27).
+   the most (+4.91), then ARC-challenge (+4.27). On reasoning benchmarks the same
+   direction is much stronger: +7.66 on GSM8K and +24.60 on MATH-500.
 2. **At 4-bit and above the two configurations are equivalent** (spread ≤ 0.35,
-   i.e. evaluation noise). Once one residual plane is present the base plane is
-   no longer the bottleneck, so the expensive tuning is wasted: the extra
-   residual planes absorb the error the base leaves behind.
+   i.e. evaluation noise) *on the five shallow tasks measured at uniform widths*.
+   Once one residual plane is present the base plane is no longer the bottleneck,
+   so the expensive tuning is wasted: the extra residual planes absorb the error
+   the base leaves behind. This has not been confirmed on GSM8K or MATH-500, so
+   treat 4-bit equivalence as plausible rather than established.
 3. **A tuned 2-bit base is competitive with a 3-bit mixed-precision checkpoint.**
    Compare B at 2-bit (68.02, 13.44 GB) with A at `residual_fraction=0.5`
    (68.04, 19.95 GB): the averages are identical while B uses 6.5 GB less, at
@@ -299,8 +337,9 @@ plane closes almost the whole gap, so planes 3 and 4 are pure noise.
    ARC-challenge is 2.05 higher.
 4. **Practical guidance.** If the target deployment is 2-bit, tune the base with
    AutoRound and generate the residuals incrementally. If the target is 4-bit or
-   higher — or if the checkpoint must serve several widths — quantize everything
-   with RTN (`--iters 0`) and get all four operating points in half an hour.
+   higher — or if the checkpoint must serve several widths — quantizing
+   everything with RTN (`--iters 0`) is the better trade at 6 fewer hours, with
+   the 4-bit caveat above.
 
 ## Mixed precision
 
