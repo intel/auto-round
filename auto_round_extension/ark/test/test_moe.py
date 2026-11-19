@@ -158,9 +158,11 @@ def test_int4_decode_graph_scratch_growth(monkeypatch, asym, scratch_state):
 
     graph = torch.xpu.XPUGraph()
     if scratch_state == "grow":
-        with pytest.raises(RuntimeError, match="cannot grow device scratch during XPU graph capture"):
-            with torch.xpu.graph(graph, stream=capture_stream):
-                apply_gemm()
+        with (
+            pytest.raises(RuntimeError, match="cannot grow device scratch during XPU graph capture"),
+            torch.xpu.graph(graph, stream=capture_stream),
+        ):
+            apply_gemm()
         del graph
         with torch.xpu.stream(capture_stream):
             eager_output = apply_gemm()
