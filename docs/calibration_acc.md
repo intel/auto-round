@@ -114,14 +114,14 @@
 <td align="center">43.80</td>
 </tr>
 <tr>
-<td>mix_d</td>
+<td>mix_d (UltraChat 62.5%, apply_chat_template=true + OpenCode 37.5%)</td>
 <td align="center">98.00<br><sub>100 / 100 / 100 / 93.33 / 96.67</sub></td>
 <td align="center">89.80<br><sub>89.39 / 89.39 / 90.91 / 90.40 / 88.89</sub></td>
-<td align="center">–</td>
+<td align="center">71.56<br><sub>71.00 / 72.11</sub></td>
 <td align="center">85.41</td>
 <td align="center">91.18</td>
 <td align="center">66.00</td>
-<td align="center">–</td>
+<td align="center">42.70</td>
 </tr>
 </tbody>
 </table>
@@ -213,10 +213,10 @@
 <td align="center"><b>73.50</b></td>
 </tr>
 <tr>
-<td>mix_d</td>
+<td>mix_d (UltraChat 62.5%, apply_chat_template=true + OpenCode 37.5%)</td>
 <td align="center">65.33<br><sub>66.67 / 60 / 63.33 / 63.33 / 73.33</sub></td>
 <td align="center">61.42<br><sub>57.58 / 62.63 / 62.63 / 60.10 / 64.14</sub></td>
-<td align="center">–</td>
+<td align="center">67.43<br><sub>67.06 / 67.80</sub></td>
 <td align="center">76.20</td>
 <td align="center">58.39</td>
 </tr>
