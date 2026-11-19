@@ -596,7 +596,7 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
-  auto event = stream.submit([&](sycl::handler& cgh) {
+  stream.submit([&](sycl::handler& cgh) {
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmS4Name<ElementA, ElementB, ElementS, ElementD,
                                     layoutA, layoutB, policy>>(
@@ -608,9 +608,6 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
               atomic_buffer, local_mem);
         });
   });
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
 // ---------------------------------------------------------------------------
