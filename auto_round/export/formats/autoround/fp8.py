@@ -41,6 +41,7 @@ from auto_round.utils import (
     set_module,
     to_standard_regex,
 )
+from auto_round.utils.regex import compress_autoround_extra_config
 
 
 class FP8QLinear(torch.nn.Module):
@@ -261,6 +262,7 @@ def save_checkpoint(
             regex_name = to_standard_regex(name)
             extra_config[regex_name] = {**{k: regex_config[name][k] for k in scheme_keys}}
 
+    extra_config = compress_autoround_extra_config(extra_config, set(layer_config))
     if len(extra_config) > 0:
         quantization_config["extra_config"] = extra_config
     filter_quantization_config(quantization_config)
