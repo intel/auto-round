@@ -1609,12 +1609,14 @@ def expand_layer_config_for_weight_renames(
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
     if to_model_names:
-        # A regex replacement is not a regex: swapping a reverse rule's sides
-        # turns backreferences into invalid patterns (DeepSeek V4 uses \1/\2).
-        # Prefer the original forward rules, which preserve the capture groups.
-        key_mapping = get_checkpoint_conversion_mapping(model, renames_only=True)
+        is_deepseek_v4 = getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4"
+        # Keep the existing reverse-map path for other models (e.g. Gemma4,
+        # issue #2489): loaded-model rules and PrefixChange filtering can
+        # differ from the unscoped model-type forward registry.
+        # Only V4 needs forward renames: swapping its reverse replacements
+        # creates invalid regex backreferences (\1/\2).
+        key_mapping = get_checkpoint_conversion_mapping(model, renames_only=True) if is_deepseek_v4 else {}
         if not key_mapping:
-            # Retain the legacy fallback for models exposing only reverse rules.
             reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
             key_mapping = {}
             for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
@@ -1625,7 +1627,7 @@ def expand_layer_config_for_weight_renames(
 
         def convert_name(name):
             name = apply_checkpoint_conversion_mapping(name, key_mapping)
-            if getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+            if is_deepseek_v4:
                 # AutoRound unfuses experts into per-expert Linears. The HF
                 # WeightConverter instead stacks/fuses them and drops the ID;
                 # that operation is not a valid layer-config alias.

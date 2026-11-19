@@ -220,6 +220,75 @@ def test_rename_only_mapping_preserves_default_tensor_conversions():
     assert not (converter_sources & renames.keys())
 
 
+@pytest.mark.parametrize("model_type", ["gemma4_unified", "qwen3_5_text", "qwen3_omni_moe", "glm5_next"])
+def test_non_deepseek_aliases_keep_reverse_mapping_path(monkeypatch, model_type):
+    # Real loaded models may carry scoped/runtime conversion rules that are
+    # absent from the model-type registry. Do not replace this source of truth.
+    reverse = {
+        r"model.embed_vision.multimodal_embedder.embedding_projection": [r"model.embed_vision.embedding_projection"],
+    }
+    model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+    monkeypatch.setattr("auto_round.utils.common.get_reverse_checkpoint_conversion_mapping", lambda model: reverse)
+
+    def reject_forward(*args, **kwargs):
+        raise AssertionError("Non-DeepSeek models must retain their existing reverse-map path")
+
+    monkeypatch.setattr("auto_round.utils.common.get_checkpoint_conversion_mapping", reject_forward)
+    source = "model.embed_vision.embedding_projection"
+    target = "model.embed_vision.multimodal_embedder.embedding_projection"
+    expanded = expand_layer_config_for_weight_renames({source: {"bits": 4}}, model=model, to_model_names=True)
+    assert expanded[target] == {"bits": 4}
+
+
+@pytest.mark.parametrize("family", ["gemma4_unified", "qwen3_5_text", "qwen3_omni_moe"])
+def test_non_deepseek_actual_registry_aliases_match_legacy(family):
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+
+    from auto_round.utils.common import apply_checkpoint_conversion_mapping
+
+    if not tf_mapping(family):
+        pytest.skip(f"installed transformers has no {family} conversion mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type=family))
+    legacy = {}
+    for source, targets in reversed(list(get_reverse_checkpoint_conversion_mapping(model).items())):
+        for target in [targets] if isinstance(targets, str) else targets:
+            legacy.setdefault(target, []).append(source)
+    names = [
+        "model.embed_vision.embedding_projection",
+        "model.vision_embedder.patch_dense",
+        "model.language_model.layers.0.self_attn.q_proj",
+        "model.layers.0.mlp.experts.0.gate_proj",
+    ]
+    for name in names:
+        expected = apply_checkpoint_conversion_mapping(name, legacy)
+        expanded = expand_layer_config_for_weight_renames({name: {"bits": 4}}, model=model, to_model_names=True)
+        assert expanded == {key: {"bits": 4} for key in (name, expected)}
+
+
+def test_gemma4_visual_aliases_match_real_meta_model_modules():
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Gemma4UnifiedForConditionalGeneration"):
+        pytest.skip("installed transformers has no Gemma4 Unified model")
+    from transformers.conversion_mapping import get_model_conversion_mapping
+
+    # vision_config=None builds a text-only model; explicitly enable vision.
+    config = transformers.Gemma4UnifiedConfig(vision_config={})
+    with torch.device("meta"):
+        model = transformers.Gemma4UnifiedForConditionalGeneration(config)
+    model._weight_conversions = get_model_conversion_mapping(model, add_legacy=False)
+    modules = dict(model.named_modules())
+    pairs = {
+        "model.embed_vision.embedding_projection": "model.embed_vision.multimodal_embedder.embedding_projection",
+        "model.vision_embedder.patch_dense": "model.embed_vision.patch_dense",
+        "model.vision_embedder.patch_ln1": "model.embed_vision.patch_ln1",
+    }
+    for source, target in pairs.items():
+        expanded = expand_layer_config_for_weight_renames({source: {"bits": 4}}, model=model, to_model_names=True)
+        assert target in modules
+        assert expanded[target] == {"bits": 4}
+
+
 def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):
     model_name = "model.layers.0.attn_hc.base"
     checkpoint_name = "model.layers.0.hc_attn_base"
