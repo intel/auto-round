@@ -51,10 +51,7 @@ def has_moe_gemm_decode():
     reason="Quantized MoE kernels unavailable",
 )
 @pytest.mark.skipif(
-    not all(
-        hasattr(getattr(torch, "xpu", None), api_name)
-        for api_name in ("XPUGraph", "graph", "Stream")
-    ),
+    not all(hasattr(getattr(torch, "xpu", None), api_name) for api_name in ("XPUGraph", "graph", "Stream")),
     reason="Required XPU graph APIs unavailable",
 )
 @pytest.mark.parametrize("phase", ("prefill", "decode"))
