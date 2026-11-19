@@ -42,6 +42,7 @@ from auto_round.utils.model_free_utils import (
     _dequant_inkling_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
+    _extract_model_type_passthrough_tensors,
     _fused_nvfp4_global_scale_overrides,
     _fused_nvfp4_projection_groups,
     _handle_mxfp_source_tensors,
@@ -477,6 +478,7 @@ class TestBuildMxfpQuantizationConfigMixedPrecisionMoe:
         dense_layers = [
             "model.layers.0.mlp.down_proj",
             "model.layers.0.mlp.up_proj",
+            "model.layers.0.mlp.gate_proj",
         ]
         all_layers = moe_layers + dense_layers
 
@@ -536,7 +538,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=[],
             format="llm_compressor",
@@ -550,7 +551,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=["model.layers.0.mlp.down_proj"],
             ignored_layers=[],
             format="llm_compressor",
@@ -564,31 +564,28 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
             format="llm_compressor",
         )
-        assert qconfig["ignore"] == [r"re:^model\.layers\.2\.mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+        assert qconfig["ignore"] == [
+            f"model.layers.2.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")
+        ]
 
 
 class TestIgnoreFusedExpertsForVllm:
-    _ENTRY = r"re:^model\.layers\.0\.mlp\.experts\.\d+\.(gate|up|down)_proj$"
+    _ENTRIES = [f"model.layers.0.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")]
 
     def _qconfig(self, targets):
         return {"config_groups": {"group_0": {"targets": targets}}, "ignore": ["lm_head"]}
 
     def test_adds_entry_matching_vllm_probe_names(self):
-        import re
-
         qconfig = _ignore_fused_experts_for_vllm(
             self._qconfig(["Linear", "RoutedExperts"]),
             ["model.layers.0.mlp.experts.w13_weight", "model.layers.0.mlp.experts.w2_weight"],
             [],
         )
-        assert qconfig["ignore"] == ["lm_head", self._ENTRY]
-        for proj in ("gate_proj", "up_proj", "down_proj"):
-            assert re.match(self._ENTRY[3:], f"model.layers.0.mlp.experts.0.{proj}")
+        assert qconfig["ignore"] == ["lm_head", *self._ENTRIES]
 
     def test_no_routed_experts_no_change(self):
         qconfig = _ignore_fused_experts_for_vllm(
@@ -719,7 +716,6 @@ class TestBuildQuantizationConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=[],
             ignored_layers=ignored,
         )
@@ -844,6 +840,17 @@ class TestBuildMxfpConfig:
         cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
         assert cfg["format"] == "mxfp4-pack-quantized"
         assert cfg["config_groups"]["group_0"]["targets"] == quantized
+
+    @require_compressed_tensors
+    def test_build_mxfp_config_single_nvfp4_group_uses_nvfp4_scheme(self):
+        from auto_round.export.formats.compressed_tensors.config import initialize_quantization
+
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {"model.layers.0.mlp.fc1": {"bits": 4, "group_size": 16, "data_type": "nv_fp"}}
+        cfg = _build_mxfp_quantization_config(default, ["model.layers.0.mlp.fc1"], [], layer_config=layer_config)
+        expected = initialize_quantization(scheme="NVFP4", ignore=[]).to_dict()["config_groups"]["group_0"]
+        assert cfg["format"] == "nvfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["weights"] == expected["weights"]
 
     @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
@@ -1110,12 +1117,9 @@ class TestMXFPDequantization:
 class TestDeepseekV41EngramSourceTensors:
     """DeepSeek-V4.1 Engram handling in the model-free source chain.
 
-    The FP8 n-gram lookup table must reach the output checkpoint under its source key:
-    the weight stays ``float8_e4m3fn`` and the E8M0 scale is bitcast to ``uint8`` (the
-    compressed-tensors container, bytes preserved), while ``engram.wkv`` is an ordinary
-    Linear: being in the ignore list, it has to be exported in full precision. Leaving a
-    float8 ``.weight`` + ``.scale`` pair under an ignored Linear produces a checkpoint
-    whose scale has no parameter to load into.
+    The FP8 n-gram lookup table must reach the output checkpoint unchanged (source key,
+    ``float8_e4m3fn`` weight, ``float8_e8m0fnu`` scale), while ``engram.wkv`` is an ordinary
+    Linear: requantized like any other layer, or dequantized when layer_config sets it to BF16.
     """
 
     @staticmethod
@@ -1135,31 +1139,32 @@ class TestDeepseekV41EngramSourceTensors:
             "layers.1.engram.q_weight": torch.randn(4, 128, dtype=torch.bfloat16),
         }
 
-    def _run(self, model_type="deepseek_v41", ignore=("engram",)):
+    def _run(self, model_type="deepseek_v41", layer_config=None):
         raw = self._raw_tensors()
+        passthrough_src = _extract_model_type_passthrough_tensors(raw, model_type)
         out, state = _preprocess_model_type_source_tensors(raw, model_type=model_type)
         matcher = _matcher(
-            ignore=list(ignore),
+            layer_config={"layers.1.engram.wkv": {"bits": 16}} if layer_config is None else layer_config,
             default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"},
         )
         out, passthrough, layers = _handle_mxfp_source_tensors(out, matcher, source_state=state)
-        return {**out, **passthrough}, state, layers
+        return {**out, **passthrough, **passthrough_src}, state, layers
 
     def test_v41_reaches_the_translation_chain(self):
         _, state, _ = self._run()
         assert state == {"layers.1.attn.wkv": 8, "layers.1.engram.wkv": 8}
 
-    def test_engram_table_keeps_source_key_and_u8_scale(self):
+    def test_engram_table_keeps_source_key_and_dtype(self):
         tensors, _, _ = self._run()
         assert tensors["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
-        assert tensors["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
         assert torch.equal(
-            tensors["layers.1.engram.embed.scale"],
+            tensors["layers.1.engram.embed.scale"].view(torch.uint8),
             torch.full((1000, 1), 127, dtype=torch.uint8),
         )
         assert "layers.1.engram.embed.weight_scale" not in tensors
 
-    def test_ignored_engram_linear_is_exported_in_float32(self):
+    def test_bf16_engram_linear_is_exported_in_float32(self):
         tensors, _, layers = self._run()
         weight = tensors["layers.1.engram.wkv.weight"]
         assert weight.dtype == torch.float32 and weight.shape == (64, 128)
@@ -1180,13 +1185,13 @@ class TestDeepseekV41EngramSourceTensors:
         q = tensors["layers.1.engram.q_weight"]
         assert q.dtype == torch.bfloat16 and q.shape == (4, 128)
 
-    def test_kept_raw_when_not_ignored(self):
-        tensors, state, layers = self._run(ignore=())
+    def test_kept_raw_when_not_overridden(self):
+        tensors, state, layers = self._run(layer_config={})
         assert layers == ["layers.1.attn.wkv", "layers.1.engram.wkv"]
         assert state["layers.1.engram.wkv"] == 8
-        assert tensors["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
         assert torch.equal(
-            tensors["layers.1.engram.embed.scale"],
+            tensors["layers.1.engram.embed.scale"].view(torch.uint8),
             torch.full((1000, 1), 127, dtype=torch.uint8),
         )
 
@@ -1221,9 +1226,9 @@ class TestDeepseekV41EngramSourceTensors:
         assert "layers.1.attn.wkv" in quantized
         assert "layers.1.engram.embed" in ignored
         assert output["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
-        assert output["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert output["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
         assert torch.equal(
-            output["layers.1.engram.embed.scale"],
+            output["layers.1.engram.embed.scale"].view(torch.uint8),
             torch.full((64, 4), 127, dtype=torch.uint8),
         )
         assert "layers.1.engram.embed.weight_scale" not in output
@@ -1422,7 +1427,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=[],
             format="auto_round",
@@ -1436,7 +1440,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=["lm_head"],
             format="llm_compressor",
