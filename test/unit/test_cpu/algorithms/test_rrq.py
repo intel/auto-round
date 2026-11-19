@@ -663,6 +663,62 @@ class TestRRQLinear:
         with pytest.raises(ValueError):
             set_rrq_random_residual(model, fraction=0.5, only="does_not_exist")
 
+    def test_random_residual_depth_restricts_upgrade_to_bands(self):
+        """depth= spends the residual planes on selected decoder layers only."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
+
+        depths = range(8)
+        leaves = ("mlp.down_proj", "self_attn.q_proj")
+        model = nn.Module()
+        model.model = nn.Module()
+        model.model.layers = nn.ModuleList()
+        for _ in depths:
+            block = nn.Module()
+            for leaf in leaves:
+                *prefix, attr = leaf.split(".")
+                holder = block
+                for part in prefix:
+                    if not hasattr(holder, part):
+                        setattr(holder, part, nn.Module())
+                    holder = getattr(holder, part)
+                setattr(holder, attr, RRQLinear(in_features=64, out_features=32, num_planes=4, bits=2, bias=False))
+            model.model.layers.append(block)
+
+        def depth_of(name):
+            return int(name.split(".layers.")[1].split(".")[0])
+
+        # Two 2-layer bands, everything in them upgraded: 4 of 16 layers.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, depth="1-2,6-7")
+        assert n_high == 8
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            expected = 2 if depth_of(name) in (1, 2, 6, 7) else 1
+            assert module.active_planes == expected, name
+
+        # `depth` composes with `only`: only the MLP projections in a band.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, only="mlp.", depth="0-3")
+        assert n_high == 4
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            expected = 2 if ("mlp." in name and depth_of(name) <= 3) else 1
+            assert module.active_planes == expected, name
+
+        # A single depth is accepted without a dash.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, depth="5")
+        assert n_high == 2
+
+        # Malformed or empty selections are usage errors, not silent no-ops.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="not-a-range")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="5-2")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth=",,")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="100-200")
+
     def test_materialize_rrq_replaces_layers_and_preserves_output(self):
         """materialize_rrq converts to dense nn.Linear with the same numerics."""
         from auto_round.inference.rrq_linear import RRQLinear, materialize_rrq
@@ -945,7 +1001,9 @@ class TestGenerateRRQResidual:
         torch.manual_seed(42)
         yield
 
-    def _make_base_and_raw(self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True):
+    def _make_base_and_raw(
+        self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True, raw_format="safetensors"
+    ):
         """Build a fake base model dir (packed INT2) + raw FP state dict.
 
         Returns ``(base_dir, raw_dir)`` where:
@@ -1020,7 +1078,13 @@ class TestGenerateRRQResidual:
         raw_dir = os.path.join(str(tmp_path), "raw")
         os.makedirs(raw_dir, exist_ok=True)
         raw_state = {"test_layer.weight": W.clone()}
-        save_file(raw_state, os.path.join(raw_dir, "model.safetensors"))
+        if raw_format == "bin":
+            # Pre-safetensors checkpoints (e.g. facebook/opt-125m as shipped in
+            # CI) store a single ``pytorch_model.bin``.  The residual generator
+            # must still accept them, so keep a variant that only has the .bin.
+            torch.save(raw_state, os.path.join(raw_dir, "pytorch_model.bin"))
+        else:
+            save_file(raw_state, os.path.join(raw_dir, "model.safetensors"))
 
         return base_dir, raw_dir
 
@@ -1050,6 +1114,38 @@ class TestGenerateRRQResidual:
             assert state[f"test_layer.qweight_{k}"].dtype == torch.int32
             assert state[f"test_layer.scales_{k}"].dtype == torch.float16
             assert state[f"test_layer.qzeros_{k}"].dtype == torch.int32
+
+    def test_raw_model_without_safetensors(self, tmp_path):
+        """A raw model that only ships ``pytorch_model.bin`` is still accepted.
+
+        ``facebook/opt-125m`` predates safetensors and CI keeps only the .bin,
+        so rejecting non-safetensors raw models made the incremental workflow
+        unusable for every pre-safetensors checkpoint.
+        """
+        from safetensors.torch import load_file
+
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True, raw_format="bin")
+        assert not os.path.exists(os.path.join(raw_dir, "model.safetensors"))
+        assert os.path.exists(os.path.join(raw_dir, "pytorch_model.bin"))
+
+        out_dir = str(tmp_path / "residual_from_bin")
+        generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=True)
+
+        state = load_file(os.path.join(out_dir, "model.safetensors"))
+        planes = sorted({int(k.rsplit("_", 1)[1]) for k in state if ".qweight_" in k})
+        assert planes == [1, 2, 3], f"expected residual planes 1..3, got {planes}"
+
+    def test_missing_raw_weights_raises(self, tmp_path):
+        """A raw dir with neither format present still fails loudly."""
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
+        os.remove(os.path.join(raw_dir, "model.safetensors"))
+
+        with pytest.raises(FileNotFoundError, match="No safetensors or pytorch_model.bin"):
+            generate_rrq_residual(base_dir, raw_dir, str(tmp_path / "out"), group_size=32, sym=True)
 
     def test_residual_norm_decreases(self, tmp_path):
         """Successive residual planes should reduce the reconstruction error."""

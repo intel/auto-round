@@ -571,8 +571,16 @@ def _residual_worker(args):
 
     # Read only this layer's tensors out of its shard.  ``safe_open`` gives
     # per-tensor access, so the rest of the shard is never materialized.
-    with safe_open(raw_weight_path, framework="pt", device="cpu") as fh:
-        W_fp = fh.get_tensor(f"{layer_name}.weight").to(torch.float32)
+    # ``raw_weight_path`` is either a safetensors shard or a ``.bin`` file; the
+    # latter (used by pre-safetensors checkpoints) is loaded whole, which is
+    # acceptable because those models are small by definition.
+    if str(raw_weight_path).endswith(".bin"):
+        bin_state = torch.load(raw_weight_path, map_location="cpu", weights_only=True)
+        W_fp = bin_state[f"{layer_name}.weight"].to(torch.float32)
+        del bin_state
+    else:
+        with safe_open(raw_weight_path, framework="pt", device="cpu") as fh:
+            W_fp = fh.get_tensor(f"{layer_name}.weight").to(torch.float32)
 
     with safe_open(base_weight_path, framework="pt", device="cpu") as fh:
         qweight = fh.get_tensor(f"{layer_name}.qweight").to(torch.int32)
@@ -654,6 +662,71 @@ def _weight_names_from_dir(weight_dir, index_path, safetensors_files):
         with safe_open(path, framework="pt", device="cpu") as fh:
             names.update(fh.keys())
     return names
+
+
+def _find_raw_weight_files(raw_dir: str) -> tuple[list[str], str | None, str | None]:
+    """Locate the weight files of an FP model, safetensors first.
+
+    ``generate_rrq_residual`` only needs two things from the FP model: the set of
+    tensor names it contains, and the ability to fetch one layer's ``weight`` at
+    a time.  safetensors supports both cheaply (``safe_open`` reads a single
+    tensor out of a shard), which is why it is preferred: a 27B model never has
+    to be resident.
+
+    Older checkpoints -- ``facebook/opt-125m`` among them -- ship only
+    ``pytorch_model.bin``.  Those are still usable, just more expensive: the file
+    is loaded once and indexed by name.  Refusing them outright would make the
+    two-phase workflow unavailable for every pre-safetensors model, so fall back
+    to ``.bin`` instead of raising.
+
+    Returns:
+        ``(files, kind, index_path)`` where ``kind`` is ``"safetensors"`` or
+        ``"bin"`` and ``index_path`` is the safetensors index when present.
+
+    Raises:
+        FileNotFoundError: If neither format is present.
+    """
+    safetensors_files = sorted(glob.glob(os.path.join(raw_dir, "*.safetensors")))
+    if safetensors_files:
+        return safetensors_files, "safetensors", os.path.join(raw_dir, "model.safetensors.index.json")
+
+    # ``pytorch_model.bin`` may itself be sharded as
+    # ``pytorch_model-00001-of-0000N.bin`` with a ``pytorch_model.bin.index.json``.
+    bin_files = sorted(glob.glob(os.path.join(raw_dir, "pytorch_model*.bin")))
+    if bin_files:
+        index = os.path.join(raw_dir, "pytorch_model.bin.index.json")
+        return bin_files, "bin", index if os.path.exists(index) else None
+
+    return [], None, None
+
+
+def _load_bin_state_dict(bin_files: list[str], index_path: str | None) -> dict:
+    """Load a ``pytorch_model.bin`` (possibly sharded) into one state dict.
+
+    Only used for models that have no safetensors weights.  Unlike the
+    safetensors path this materializes the whole FP model, so it is limited to
+    checkpoints small enough to have been shipped in this format in the first
+    place.
+    """
+    if index_path is not None:
+        import json as _json
+
+        with open(index_path, "r", encoding="utf-8") as fh:
+            weight_map = _json.load(fh).get("weight_map", {})
+        base_dir = os.path.dirname(index_path)
+        shards = sorted(set(weight_map.values()))
+        state = {}
+        for shard in shards:
+            state.update(torch.load(os.path.join(base_dir, shard), map_location="cpu", weights_only=True))
+        return state
+
+    if len(bin_files) == 1:
+        return torch.load(bin_files[0], map_location="cpu", weights_only=True)
+
+    state = {}
+    for path in bin_files:
+        state.update(torch.load(path, map_location="cpu", weights_only=True))
+    return state
 
 
 def _enumerate_packed_base_layers(safetensors_files, index_path, weight_dir, bits):
@@ -780,19 +853,26 @@ def generate_rrq_residual(
             candidates.extend(sorted(glob.glob(os.path.join(repo_root, "*"))))
 
     raw_dir_for_index = None
+    raw_kind = None
     for cand in candidates:
-        if glob.glob(os.path.join(cand, "*.safetensors")):
+        files, kind, _idx = _find_raw_weight_files(cand)
+        if files:
             raw_dir_for_index = cand
+            raw_kind = kind
             break
     if raw_dir_for_index is None:
         raise FileNotFoundError(
-            f"No safetensors weight files found for raw model: {raw_model}. "
-            "RRQ residual generation needs safetensors weights."
+            f"No safetensors or pytorch_model.bin weight files found for raw model: {raw_model}. "
+            "RRQ residual generation needs the original FP weights."
         )
 
-    raw_safetensors = sorted(glob.glob(os.path.join(raw_dir_for_index, "*.safetensors")))
-    raw_index_path = os.path.join(raw_dir_for_index, "model.safetensors.index.json")
-    raw_weight_names = _weight_names_from_dir(raw_dir_for_index, raw_index_path, raw_safetensors)
+    raw_files, raw_kind, raw_index_path = _find_raw_weight_files(raw_dir_for_index)
+    raw_safetensors = raw_files if raw_kind == "safetensors" else []
+
+    if raw_kind == "safetensors":
+        raw_weight_names = _weight_names_from_dir(raw_dir_for_index, raw_index_path, raw_safetensors)
+    else:
+        raw_weight_names = set(_load_bin_state_dict(raw_files, raw_index_path))
 
     if not raw_weight_names:
         raise FileNotFoundError(f"No weight files found for raw model: {raw_model}")
@@ -813,7 +893,8 @@ def generate_rrq_residual(
     def _shard_for(index_path, weight_dir, files, tensor_name):
         import json as _json
 
-        if os.path.exists(index_path):
+        # ``index_path`` is None for an unsharded ``pytorch_model.bin``.
+        if index_path and os.path.exists(index_path):
             with open(index_path, "r", encoding="utf-8") as fh:
                 shard = _json.load(fh).get("weight_map", {}).get(tensor_name)
             if shard:
@@ -831,7 +912,7 @@ def generate_rrq_residual(
             logger.warning(f"Layer {layer_name!r} not found in raw model; skipping.")
             continue
 
-        raw_shard = _shard_for(raw_index_path, raw_dir_for_index, raw_safetensors, f"{layer_name}.weight")
+        raw_shard = _shard_for(raw_index_path, raw_dir_for_index, raw_files, f"{layer_name}.weight")
         base_shard = _shard_for(base_index_path, base_model_dir, base_safetensors, f"{layer_name}.qweight")
         jobs.append(
             (
