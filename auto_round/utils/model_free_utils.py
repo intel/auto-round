@@ -3331,6 +3331,7 @@ def _build_mxfp_quantization_config(
                 targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
                 qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = fmt
+            qconfig["config_groups"]["group_0"]["format"] = fmt
             qconfig.update(_get_llm_compressor_metadata())
             return qconfig
         from auto_round.export.formats.compressed_tensors.config import initialize_quantization as _init_q
@@ -3342,6 +3343,7 @@ def _build_mxfp_quantization_config(
             qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
+        qconfig["config_groups"]["group_0"]["format"] = fmt
         qconfig.update(_get_llm_compressor_metadata())
         return qconfig
 
