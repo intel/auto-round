@@ -649,6 +649,313 @@ def run_all_selected_case(head_dim: int, block_size: int = 64) -> None:
         raise RuntimeError(f"sage_sparse python all-selected mismatch for D={head_dim}")
 
 
+def build_partial_block_mask(
+    batch: int,
+    heads: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    q_block_tokens: int,
+    k_block_tokens: int,
+    per_sparse_q_block_selection: list[list[int]],
+    k_block_valid: list[int],
+    device: torch.device,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Reference mask for routing grids where each K block only holds a prefix of real tokens."""
+    mask = torch.full((batch, 1, seq_len_q, seq_len_kv), -1.0e9, dtype=torch.float32, device=device)
+    for qblk, selected_blocks in enumerate(per_sparse_q_block_selection):
+        q_start = qblk * q_block_tokens
+        q_end = min(q_start + q_block_tokens, seq_len_q)
+        for selected in selected_blocks:
+            k_start = selected * k_block_tokens
+            k_end = min(k_start + int(k_block_valid[selected]), seq_len_kv)
+            if k_end <= k_start:
+                continue
+            if not is_causal:
+                mask[:, :, q_start:q_end, k_start:k_end] = 0.0
+            else:
+                for qt in range(q_start, q_end):
+                    visible_end = min(k_end, qt + 1)
+                    if visible_end > k_start:
+                        mask[:, :, qt : qt + 1, k_start:visible_end] = 0.0
+    return mask.contiguous()
+
+
+def run_k_block_valid_case(
+    dtype: torch.dtype,
+    head_dim: int,
+    *,
+    seq_len_q: int,
+    seq_len_kv: int,
+    k_block_valid: list[int],
+    per_sparse_q_block_selection: list[list[int]],
+    q_tile_override: int = 0,
+    num_heads_q: int = 8,
+    num_heads_kv: int = 2,
+    tag: str = "",
+) -> None:
+    """Validate partial 64-token K blocks against a token-exact dense reference."""
+    ensure_sparse_binding(required_symbols=("sage_sparse", "block_sparse_sdpa"))
+    device = torch.device("xpu")
+    batch = 1
+    scale = 1.0 / math.sqrt(head_dim)
+    q_block_tokens = 64
+    k_block_tokens = 64
+    q_blocks = (seq_len_q + q_block_tokens - 1) // q_block_tokens
+    kv_blocks = (seq_len_kv + k_block_tokens - 1) // k_block_tokens
+    assert len(k_block_valid) == kv_blocks, (len(k_block_valid), kv_blocks)
+    assert len(per_sparse_q_block_selection) == q_blocks
+    query_tile_tokens = q_tile_override or (64 if head_dim == 64 else 256)
+    active_query_tiles = (seq_len_q + query_tile_tokens - 1) // query_tile_tokens
+
+    torch.manual_seed(5150 + head_dim + seq_len_q + seq_len_kv + num_heads_q)
+    query = torch.randn((batch, num_heads_q, seq_len_q, head_dim), dtype=dtype, device=device)
+    key = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=dtype, device=device)
+    value = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=dtype, device=device)
+    k_block_valid_tensor = torch.tensor(k_block_valid, dtype=torch.int32, device=device)
+
+    lut, valid, _ = build_sparse_metadata_and_mask(
+        batch,
+        num_heads_q,
+        seq_len_q,
+        64,
+        query_tile_tokens,
+        [[] for _ in range(active_query_tiles)],
+        device,
+        is_causal=False,
+        sparse_q_block_tokens=q_block_tokens,
+        sparse_k_block_tokens=k_block_tokens,
+        seq_len_kv=seq_len_kv,
+        per_sparse_q_block_selection=per_sparse_q_block_selection,
+    )
+    dense_mask = build_partial_block_mask(
+        batch,
+        num_heads_q,
+        seq_len_q,
+        seq_len_kv,
+        q_block_tokens,
+        k_block_tokens,
+        per_sparse_q_block_selection,
+        k_block_valid,
+        device,
+    )
+
+    dense_out = bf16_sparse_reference(
+        query, key, value, dense_mask, scale=scale, enable_gqa=num_heads_q != num_heads_kv
+    )
+    sparse_out = ark.block_sparse_sdpa(
+        query,
+        key,
+        value,
+        lut,
+        valid,
+        is_causal=False,
+        scale=scale,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=q_block_tokens,
+        sparse_k_block_tokens=k_block_tokens,
+        tensor_layout="HND",
+        k_block_valid=k_block_valid_tensor,
+    )
+    torch.xpu.synchronize()
+
+    diff = (dense_out.float() - sparse_out.float()).abs()
+    max_diff = float(diff.max().cpu())
+    mean_diff = float(diff.mean().cpu())
+    max_tol = 2e-2 if dtype == torch.bfloat16 else 5e-3
+    mean_tol = 2e-3 if dtype == torch.bfloat16 else 5e-4
+    print(
+        f"[block_sparse_sdpa][k_block_valid][{tag}] D={head_dim} Sq={seq_len_q} Skv={seq_len_kv} "
+        f"valid={k_block_valid} qtile={query_tile_tokens} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}"
+    )
+    if not math.isfinite(max_diff) or max_diff > max_tol or mean_diff > mean_tol:
+        raise RuntimeError(f"block_sparse_sdpa k_block_valid mismatch for {tag}: max={max_diff}, mean={mean_diff}")
+
+
+def run_k_block_valid_cases() -> None:
+    """Partial-K-block coverage: edge blocks, tile128 splits, multirow, prefix-dense."""
+    import importlib
+
+    ark_module = importlib.import_module("auto_round_kernel.sparse_attention")
+    assert hasattr(ark_module, "supports_k_block_valid"), "ARK must expose supports_k_block_valid()"
+    assert ark_module.supports_k_block_valid(), "installed ARK build does not support k_block_valid"
+    assert ark_module.supports_q256_multirow(), "installed ARK build does not support Q256 multirow"
+
+    # Partial trailing blocks with a Q256 tile that holds four independent 64Q rows.
+    run_k_block_valid_case(
+        torch.bfloat16,
+        128,
+        seq_len_q=256,
+        seq_len_kv=192,
+        k_block_valid=[64, 32, 16],
+        per_sparse_q_block_selection=[[0, 1, 2], [1, 2], [0, 2], [0, 1]],
+        tag="partial_blocks_q256",
+    )
+    # A 128-token K range split into two 64-token route blocks, tail partially valid.
+    run_k_block_valid_case(
+        torch.bfloat16,
+        128,
+        seq_len_q=256,
+        seq_len_kv=128,
+        k_block_valid=[64, 40],
+        per_sparse_q_block_selection=[[0, 1], [0, 1], [1], [0, 1]],
+        tag="tile128_split",
+    )
+    # Independent per-row routing across two 256Q tiles.
+    run_k_block_valid_case(
+        torch.bfloat16,
+        128,
+        seq_len_q=512,
+        seq_len_kv=256,
+        k_block_valid=[64, 48, 64, 24],
+        per_sparse_q_block_selection=[
+            [0, 1],
+            [1, 2],
+            [0, 3],
+            [2, 3],
+            [0, 1, 2],
+            [1, 3],
+            [0, 2, 3],
+            [3],
+        ],
+        q_tile_override=256,
+        tag="multirow_independent",
+    )
+    # Dense prefix rows that still route into a partially filled tail block.
+    run_k_block_valid_case(
+        torch.bfloat16,
+        128,
+        seq_len_q=256,
+        seq_len_kv=320,
+        k_block_valid=[64, 64, 64, 64, 20],
+        per_sparse_q_block_selection=[[0, 1, 2, 3, 4]] * 4,
+        tag="prefix_dense_tail",
+    )
+    # head_dim=64 uses a 64-token physical K tile, so route block and tile coincide.
+    run_k_block_valid_case(
+        torch.bfloat16,
+        64,
+        seq_len_q=256,
+        seq_len_kv=192,
+        k_block_valid=[64, 32, 16],
+        per_sparse_q_block_selection=[[0, 1, 2], [1, 2], [0, 2], [2]],
+        tag="d64_partial_blocks",
+    )
+    # fp16 shares the same masking code path.
+    run_k_block_valid_case(
+        torch.float16,
+        128,
+        seq_len_q=256,
+        seq_len_kv=192,
+        k_block_valid=[64, 32, 16],
+        per_sparse_q_block_selection=[[0, 1, 2], [1, 2], [0, 2], [0, 1]],
+        tag="fp16_partial_blocks",
+    )
+
+    # Full blocks must be bit-identical to the legacy path that never passed k_block_valid.
+    device = torch.device("xpu")
+    num_heads_q, num_heads_kv, head_dim = 8, 2, 128
+    seq_len_q = seq_len_kv = 256
+    scale = 1.0 / math.sqrt(head_dim)
+    selection = [[0, 1], [1, 3], [0, 2, 3], [2, 3]]
+    torch.manual_seed(5150 + 99)
+    query = torch.randn((1, num_heads_q, seq_len_q, head_dim), dtype=torch.bfloat16, device=device)
+    key = torch.randn((1, num_heads_kv, seq_len_kv, head_dim), dtype=torch.bfloat16, device=device)
+    value = torch.randn((1, num_heads_kv, seq_len_kv, head_dim), dtype=torch.bfloat16, device=device)
+    lut, valid, _ = build_sparse_metadata_and_mask(
+        1,
+        num_heads_q,
+        seq_len_q,
+        64,
+        256,
+        [[]],
+        device,
+        is_causal=False,
+        sparse_q_block_tokens=64,
+        sparse_k_block_tokens=64,
+        seq_len_kv=seq_len_kv,
+        per_sparse_q_block_selection=selection,
+    )
+    legacy_out = ark.block_sparse_sdpa(
+        query,
+        key,
+        value,
+        lut,
+        valid,
+        is_causal=False,
+        scale=scale,
+        sparse_q_block_tokens=64,
+        sparse_k_block_tokens=64,
+        tensor_layout="HND",
+    )
+    full_out = ark.block_sparse_sdpa(
+        query,
+        key,
+        value,
+        lut,
+        valid,
+        is_causal=False,
+        scale=scale,
+        sparse_q_block_tokens=64,
+        sparse_k_block_tokens=64,
+        tensor_layout="HND",
+        k_block_valid=torch.full((seq_len_kv // 64,), 64, dtype=torch.int32, device=device),
+    )
+    torch.xpu.synchronize()
+    if not torch.equal(legacy_out, full_out):
+        raise RuntimeError("full k_block_valid lengths changed the legacy block_sparse_sdpa output")
+    print("[block_sparse_sdpa][k_block_valid][full_blocks_legacy_equal] exact match")
+
+    # k_block_valid is only meaningful on the 64-token routing grid.
+    kv128_blocks = 2
+    lut128 = torch.zeros((1, num_heads_q, seq_len_q // 64, kv128_blocks), dtype=torch.int32, device=device)
+    valid128 = torch.zeros((1, num_heads_q, seq_len_q // 64), dtype=torch.int32, device=device)
+    valid128[..., 0] = 1
+    try:
+        ark.block_sparse_sdpa(
+            query,
+            key,
+            value,
+            lut128,
+            valid128,
+            is_causal=False,
+            scale=scale,
+            sparse_q_block_tokens=64,
+            sparse_k_block_tokens=128,
+            tensor_layout="HND",
+            k_block_valid=torch.full((kv128_blocks,), 64, dtype=torch.int32, device=device),
+        )
+    except ValueError as error:
+        assert "sparse_k_block_tokens=64" in str(error), f"unexpected error: {error}"
+    else:
+        raise AssertionError("k_block_valid must be rejected for 128-token K routing")
+
+    for bad_k_block_valid, expected in (
+        (torch.full((seq_len_kv // 64,), 64, dtype=torch.int64, device=device), "int32"),
+        (torch.full((seq_len_kv // 64 + 1,), 64, dtype=torch.int32, device=device), "shape"),
+        (torch.full((seq_len_kv // 64,), 65, dtype=torch.int32, device=device), "[0, 64]"),
+    ):
+        try:
+            ark.block_sparse_sdpa(
+                query,
+                key,
+                value,
+                lut,
+                valid,
+                is_causal=False,
+                scale=scale,
+                sparse_q_block_tokens=64,
+                sparse_k_block_tokens=64,
+                tensor_layout="HND",
+                k_block_valid=bad_k_block_valid,
+            )
+        except ValueError as error:
+            assert expected in str(error), f"unexpected error: {error}"
+        else:
+            raise AssertionError(f"k_block_valid validation accepted dtype={bad_k_block_valid.dtype}")
+    print("[block_sparse_sdpa][k_block_valid][validation] rejected unsupported configs")
+
+
 def main() -> None:
     ensure_sparse_binding()
     if not torch.xpu.is_available():
@@ -702,6 +1009,7 @@ def main() -> None:
         run_case_sdpa_full(dtype, 64)
         run_case_sdpa_full(dtype, 128, q_tile_override=64)
         run_multi_row_tile_case_sdpa(dtype)
+    run_k_block_valid_cases()
     for q_len, kv_len, k_block_tokens in ((384, 768, 128), (383, 641, 128), (383, 641, 64), (63, 65, 128)):
         run_case_sdpa(
             torch.bfloat16,

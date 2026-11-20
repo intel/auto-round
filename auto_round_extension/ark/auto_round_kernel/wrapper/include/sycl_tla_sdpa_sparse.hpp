@@ -84,6 +84,12 @@ struct has_sparse_q_block_size : std::false_type {};
 template <class T>
 struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
 
+template <class T, class = void>
+struct has_k_block_valid : std::false_type {};
+
+template <class T>
+struct has_k_block_valid<T, std::void_t<decltype(std::declval<T&>().k_block_valid)>> : std::true_type {};
+
 // Sparse SDPA launch options.
 //
 // Dense SDPA mainly needs tensor pointers, logical shapes, and an optional mask.
@@ -109,6 +115,11 @@ struct Options {
   // Sparse routing metadata is stored per (batch, q_head, q_block). Each LUT row is delta-encoded
   // over logical KV blocks and valid_block_num says how many entries in that row are live.
   const int *lut = nullptr, *valid_block_num = nullptr;
+  // Optional per-logical-K-block valid lengths for a 64-token sparse K routing
+  // grid. Entry b says how many of the 64 keys in route block b are real; every
+  // key column at or beyond that limit is masked to -inf before softmax so that
+  // zero padded tail tokens never enter the denominator.
+  const int *k_block_valid = nullptr;
   // Number of logical sparse Q rows and logical sparse K columns represented by
   // the LUT. These are not tile counts in the dense GEMM sense; they describe the
   // routing grid that the sparse mainloop walks.
@@ -148,6 +159,7 @@ struct Options {
        << "  sparse_q_block_size: " << sparse_q_block_size << "\n"
        << "  lut: " << lut << "\n"
        << "  valid_block_num: " << valid_block_num << "\n"
+       << "  k_block_valid: " << k_block_valid << "\n"
        << "  num_q_blocks: " << num_q_blocks << "\n"
        << "  num_k_blocks: " << num_k_blocks << "\n"
        << "  block_K: " << block_K << "\n"
@@ -192,24 +204,31 @@ MainloopArguments make_sage_mainloop_arguments(const Options& options) {
     // lut / valid_block_num: delta-encoded sparse routing table
     // num_q_blocks / num_k_blocks: logical routing-grid shape
     // sparse_q_block_size: how many Q tokens share one LUT row
-    return {options.softmax_scale,
-            static_cast<const float*>(options.mask),
-            options.scale_block_size,
-            static_cast<const float*>(options.qscale),
-            static_cast<const float*>(options.kscale),
-            static_cast<const float*>(options.vscale),
-            options.lut,
-            options.valid_block_num,
-            options.num_q_blocks,
-            // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
-            // spans the concatenated cache + current KV space even though the kernel may source data from
-            // different tensors under the hood.
-            options.num_k_blocks,
-            options.sparse_q_block_size,
-            false,
-            options.use_paged_kv ? options.page_table : nullptr,
-            options.use_paged_kv ? options.page_size : 0,
-            options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+    MainloopArguments args{options.softmax_scale,
+                           static_cast<const float*>(options.mask),
+                           options.scale_block_size,
+                           static_cast<const float*>(options.qscale),
+                           static_cast<const float*>(options.kscale),
+                           static_cast<const float*>(options.vscale),
+                           options.lut,
+                           options.valid_block_num,
+                           options.num_q_blocks,
+                           // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
+                           // spans the concatenated cache + current KV space even though the kernel may source data from
+                           // different tensors under the hood.
+                           options.num_k_blocks,
+                           options.sparse_q_block_size,
+                           false,
+                           options.use_paged_kv ? options.page_table : nullptr,
+                           options.use_paged_kv ? options.page_size : 0,
+                           options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+    // Only the native-precision sparse SDPA mainloop carries the optional
+    // per-K-block valid lengths; the INT8 sparse SAGE mainloop shares the
+    // canonical_nhd_k layout and simply ignores them.
+    if constexpr (has_k_block_valid<MainloopArguments>::value) {
+      args.k_block_valid = options.k_block_valid;
+    }
+    return args;
   } else {
     return {options.softmax_scale,
             static_cast<const float*>(options.mask),

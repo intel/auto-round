@@ -214,12 +214,18 @@ def block_sparse_sdpa(
     tensor_layout: str = "HND",
     execution_schedule: torch.Tensor | None = None,
     execution_schedule_rounds: torch.Tensor | None = None,
+    k_block_valid: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Low-level native-precision sparse attention (BF16/FP16) routed by sparse LUT metadata.
 
     Independent path built on the dense-SDPA sparse mainloop (SparseSDPAConfig).
     Unlike the INT8 ``sage_sparse`` path it does not reuse the INT8-centric SAGE
     mainloop; Q/K/V are native BF16/FP16 and the softmax scale is applied directly.
+
+    ``k_block_valid`` (optional, int32, one entry per 64-token routed K block) caps
+    how many keys of each block are real; columns past the limit are masked to
+    -inf before softmax. Blocks with a zero length must not be routed by ``lut``.
+    Use :func:`supports_k_block_valid` to check whether a build understands it.
     """
     del dropout_p, enable_gqa
     if query.device.type != "xpu":
@@ -262,6 +268,19 @@ def block_sparse_sdpa(
         raise ValueError(
             f"valid_block_num must have shape {(B, Hq, q_sparse_blocks)}, got {tuple(valid_block_num.shape)}"
         )
+    if k_block_valid is not None:
+        if effective_sparse_k_block_tokens != 64:
+            raise ValueError("k_block_valid currently requires sparse_k_block_tokens=64")
+        if k_block_valid.dtype != torch.int32:
+            raise ValueError("k_block_valid must be an int32 tensor")
+        if tuple(k_block_valid.shape) != (kv_sparse_blocks,):
+            raise ValueError(f"k_block_valid must have shape {(kv_sparse_blocks,)}, got {tuple(k_block_valid.shape)}")
+        if k_block_valid.device != query.device:
+            raise ValueError("k_block_valid must be on the same XPU device as Q/K/V")
+        if not k_block_valid.is_contiguous():
+            raise ValueError("k_block_valid must be contiguous")
+        if torch.any(k_block_valid < 0).item() or torch.any(k_block_valid > 64).item():
+            raise ValueError("k_block_valid entries must be in [0, 64]")
     if torch.any(valid_block_num < 0).item():
         raise ValueError("valid_block_num entries must be non-negative")
     if torch.any(valid_block_num > kv_sparse_blocks).item():
@@ -344,6 +363,7 @@ def block_sparse_sdpa(
         execution_schedule.data_ptr() if execution_schedule is not None else 0,
         execution_schedule_rounds.data_ptr() if execution_schedule_rounds is not None else 0,
         schedule_max_rounds,
+        k_block_valid.data_ptr() if k_block_valid is not None else 0,
     )
     return O
 
@@ -714,6 +734,45 @@ def _resolve_sparse_prefill_q_tile_override(
         return q_tile_override
 
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
+
+
+def supports_k_block_valid(device: torch.device | str | torch.Tensor = "xpu") -> bool:
+    """Return whether this ARK build honours ``k_block_valid`` in ``block_sparse_sdpa``.
+
+    ``k_block_valid`` tells the sparse SDPA kernel how many of the 64 keys in each
+    routed K block hold real tokens. Without it, zero-padded tail tokens (partial
+    edge blocks, truncated prefixes) still enter the softmax denominator. The
+    argument is optional, so callers that need the exact token semantics must
+    probe this before dispatching.
+    """
+    probe = device if isinstance(device, torch.Tensor) else torch.empty(0, device=device)
+    lib = get_lib(probe)
+    kernel = getattr(lib, "block_sparse_sdpa", None)
+    if kernel is None:
+        return False
+    if getattr(lib, "ARK_BLOCK_SPARSE_K_BLOCK_VALID", False):
+        return True
+    # Fall back to the pybind11 signature for builds that predate the capability flag.
+    return "k_block_valid" in (getattr(kernel, "__doc__", "") or "")
+
+
+def supports_q256_multirow() -> bool:
+    """Return whether ARK can run independent 64Q routing rows inside one Q256 tile."""
+    try:
+        return (
+            _resolve_sparse_prefill_q_tile_override(
+                head_dim=128,
+                quant_block_size=64,
+                q_tile_override=256,
+                sparse_q_block_tokens=64,
+                sparse_k_block_tokens=64,
+                tensor_layout="NHD",
+                allow_multi_row_tile=True,
+            )
+            == 256
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:

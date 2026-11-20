@@ -343,7 +343,7 @@ void sdpa_impl_bf16_sparse_sdpa_d64(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal);
+    bool is_causal, void* k_block_valid = nullptr);
 
 void sdpa_impl_fp16_sparse_sdpa_d64(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -351,7 +351,7 @@ void sdpa_impl_fp16_sparse_sdpa_d64(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal);
+    bool is_causal, void* k_block_valid = nullptr);
 
 void sdpa_impl_bf16_sparse_sdpa_row_linear(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -359,7 +359,7 @@ void sdpa_impl_bf16_sparse_sdpa_row_linear(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal);
+    bool is_causal, void* k_block_valid = nullptr);
 
 void sdpa_impl_fp16_sparse_sdpa_row_linear(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -367,7 +367,7 @@ void sdpa_impl_fp16_sparse_sdpa_row_linear(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal);
+    bool is_causal, void* k_block_valid = nullptr);
 
 void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -376,7 +376,8 @@ void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
     int sparse_q_block_size = 256, int const* execution_schedule = nullptr,
-    int const* execution_schedule_rounds = nullptr, int execution_schedule_max_rounds = 0);
+    int const* execution_schedule_rounds = nullptr, int execution_schedule_max_rounds = 0,
+    void* k_block_valid = nullptr);
 
 void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -384,7 +385,7 @@ void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size = 64);
+    int sparse_q_block_size = 64, void* k_block_valid = nullptr);
 
 void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -392,7 +393,7 @@ void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size = 64);
+    int sparse_q_block_size = 64, void* k_block_valid = nullptr);
 
 void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
     sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
@@ -400,7 +401,7 @@ void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size = 256);
+    int sparse_q_block_size = 256, void* k_block_valid = nullptr);
 #endif  // ARK_SYCL_TLA
 
 }  // namespace ark

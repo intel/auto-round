@@ -148,7 +148,8 @@ void sparse_sdpa_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                          int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
                          int head_dim, float softmax_scale, bool is_causal, BTLA_DTYPE q_dtype,
                          int sparse_q_block_size = 0, int const* execution_schedule = nullptr,
-                         int const* execution_schedule_rounds = nullptr, int execution_schedule_max_rounds = 0) {
+                         int const* execution_schedule_rounds = nullptr, int execution_schedule_max_rounds = 0,
+                         void* k_block_valid = nullptr) {
   const int effective_q_tile_override =
       (head_dim == 128 && q_tile_override == 0) ? 64 : ((head_dim == 64 && q_tile_override == 0) ? 64 : q_tile_override);
   detail::Options options =
@@ -170,6 +171,7 @@ void sparse_sdpa_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.execution_schedule = execution_schedule;
   options.execution_schedule_rounds = execution_schedule_rounds;
   options.execution_schedule_max_rounds = execution_schedule_max_rounds;
+  options.k_block_valid = static_cast<int const*>(k_block_valid);
   compat::set_default_queue(*q);
 
   KernelLauncher launcher =
@@ -189,7 +191,7 @@ void sdpa_impl_bf16_sparse_sdpa_d64(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
+    bool is_causal, void* k_block_valid) {
   if (mask && is_causal) {
     throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_d64: mask and is_causal cannot both be set");
   }
@@ -210,7 +212,8 @@ void sdpa_impl_bf16_sparse_sdpa_d64(
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::BF16, /*sparse_q_block_size=*/64);
+                      softmax_scale, is_causal, BTLA_DTYPE::BF16, /*sparse_q_block_size=*/64, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_fp16_sparse_sdpa_d64(
@@ -219,7 +222,7 @@ void sdpa_impl_fp16_sparse_sdpa_d64(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
+    bool is_causal, void* k_block_valid) {
   if (mask && is_causal) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_d64: mask and is_causal cannot both be set");
   }
@@ -240,7 +243,8 @@ void sdpa_impl_fp16_sparse_sdpa_d64(
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::F16, /*sparse_q_block_size=*/64);
+                      softmax_scale, is_causal, BTLA_DTYPE::F16, /*sparse_q_block_size=*/64, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_bf16_sparse_sdpa_row_linear(
@@ -249,7 +253,7 @@ void sdpa_impl_bf16_sparse_sdpa_row_linear(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
+    bool is_causal, void* k_block_valid) {
   if (q_tile_override != 0 && q_tile_override != 64) {
     throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_row_linear: q_tile_override must be 0 or 64");
   }
@@ -272,7 +276,8 @@ void sdpa_impl_bf16_sparse_sdpa_row_linear(
                       q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                       k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h,
                       o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                      is_causal, BTLA_DTYPE::BF16, /*sparse_q_block_size=*/64);
+                      is_causal, BTLA_DTYPE::BF16, /*sparse_q_block_size=*/64, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_fp16_sparse_sdpa_row_linear(
@@ -281,7 +286,7 @@ void sdpa_impl_fp16_sparse_sdpa_row_linear(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
+    bool is_causal, void* k_block_valid) {
   if (q_tile_override != 0 && q_tile_override != 64) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_row_linear: q_tile_override must be 0 or 64");
   }
@@ -304,7 +309,8 @@ void sdpa_impl_fp16_sparse_sdpa_row_linear(
                       q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                       k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h,
                       o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                      is_causal, BTLA_DTYPE::F16, /*sparse_q_block_size=*/64);
+                      is_causal, BTLA_DTYPE::F16, /*sparse_q_block_size=*/64, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
@@ -314,7 +320,7 @@ void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
     int sparse_q_block_size, int const* execution_schedule, int const* execution_schedule_rounds,
-    int execution_schedule_max_rounds) {
+    int execution_schedule_max_rounds, void* k_block_valid) {
   if (q_tile_override != 256 && q_tile_override != 512) {
     throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile256_row64k: q_tile_override must be 256 or 512");
   }
@@ -331,7 +337,7 @@ void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
                       softmax_scale, is_causal, BTLA_DTYPE::BF16, sparse_q_block_size, execution_schedule,
-                      execution_schedule_rounds, execution_schedule_max_rounds);
+                      execution_schedule_rounds, execution_schedule_max_rounds, k_block_valid);
 }
 
 void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
@@ -340,7 +346,7 @@ void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size) {
+    int sparse_q_block_size, void* k_block_valid) {
   if (q_tile_override != 128) {
     throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile128_row64k: q_tile_override must be 128");
   }
@@ -358,7 +364,8 @@ void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::BF16, sparse_q_block_size);
+                      softmax_scale, is_causal, BTLA_DTYPE::BF16, sparse_q_block_size, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
@@ -367,7 +374,7 @@ void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size) {
+    int sparse_q_block_size, void* k_block_valid) {
   if (q_tile_override != 128) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile128_row64k: q_tile_override must be 128");
   }
@@ -382,7 +389,8 @@ void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size);
+                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
@@ -391,7 +399,7 @@ void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
     int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-    int sparse_q_block_size) {
+    int sparse_q_block_size, void* k_block_valid) {
   if (q_tile_override != 256) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile256_row64k: q_tile_override must be 256");
   }
@@ -407,7 +415,8 @@ void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size);
+                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size, nullptr, nullptr,
+                      /*execution_schedule_max_rounds=*/0, k_block_valid);
 }
 
 }  // namespace ark
