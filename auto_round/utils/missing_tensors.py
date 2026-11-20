@@ -68,15 +68,23 @@ def _restore_special_fp32_tensors(
             source_to_saved[source_name] = source_name
 
     source_names_by_shard: dict[str, list[str]] = {}
-    for tensor_name in source_to_saved:
-        source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
+    for tensor_name, source_shard in source_tensor_to_file.items():
+        source_names_by_shard.setdefault(source_shard, []).append(tensor_name)
 
     candidates: list[str] = []
+    has_low_precision_float = False
     for source_shard, tensor_names in source_names_by_shard.items():
         with safe_open(source_shard, framework="pt", device="cpu") as source_file:
             for tensor_name in tensor_names:
-                if source_file.get_slice(tensor_name).get_dtype() == "F32":
+                dtype = source_file.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32" and tensor_name in source_to_saved:
                     candidates.append(tensor_name)
+
+    # An all-FP32 source has no "special" FP32 tensors; the downcast to the export dtype is intended.
+    if not has_low_precision_float:
+        return
 
     target_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in candidates:
@@ -91,7 +99,13 @@ def _restore_special_fp32_tensors(
                 if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
                     source_shard = source_tensor_to_file[tensor_name]
                     with safe_open(source_shard, framework="pt", device="cpu") as source_file:
-                        tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
+                        source_tensor = source_file.get_tensor(tensor_name)
+                    target_tensor = target_file.get_tensor(target_name)
+                    # Skip tensors changed beyond a plain downcast (e.g. fake-quantized weights).
+                    if source_tensor.shape == target_tensor.shape and torch.equal(
+                        source_tensor.to(target_tensor.dtype), target_tensor
+                    ):
+                        tensors_to_restore[tensor_name] = source_tensor
 
     restore_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in tensors_to_restore:
@@ -129,24 +143,79 @@ def _restore_special_fp32_tensors(
         )
 
 
-def _resolve_tensor_shard_maps(
-    source_dir: str,
-    target_dir: str,
-) -> tuple[dict[str, str], dict[str, str]] | None:
-    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+def keep_special_fp32_params(model: torch.nn.Module, source_dir: str) -> list[str]:
+    """Preserve checkpoint FP32 tensors after loading or building a meta skeleton.
 
-    Returns ``None`` when either checkpoint cannot be resolved (missing config,
-    unresolvable source repo, or no safetensors present), in which case callers
-    should skip whatever tensor-level processing they were about to do.
+    Only applies to mixed-precision checkpoints (e.g. a BF16 model that stores
+    ``linear_attn.norm.weight`` in FP32); for an all-FP32 checkpoint the load dtype is
+    intentional. Restored names are appended to ``model._keep_in_fp32_modules`` so that
+    later ``cast_model_dtype`` calls and export keep them in FP32.
+
+    Meta tensors are promoted without reading their payload; materialization later
+    loads the original FP32 values. Returns the restored or marked tensor names.
     """
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if not source_tensor_to_file:
+        return []
+    from safetensors import safe_open
+
+    model_tensors = dict(model.named_parameters(remove_duplicate=False))
+    model_tensors.update(model.named_buffers(remove_duplicate=False))
+
+    names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, shard in source_tensor_to_file.items():
+        names_by_shard.setdefault(shard, []).append(tensor_name)
+
+    has_low_precision_float = False
+    candidates_by_shard: dict[str, list[str]] = {}
+    for shard, tensor_names in names_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                dtype = f.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32":
+                    tensor = model_tensors.get(tensor_name)
+                    if tensor is not None and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32):
+                        candidates_by_shard.setdefault(shard, []).append(tensor_name)
+
+    if not has_low_precision_float or not candidates_by_shard:
+        return []
+
+    restored: list[str] = []
+    for shard, tensor_names in candidates_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                tensor = model_tensors[tensor_name]
+                if tensor.device.type == "meta":
+                    if tuple(f.get_slice(tensor_name).get_shape()) != tuple(tensor.shape):
+                        continue
+                    tensor.data = tensor.to(dtype=torch.float32)
+                    restored.append(tensor_name)
+                    continue
+                value = f.get_tensor(tensor_name)
+                if value.shape != tensor.shape:
+                    continue
+                tensor.data = value.to(tensor.device)
+                restored.append(tensor_name)
+
+    if restored:
+        keep = getattr(model, "_keep_in_fp32_modules", None) or []
+        keep = [keep] if isinstance(keep, str) else list(keep)
+        model._keep_in_fp32_modules = keep + [name for name in restored if name not in keep]
+        logger.info(
+            f"Kept {len(restored)} checkpoint FP32 tensor(s) in FP32 after loading: "
+            f"{compress_layer_names(restored)}."
+        )
+    return restored
+
+
+def _resolve_source_tensor_map(source_dir: str) -> dict[str, str] | None:
+    """Return ``tensor_name -> shard_file`` for the safetensors checkpoint in *source_dir*."""
     try:
         from safetensors import safe_open
     except ImportError:
         logger.warning("safetensors not available, skipping tensor comparison against source checkpoint")
-        return None
-
-    config_path = os.path.join(target_dir, "config.json")
-    if not os.path.exists(config_path):
         return None
 
     if not os.path.isdir(source_dir):
@@ -180,6 +249,27 @@ def _resolve_tensor_shard_maps(
                 source_tensor_to_file[key] = source_single_file
     else:
         return None
+    return source_tensor_to_file
+
+
+def _resolve_tensor_shard_maps(
+    source_dir: str,
+    target_dir: str,
+) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+
+    Returns ``None`` when either checkpoint cannot be resolved (missing config,
+    unresolvable source repo, or no safetensors present), in which case callers
+    should skip whatever tensor-level processing they were about to do.
+    """
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if source_tensor_to_file is None:
+        return None
+    from safetensors import safe_open
 
     saved_tensor_to_file: dict[str, str] = {}
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
@@ -473,6 +563,16 @@ def copy_missing_tensors_from_source(
         return
 
     # ------------------------------------------------------------------ #
+    # compressed-tensors: register copied-through modules in ``ignore``     #
+    # ------------------------------------------------------------------ #
+    # For the compressed-tensors / llm_compressor export format these tensors
+    # are written unquantized (BF16). If a ``config_groups`` group targets the
+    # bare class name ``"Linear"`` (a catch-all), an inference engine such as
+    # vLLM applies that scheme to every ``nn.Linear`` not listed in ``ignore``
+    # and then fails to load these scale-less modules. Add them to ``ignore``.
+    _register_missing_modules_in_ct_ignore(target_dir, missing_tensors_dict)
+
+    # ------------------------------------------------------------------ #
     # Write missing tensors to a new shard and update the index             #
     # ------------------------------------------------------------------ #
     is_sharded = os.path.exists(saved_index_file)
@@ -503,6 +603,94 @@ def copy_missing_tensors_from_source(
     logger.info(
         f"Successfully wrote {len(missing_tensors_dict)} missing tensor(s) to " f"'{new_shard_name}' in {target_dir}."
     )
+
+
+def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict: dict) -> None:
+    """Add copied-through (unquantized) Linear modules to the compressed-tensors ``ignore`` list.
+
+    When ``transformers`` does not instantiate a submodule (most notably **MTP /
+    multi-token-prediction** layers), AutoRound copies its original weights into
+    the saved checkpoint verbatim (see :func:`copy_missing_tensors_from_source`),
+    leaving them unquantized (no ``weight_scale``).
+
+    For the compressed-tensors / llm_compressor export format, a ``config_groups``
+    group whose ``targets`` include the bare class name ``"Linear"`` acts as a
+    catch-all that an inference engine (e.g. vLLM) applies to *every* ``nn.Linear``
+    that is not listed in ``ignore``. Because the copied-through modules carry no
+    scales, loading fails unless they are explicitly ignored. This function adds
+    their module names to ``ignore`` in both ``config.json`` (the embedded copy
+    engines read) and the standalone ``quantization_config.json``.
+
+    This is a no-op for the WOQ / ``auto_round:auto_gptq`` export path (which has
+    no ``config_groups`` and handles missing tensors via ``extra_config`` in
+    :func:`_woq_quantize_missing_tensors`).
+
+    Args:
+        target_dir: Output directory that contains ``config.json``.
+        missing_tensors_dict: Dict mapping copied-through tensor names to values.
+    """
+    import re as _re
+
+    # Only 2-D Linear weights can be matched by a "Linear" catch-all target.
+    missing_linear_modules = sorted(
+        {
+            name[: -len(".weight")]
+            for name, tensor in missing_tensors_dict.items()
+            if name.endswith(".weight") and getattr(tensor, "dim", lambda: 0)() == 2
+        }
+    )
+    if not missing_linear_modules:
+        return
+
+    def _is_compressed_tensors(qcfg: dict) -> bool:
+        return (
+            isinstance(qcfg, dict)
+            and qcfg.get("quant_method") == "compressed-tensors"
+            and isinstance(qcfg.get("config_groups"), dict)
+        )
+
+    def _already_ignored(ignore_list: list, module_name: str) -> bool:
+        for entry in ignore_list:
+            if entry == module_name:
+                return True
+            if isinstance(entry, str) and entry.startswith("re:"):
+                try:
+                    if _re.match(entry[len("re:") :], module_name):
+                        return True
+                except _re.error:
+                    continue
+        return False
+
+    def _update_qcfg(qcfg: dict) -> list:
+        ignore_list = qcfg.get("ignore")
+        if not isinstance(ignore_list, list):
+            ignore_list = []
+        added = [m for m in missing_linear_modules if not _already_ignored(ignore_list, m)]
+        if added:
+            qcfg["ignore"] = ignore_list + added
+        return added
+
+    for cfg_file in ["config.json", "quantization_config.json"]:
+        cfg_path = os.path.join(target_dir, cfg_file)
+        if not os.path.exists(cfg_path):
+            continue
+        try:
+            with open(cfg_path) as f:
+                cfg_data = json.load(f)
+            qcfg = cfg_data.get("quantization_config", {}) if cfg_file == "config.json" else cfg_data
+            if not _is_compressed_tensors(qcfg):
+                continue
+            added = _update_qcfg(qcfg)
+            if not added:
+                continue
+            with open(cfg_path, "w") as f:
+                json.dump(cfg_data, f, indent=2)
+            logger.info(
+                f"Added {len(added)} copied-through module(s) to the compressed-tensors "
+                f"'ignore' list in {cfg_file}: {compress_layer_names(added)}"
+            )
+        except Exception as e:  # pragma: no cover - defensive, mirrors sibling handlers
+            logger.warning(f"Failed to update 'ignore' in {cfg_file}: {e}")
 
 
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:

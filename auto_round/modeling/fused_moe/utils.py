@@ -16,6 +16,28 @@ import torch
 import torch.nn as nn
 
 from auto_round import envs
+from auto_round.logger import logger
+
+
+def log_moe_execution_once(path: str, reason: str, *, suggest_issue: bool = False) -> None:
+    """Report each execution state once, without routing-dependent cache keys.
+
+    Args:
+        path (str): Stable label identifying the selected or fallback execution path.
+        reason (str): Configuration-based explanation independent of routed token counts.
+        suggest_issue (bool): Whether to warn and suggest reporting the unsupported case.
+    """
+    if suggest_issue:
+        logger.warning_once(
+            "[MoE grouped] %s: %s. Correctness-preserving fallback is used. "
+            "Supporting this case may provide substantial speedups; actual gains depend on the model and hardware. "
+            "Please open an issue at https://github.com/intel/auto-round/issues with the model, quantization config, "
+            "hardware, PyTorch/Transformers versions and this log.",
+            path,
+            reason,
+        )
+    else:
+        logger.info_once("[MoE grouped] %s: %s.", path, reason)
 
 
 def _update_parameter(
@@ -41,14 +63,65 @@ def is_linearized_layout(original: torch.nn.Module) -> bool:
     return all(hasattr(first_expert, attr) for attr in ("gate_proj", "up_proj", "down_proj"))
 
 
+def _prepare_moe_route_batches(
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[list[int]]]:
+    """Sort token-expert pairs by expert once and return ``[expert_id, count]`` for each active expert."""
+    num_tokens = hidden_states.size(0)
+    top_k = top_k_index.size(-1)
+    token_idx = torch.arange(num_tokens, device=hidden_states.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)
+    sorted_expert_ids, permutation = torch.sort(top_k_index.reshape(-1))
+    if sorted_expert_ids.numel() == 0:
+        return hidden_states.new_empty((0, hidden_states.size(-1))), sample_weights, permutation, []
+
+    active_experts, counts = torch.unique_consecutive(sorted_expert_ids, return_counts=True)
+    # The only host sync of the routing step.
+    route_plan = torch.stack((active_experts.to(torch.int64), counts.to(torch.int64)), dim=1).tolist()
+    sorted_hidden_states = hidden_states.index_select(0, token_idx.index_select(0, permutation))
+    sorted_weights = sample_weights.index_select(0, permutation)
+    return sorted_hidden_states, sorted_weights, permutation, route_plan
+
+
+def _restore_moe_route_order(
+    sorted_outputs: torch.Tensor,
+    permutation: torch.Tensor,
+    num_tokens: int,
+    top_k: int,
+) -> torch.Tensor:
+    """Scatter sorted outputs back to ``(token, top_k)`` order and reduce over ``top_k``."""
+    outputs = torch.zeros_like(sorted_outputs)
+    outputs.index_copy_(0, permutation, sorted_outputs)
+    # reshape+sum instead of index_add_: index_add_ with duplicate indices is non-deterministic on CUDA.
+    return outputs.view(num_tokens, top_k, outputs.size(-1)).sum(dim=1)
+
+
+def _opaque_to_dynamo(fn):
+    """Keep data-dependent MoE routing outside any enclosing ``torch.compile`` graph."""
+    disable = getattr(torch.compiler, "disable", None)
+    if disable is None:  # pragma: no cover - torch < 2.1
+        dynamo = getattr(torch, "_dynamo", None)
+        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
+    return disable(fn) if disable is not None else fn
+
+
+@_opaque_to_dynamo
 def sequential_moe_forward(
     hidden_states: torch.Tensor,
     top_k_index: torch.Tensor,
     top_k_weights: torch.Tensor,
     experts,
     num_experts: int,
+    *,
+    _log_execution: bool = True,
 ) -> torch.Tensor:
     """Sequential per-expert MoE forward using a single sort to group tokens by expert.
+
+    Only active experts are visited, and the routing step costs a single host sync
+    (instead of one ``nonzero()`` + ``.numel()`` sync per expert, which dominated
+    decode latency on many-expert MoEs such as Qwen3-30B-A3B).
 
     Repeatedly issuing dynamic-shape gather kernels (``nonzero()``,
     ``index_select()`` or boolean-mask indexing) once per expert in a Python
@@ -72,34 +145,36 @@ def sequential_moe_forward(
     Returns:
         final_hidden_states: (num_tokens, hidden_dim) output tensor.
     """
-    hidden_dim = hidden_states.size(-1)
+    if _log_execution:
+        if str(envs.AR_MOE_EXPERTS_IMPL).lower() == "linear_loop":
+            log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL=linear_loop was explicitly requested")
+        else:
+            log_moe_execution_once(
+                "Grouped MoE not used",
+                "this architecture invokes the sequential expert implementation directly",
+                suggest_issue=True,
+            )
     num_tokens = hidden_states.size(0)
     top_k = top_k_index.size(-1)
-    device = hidden_states.device
+    sorted_hidden_states, sorted_weights, permutation, route_plan = _prepare_moe_route_batches(
+        hidden_states, top_k_index, top_k_weights
+    )
+    output_batches = []
+    offset = 0
+    for expert_idx, count in route_plan:
+        expert_input = sorted_hidden_states[offset : offset + count]
+        if 0 <= expert_idx < num_experts:
+            output_batches.append(experts[expert_idx](expert_input).to(hidden_states.dtype))
+        else:
+            # Out-of-range ids (e.g. masked / non-local experts) contribute nothing.
+            output_batches.append(torch.zeros_like(expert_input))
+        offset += count
 
-    token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-    expert_ids = top_k_index.reshape(-1)  # (S,)
-
-    selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
-
-    out_per_sample = torch.zeros_like(selected_hidden_states)
-    for expert_idx in range(num_experts):
-        sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
-        if sample_idx.numel() == 0:
-            continue
-        expert_input = selected_hidden_states.index_select(0, sample_idx)
-        expert_out = experts[expert_idx](expert_input).to(out_per_sample.dtype)
-        out_per_sample.index_copy_(0, sample_idx, expert_out)
-
-    # Apply routing weights
-    out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
-
-    # Accumulate results using deterministic reshape+sum instead of index_add_
-    # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-    final_hidden_states = out_per_sample.view(num_tokens, top_k, hidden_dim).sum(dim=1)
-
-    return final_hidden_states
+    if output_batches:
+        sorted_outputs = torch.cat(output_batches, dim=0) * sorted_weights.unsqueeze(-1)
+    else:
+        sorted_outputs = sorted_hidden_states
+    return _restore_moe_route_order(sorted_outputs, permutation, num_tokens, top_k)
 
 
 def grouped_or_sequential_moe_forward(
@@ -142,7 +217,22 @@ def grouped_or_sequential_moe_forward(
         from auto_round.modeling.fused_moe.grouped_experts import grouped_linear_experts_forward
 
         return grouped_linear_experts_forward(experts, hidden_states, top_k_index, top_k_weights)
-    return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, num_experts)
+    requested = str(envs.AR_MOE_EXPERTS_IMPL).lower()
+    if requested == LINEAR_LOOP_IMPL:
+        log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL=linear_loop was explicitly requested")
+    elif hidden_states.device.type != "cuda":
+        log_moe_execution_once(
+            "Grouped MoE not used",
+            f"grouped dispatch is not enabled for device type {hidden_states.device.type}",
+            suggest_issue=True,
+        )
+    elif not (hasattr(experts, "act_fn") or hasattr(experts, "_apply_gate")):
+        log_moe_execution_once(
+            "Grouped MoE not used", "expert container has no supported activation/gating interface", suggest_issue=True
+        )
+    else:
+        log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL resolved to linear_loop; check its value")
+    return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, num_experts, _log_execution=False)
 
 
 def get_num_experts(original: torch.nn.Module) -> int:

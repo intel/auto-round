@@ -104,7 +104,7 @@ class MLLMMixin:
     def save_quantized(
         self,
         output_dir: str | None = None,
-        format: str | list = "auto_round",
+        format: str | list | None = None,
         inplace: bool = True,
         **kwargs,
     ) -> Any:

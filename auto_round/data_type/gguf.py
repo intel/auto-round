@@ -17,8 +17,8 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
-from auto_round.export.export_to_gguf.packing import (
+from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
+from auto_round.export.formats.gguf.packing import (
     _LARGE_TENSOR_BYTES_THRESHOLD,
     make_q3_quants,
     make_qx_quants,
@@ -932,7 +932,7 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE
+    from auto_round.export.formats.gguf.config import K_SCALE_SIZE
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")

@@ -650,3 +650,39 @@ class TestMixedDatasetSampleAllocation:
 
         assert len(dataset) == 20
         assert self._count_by_source(dataset) == {1: 4, 2: 8, 3: 8}
+
+
+# ---------------------------------------------------------------------------
+# get_opencode_instruct_dataset packing
+# ---------------------------------------------------------------------------
+class TestOpenCodeInstructPacking:
+    def test_every_packed_row_is_seqlen_long(self, monkeypatch):
+        import auto_round.calib_dataset as cd
+
+        bos, eos, seqlen = 1, 2, 16
+        rows = [{"input": f"q{i}", "output": f"a{i}"} for i in range(8)]
+
+        class _Stream:
+            def shuffle(self, seed):
+                return self
+
+            def take(self, n):
+                return rows[:n]
+
+        def fake_tokenizer_function(examples):
+            # every sample: BOS + 6 content ids + EOS
+            input_ids = [[bos] + list(range(10 + 10 * i, 16 + 10 * i)) + [eos] for i in range(len(examples["text"]))]
+            return {"input_ids": input_ids, "attention_mask": [[1] * len(ids) for ids in input_ids]}
+
+        tokenizer = types.SimpleNamespace(bos_token_id=bos, eos_token_id=eos)
+        monkeypatch.setattr(cd, "load_dataset", lambda *args, **kwargs: _Stream())
+        monkeypatch.setattr(cd, "get_tokenizer_function", lambda *args, **kwargs: fake_tokenizer_function)
+
+        dataset = cd.get_opencode_instruct_dataset(tokenizer, seqlen, nsamples=8)
+
+        # 8 samples x 6 content ids = 48, each row holds BOS + 14 ids + EOS -> 3 full rows
+        assert len(dataset) == 3
+        for row in dataset:
+            assert len(row["input_ids"]) == seqlen
+            assert len(row["attention_mask"]) == seqlen
+            assert row["input_ids"][0] == bos and row["input_ids"][-1] == eos

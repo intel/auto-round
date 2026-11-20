@@ -7,7 +7,7 @@
 </p>
 
 
-<h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
+<h3>PTQ-Level Efficiency, QAT-Level Accuracy</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
@@ -32,6 +32,7 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+
 ---
 <div align="left">
 
@@ -50,6 +51,23 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
+* [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
+
+* [2026/11] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+  ```bash
+  # Quantize: produces both base/ and residual/ in the output dir
+  python -m auto_round.cli.main \
+      --model Qwen/Qwen3-0.6B --scheme W2A16 \
+      --backend_format auto_round:rrq --dump_config
+
+  # Load with 4-bit active (first residual plane on top of the base)
+  from auto_round import load_rrq_model
+  model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
+  ```
+  Note: this is an experimental feature and production-level deployments are not yet supported.
+
+* [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
+
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
@@ -64,11 +82,11 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 * [2026/05] We provide **free** devices for quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
-* [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
+* [2025/12] The **SignRoundV2** paper is available. Turn on the algorithm extension (`--algorithm auto_round_v2`, formerly `enable_alg_ext`) and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
 * [2025/10] AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
-* [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
+* [2025/08] An **improved INT2** algorithm is available via the algorithm extension (`--algorithm auto_round_v2`, formerly `--enable_alg_ext`): [*Accuracy*](./docs/alg_202508.md)
   
 * [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
@@ -103,6 +121,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Use the same plans in Python with `AutoRound(..., recipe="auto-round-best")` or in the CLI with `--recipe auto-round-best`. Omitting the recipe selects `auto-round`; legacy commands remain shortcuts. See [built-in recipes and overrides](./docs/recipes.md).
 
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
@@ -211,8 +231,11 @@ auto-round-fast \
 
 </details>
 
-In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `--algorithm auto_round_v2` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
+
+> [!TIP]
+> For **INT2 (W2A16)**, accuracy improves steadily as you invest more tuning cost. Increasing knobs such as `--iters` (e.g. 1000 → 2000), `--nsamples`, and `--seqlen`, or switching to the `auto-round-best` recipe with `--enable_alg_ext`, trades additional tuning time for consistently higher accuracy. As you scale up the calibration data (larger `--nsamples`/`--seqlen`), raising the learning rate to `4.0/iters` (e.g. `4e-3` at `--iters 1000`) often helps. See the [W2A16 accuracy results](./docs/alg_202508.md) for details.
 
 ### API Usage
 
@@ -247,10 +270,10 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`layer_config` (dict)**: Configuration for layer_wise scheme (default is `None`), mainly for customized mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
-- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
+- **`enable_alg_ext` (bool)**: [Deprecated] Use the `auto_round_v2` algorithm instead. [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, `"auto_round_v2"`, `"rtn"`, `"opt-rtn"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
 
-- **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues.
+- **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues. The algorithm name `rtn` selects pure RTN and `opt-rtn` selects the optimized path, on both the CLI (`--algorithm rtn`) and the Python API (`alg_configs="rtn"`); the name wins over the flag.
 
 ##### Tuning Process Parameters
 - **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.
@@ -260,7 +283,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
-- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AR_CACHE/datasets/coco2014` when `AR_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 
@@ -300,7 +323,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 # Change iters to 200 for non-GGUF schemes
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,
@@ -318,7 +341,8 @@ ar.quantize_and_save()
 - **`bits` (float)**: Target average bit-width for the entire model when `schemes` is provided. Only quantized layers are included in the average bit calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
 - **`schemes` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects. Providing schemes enables AutoScheme.
 - **`ignore_scale_zp_bits` (bool)**: Only supported in API usage. Determines whether to exclude the bits of scale and zero-point from the average bit-width calculation (default: `False`).  
-- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Defines groups of layers that share quantization settings.  
+- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Adds extra groups of layers that share quantization settings, on top of the built-in vLLM fusion groups.
+- **`default_shared_layers` (bool)**: Whether to share one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). Default is `True`; set to `False` (or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`) to let AutoScheme select per projection. CLI: `--disable_default_shared_layers`.  
 - **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  
 
 </details>

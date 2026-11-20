@@ -593,7 +593,19 @@ class DiffusionMixin:
                 if saved_subfolder is not None:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
             elif val is not None and hasattr(val, "save_pretrained"):
-                val.save_pretrained(sub_module_path)
+                if (
+                    pipe.__class__.__name__ == "ZImagePipeline"
+                    and name == "text_encoder"
+                    and val.__class__.__name__ == "Qwen3Model"
+                ):
+                    # Preserve the original causal-LM layout expected by vLLM-Omni.
+                    state_dict = {f"model.{key}": value for key, value in val.state_dict().items()}
+                    val.save_pretrained(sub_module_path, state_dict=state_dict)
+                    config = copy.deepcopy(val.config)
+                    config.architectures = ["Qwen3ForCausalLM"]
+                    config.save_pretrained(sub_module_path)
+                else:
+                    val.save_pretrained(sub_module_path)
                 continue
 
             if name.startswith("transformer"):

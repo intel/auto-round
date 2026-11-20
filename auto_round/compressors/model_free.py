@@ -48,6 +48,8 @@ weights with ``fake`` format):
 
 * Preset name: ``NVFP4_E5M3``.
 * ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+* Preset name: ``NVFP4_E5M3_GS`` (``data_type="nvfp4_v2_gs"``) adds a per-tensor weight global
+  scale; model-free mode writes ``input_global_scale=1``.
 
 Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
@@ -111,6 +113,7 @@ import re
 import shutil
 import tempfile
 import time
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
 from typing import Any
@@ -132,9 +135,12 @@ from auto_round.utils.model_free_utils import (
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
+    _compute_cross_shard_fused_global_scales,
     _convert_auto_scheme_layer_config,
     _download_metadata_files,
     _download_single_shard,
+    _find_index_path,
+    _fused_nvfp4_projection_groups,
     _get_model_cache_status,
     _is_full_precision_default,
     _is_weight_shard,
@@ -143,19 +149,21 @@ from auto_round.utils.model_free_utils import (
     _list_weight_shards,
     _load_config,
     _load_source_quant_config,
-    _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
     _PatternMatcher,
     _process_shard,
+    _raise_if_ignored_quantized_source,
     _resolve_source_dir,
     _validate_auto_scheme_options,
+    _validate_safetensors_file,
     _validate_supported_scheme,
     _write_index_file,
     _write_output_shard,
     detect_model_dtypes,
     handle_model_type_low_precision_source_tensors,
     is_model_free_supported_scheme,
+    load_source_weight_map,
     preprocess_model_type_source_tensors,
 )
 from auto_round.utils.path_safety import resolve_within_directory
@@ -188,6 +196,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "MXFP4",
     "MXFP8",
     "NVFP4_E5M3",
+    "NVFP4_E5M3_GS",
     "BF16",
 )
 
@@ -199,6 +208,8 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+_NVFP4_E5M3_GS_DATA_TYPE = "nvfp4_v2_gs"
+_NVFP4_E5M3_FAMILY_DATA_TYPES = (_NVFP4_E5M3_DATA_TYPE, _NVFP4_E5M3_GS_DATA_TYPE)
 
 # Standalone quantization metadata used by different source formats. Only the
 # newly generated quantization_config.json may remain in model-free output.
@@ -210,6 +221,12 @@ _QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
 )
 
 _RESUME_MANIFEST_NAME = "model_free_resume.json"
+
+# Streaming downloads may run at most this many jobs ahead of the free quantizer slots.
+_STREAMING_LOOKAHEAD_JOBS = 3
+
+# Source tensors needed to compute the shared GS of a fused NVFP4 layer.
+_FUSED_GS_SOURCE_SUFFIXES = ("weight", "weight_scale_inv", "weight_scale")
 
 
 def _atomic_write_json(path: str, data: dict) -> None:
@@ -340,7 +357,15 @@ def _prefetch_shard(
                 else:
                     local_path = str(resolve_within_directory(shard_cache_dir, shard_name, origin="shard list"))
                     if os.path.isfile(local_path):
-                        return local_path
+                        try:
+                            _validate_safetensors_file(local_path)
+                        except Exception as exc:
+                            logger.warning(
+                                f"Cached shard '{shard_name}' at '{local_path}' is invalid ({exc}); fetching it again."
+                            )
+                            os.remove(local_path)
+                        else:
+                            return local_path
                     remote_name = subfolder + "/" + shard_name
                     path = _download_single_shard(model_name_or_path, remote_name, shard_cache_dir)
                     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -358,10 +383,7 @@ def _process_single_shard_task(
     shard_idx: int,
     shard_name: str,
     *,
-    model_name_or_path: str,
-    work_dir: str,
     source_dir: str,
-    is_streaming: bool,
     device: str,
     default_scheme: dict,
     layer_config: dict,
@@ -374,20 +396,16 @@ def _process_single_shard_task(
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
     donor_tensors_to_exclude: list[str] | None = None,
+    fused_gs_groups: list[tuple[str, ...]] | None = None,
+    fused_gs_weight_map: dict[str, str] | None = None,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
-    """Process one shard in an isolated subprocess task.
+    """Process one local shard in an isolated subprocess task.
 
     Each worker builds its own matcher/cache via ``_process_shard`` to avoid
     cross-shard shared state.
     """
-    shard_path = _prefetch_shard(
-        model_name_or_path,
-        shard_name,
-        work_dir,
-        source_dir,
-        is_streaming,
-    )
-    if shard_path is None or not os.path.exists(shard_path):
+    shard_path = _prefetch_shard("", shard_name, "", source_dir, False)
+    if shard_path is None:
         return shard_idx, shard_name, None, None, None, None, None
 
     return _quantize_local_shard_task(
@@ -405,8 +423,9 @@ def _process_single_shard_task(
         total_shards=total_shards,
         enable_torch_compile=enable_torch_compile,
         disable_opt_rtn=disable_opt_rtn,
-        cleanup_source_shard=is_streaming,
         donor_tensors_to_exclude=donor_tensors_to_exclude,
+        fused_gs_groups=fused_gs_groups,
+        fused_gs_weight_map=fused_gs_weight_map,
     )
 
 
@@ -426,17 +445,37 @@ def _quantize_local_shard_task(
     total_shards: int,
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
-    cleanup_source_shard: bool = False,
     donor_tensors_to_exclude: list[str] | None = None,
     index_dir: str | None = None,
     donor_shard_dir: str | None = None,
+    fused_gs_groups: list[tuple[str, ...]] | None = None,
+    fused_gs_weight_map: dict[str, str] | None = None,
+    precomputed_fused_global_scale_overrides: dict[str, float] | None = None,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Quantize one already-downloaded shard and write the output shard.
 
+    ``fused_gs_groups`` are fused layers split across shards; all of their shards must be in
+    ``donor_shard_dir`` (or next to ``shard_path``) so the shared GS can be computed here.
     Returns lightweight metadata only so IPC does not transfer tensor storages.
     """
     if shard_path is None or not os.path.exists(shard_path):
         return shard_idx, shard_name, None, None, None, None, None
+
+    fused_global_scale_overrides = dict(precomputed_fused_global_scale_overrides or {})
+    if fused_gs_groups:
+        groups_to_compute = [
+            group for group in fused_gs_groups if not all(layer in fused_global_scale_overrides for layer in group)
+        ]
+        if groups_to_compute:
+            fused_global_scale_overrides.update(
+                _compute_cross_shard_fused_global_scales(
+                    groups_to_compute,
+                    fused_gs_weight_map or {},
+                    donor_shard_dir or os.path.dirname(shard_path),
+                    fp8_block_size=fp8_block_size,
+                    device=device,
+                )
+            )
 
     output_tensors, quantized, ignored = _process_shard(
         shard_path=shard_path,
@@ -453,6 +492,7 @@ def _quantize_local_shard_task(
         index_dir=index_dir,
         donor_shard_dir=donor_shard_dir,
         donor_tensors_to_exclude=set(donor_tensors_to_exclude) if donor_tensors_to_exclude else None,
+        fused_global_scale_overrides=fused_global_scale_overrides,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -470,12 +510,6 @@ def _quantize_local_shard_task(
     output_tensors.clear()
     del output_tensors
     clear_memory()
-
-    if cleanup_source_shard:
-        try:
-            os.remove(shard_path)
-        except OSError:
-            pass
 
     return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
 
@@ -633,14 +667,10 @@ class _ModelFreeCompressorCore:
         # donor_shard_tensors: {donor_shard: set(scale_inv names it donates)}
         self.cross_shard_deps: dict[str, dict[str, list[str]]] = {}
         self.donor_shard_tensors: dict[str, set[str]] = {}
-        # Reference-counting state so donor shard cache files can be deleted as
-        # soon as they are no longer needed, instead of waiting until the end
-        # of the whole run. A donor file is safe to delete once (a) its own
-        # quantization task has read it, and (b) every recipient shard that
-        # depends on it has finished (and thus finished hydrating from it).
-        self._donor_remaining_recipients: dict[str, int] = {}
-        self._donor_self_consumed: dict[str, bool] = {}
-        self._donor_shard_paths: dict[str, str] = {}
+        self.source_weight_map: dict[str, str] = {}
+        # Fused NVFP4 GS groups split across shards, keyed by every shard holding one of their weights.
+        self._fused_gs_groups_by_shard: dict[str, list[tuple[str, ...]]] = {}
+        self._fused_gs_weight_map: dict[str, str] = {}
         self._resume_parameters: dict = {}
         self._resume_processed_shards: dict[str, dict] = {}
 
@@ -683,6 +713,7 @@ class _ModelFreeCompressorCore:
             _load_source_quant_config(
                 self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
             ),
+            self.source_weight_map,
         ).get("nvfp4")
         if reason is None:
             return
@@ -759,6 +790,11 @@ class _ModelFreeCompressorCore:
                 pattern_in_config = any(
                     key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
                 )
+                # Match a complete layer-name component, not interior substrings such as attention.output.
+                if lm_head_pattern == "proj_out":
+                    lm_head_pattern = "^proj_out$"
+                else:
+                    lm_head_pattern = rf"(?:^|\.){re.escape(lm_head_pattern)}$"
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:
                     ignore_patterns.append(lm_head_pattern)
 
@@ -854,10 +890,9 @@ class _ModelFreeCompressorCore:
                 incompatible_layers = []
                 for layers in incompatible.values():
                     incompatible_layers.extend(layers)
-                summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
                 self.ignore_patterns.extend(incompatible_layers)
                 logger.warning(
-                    f"Detected {len(incompatible)} layer(s) incompatible with model-free RTN"
+                    f"Detected {len(incompatible_layers)} layer(s) incompatible with model-free RTN"
                     f": {compress_layer_names(incompatible_layers)}.\n"
                     f"These layers have been automatically added to ignore_layers "
                     f"and will be kept in full precision.\n"
@@ -882,7 +917,7 @@ class _ModelFreeCompressorCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.source_quantization_config
-        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config, self.source_weight_map):
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
                 f"Detected FP8 source model (block_size={self.fp8_block_size}, "
@@ -908,9 +943,7 @@ class _ModelFreeCompressorCore:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         # Source indices live in the isolated metadata cache; never infer streamed
         # source names from output shards, or include remote files outside the index.
-        has_source_index = any(
-            name.endswith((".safetensors.index.json", ".bin.index.json")) for name in os.listdir(search_dir)
-        )
+        has_source_index = _find_index_path(search_dir) is not None
         self.shard_names = _list_weight_shards(search_dir) if not self.is_streaming or has_source_index else []
         if self.is_streaming and not has_source_index:
             from auto_round.utils.model_free_utils import _list_remote_weight_shards
@@ -923,41 +956,22 @@ class _ModelFreeCompressorCore:
         if not self.shard_names:
             raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
 
-    def _build_cross_shard_deps(self) -> None:
-        """Build cross-shard FP8 scale_inv dependency map from index.json.
+    def _load_source_weight_map(self) -> None:
+        """Load the tensor-name -> shard map once so preflight checks never touch tensor data."""
+        search_dir = self.work_dir if self.is_streaming else self.source_dir
+        self.source_weight_map = load_source_weight_map(search_dir, self.shard_names)
 
-        Identifies triples (recipient_shard, donor_shard, scale_inv_tensor) by
-        comparing ``.weight`` and ``.weight_scale_inv`` entries in weight_map.
+    def _build_cross_shard_deps(self) -> None:
+        """Build cross-shard scale dependency maps from ``self.source_weight_map``.
+
+        Identifies triples (recipient_shard, donor_shard, scale_tensor) for FP8
+        ``.weight_scale_inv`` and Inkling NVFP4 ``.scale``/``.scale2`` tensors.
         Stored in ``self.cross_shard_deps`` and ``self.donor_shard_tensors`` for
         use by the shard scheduler and quantization workers.
         """
-        search_dir = self.work_dir if self.is_streaming else self.source_dir
-        # Find the first *.safetensors.index.json in search_dir.
-        index_path: str | None = None
-        st_std = os.path.join(search_dir, "model.safetensors.index.json")
-        if os.path.exists(st_std):
-            index_path = st_std
-        else:
-            candidates = sorted(
-                os.path.join(search_dir, f) for f in os.listdir(search_dir) if f.endswith(".safetensors.index.json")
-            )
-            if candidates:
-                index_path = candidates[0]
-
-        if not index_path:
-            self.cross_shard_deps = {}
-            self.donor_shard_tensors = {}
-            return
-
-        try:
-            weight_map = _load_weight_map_from_index(index_path)
-        except Exception as e:
-            logger.warning(f"Could not load weight_map for cross-shard dep analysis: {e}")
-            self.cross_shard_deps = {}
-            self.donor_shard_tensors = {}
-            return
-
-        self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(
+            self.source_weight_map
+        )
         if self.cross_shard_deps:
             n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
             logger.info(
@@ -966,91 +980,31 @@ class _ModelFreeCompressorCore:
                 f"{len(self.donor_shard_tensors)} donor shard(s)."
             )
 
-        # Build reverse mapping (donor -> distinct recipient shards) so donor
-        # cache files can be reference-counted and deleted as soon as every
-        # dependent recipient has finished, instead of only at the very end.
-        donor_recipients: dict[str, set[str]] = {}
-        for recipient, donors in self.cross_shard_deps.items():
-            for donor in donors:
-                donor_recipients.setdefault(donor, set()).add(recipient)
-        self._donor_remaining_recipients = {donor: len(recipients) for donor, recipients in donor_recipients.items()}
-        self._donor_self_consumed = {donor: False for donor in self.donor_shard_tensors}
+    def _check_ignored_quantized_source(self) -> None:
+        """Reject ignored quantized layers before starting any shard workers."""
+        if self.source_weight_map:
+            matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
+            _raise_if_ignored_quantized_source(self.source_weight_map, matcher, self.model_type)
 
-    def _reorder_shards_by_dependency(self) -> None:
-        """Reorder shard_names via topological sort so donors precede recipients.
-
-        A single-pass "donors first, recipients last" partition is not enough:
-        a shard can simultaneously be a *recipient* (it needs a scale_inv from
-        another shard) and a *donor* (it donates a scale_inv to a third shard).
-        Such transitive chains (X donates to Y, Y donates to Z) must be
-        resolved with a proper topological sort, otherwise Y could still be
-        scheduled after Z, i.e. after one of its own dependents.
-
-        Ties are broken by original shard order (stable) so scheduling stays
-        as close as possible to the natural shard sequence. This ensures:
-        - Non-streaming: workers start on shards that need no cross-shard data.
-        - Streaming: donor shards are downloaded before recipient shards, so the
-          donor cache files are available when recipient workers run hydration.
-        """
-        if not self.cross_shard_deps:
+    def _prepare_fused_gs_groups(self) -> None:
+        """Find fused NVFP4 GS groups split across shards; workers compute their shared GS."""
+        self._fused_gs_groups_by_shard = {}
+        self._fused_gs_weight_map = {}
+        if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE or not self.source_weight_map:
             return
 
-        original_index = {name: i for i, name in enumerate(self.shard_names)}
-        # recipient -> set(donors it depends on)
-        depends_on: dict[str, set[str]] = {
-            recipient: set(donors) for recipient, donors in self.cross_shard_deps.items()
-        }
-        # in-degree = number of unresolved donor dependencies for each shard.
-        in_degree: dict[str, int] = {name: len(depends_on.get(name, ())) for name in self.shard_names}
-        # donor -> shards that depend on it (only counting donors that are
-        # themselves known shards; unknown donors can't be waited on anyway).
-        dependents: dict[str, list[str]] = {}
-        for recipient, donors in depends_on.items():
-            for donor in donors:
-                if donor in original_index:
-                    dependents.setdefault(donor, []).append(recipient)
-                elif recipient in in_degree:
-                    # Donor shard is unknown/missing from discovery; it can
-                    # never be satisfied here, so don't block scheduling on it.
-                    in_degree[recipient] -= 1
-
-        import heapq
-
-        ready = [original_index[name] for name, deg in in_degree.items() if deg == 0]
-        heapq.heapify(ready)
-        ordered: list[str] = []
-        visited: set[str] = set()
-        index_to_name = {i: name for name, i in original_index.items()}
-
-        while ready:
-            idx = heapq.heappop(ready)
-            name = index_to_name[idx]
-            if name in visited:
+        matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
+        for group in _fused_nvfp4_projection_groups(self.source_weight_map, matcher):
+            weight_shards = {self.source_weight_map[f"{layer}.weight"] for layer in group}
+            if len(weight_shards) < 2:
                 continue
-            visited.add(name)
-            ordered.append(name)
-            for dependent in dependents.get(name, ()):
-                in_degree[dependent] -= 1
-                if in_degree[dependent] == 0:
-                    heapq.heappush(ready, original_index[dependent])
-
-        if len(ordered) != len(self.shard_names):
-            # Cycle detected (shouldn't happen with well-formed indices) —
-            # fall back to appending any unresolved shards in original order.
-            remaining = [name for name in self.shard_names if name not in visited]
-            logger.warning(
-                f"Shard dependency graph has a cycle or unresolved node(s) "
-                f"({len(remaining)} shard(s)); appending them in original order."
-            )
-            ordered.extend(remaining)
-
-        n_recipients = len(self.cross_shard_deps)
-        if n_recipients:
-            logger.info(
-                f"Shard scheduling: topologically sorted {len(self.shard_names)} shard(s) "
-                f"({n_recipients} recipient shard(s) with cross-shard dependencies)."
-            )
-        self.shard_names = ordered
+            for shard in weight_shards:
+                self._fused_gs_groups_by_shard.setdefault(shard, []).append(group)
+            for layer in group:
+                for suffix in _FUSED_GS_SOURCE_SUFFIXES:
+                    tensor_name = f"{layer}.{suffix}"
+                    if tensor_name in self.source_weight_map:
+                        self._fused_gs_weight_map[tensor_name] = self.source_weight_map[tensor_name]
 
     def _resolve_shard_parallelism(self) -> tuple[int, str]:
         shard_count = len(self.shard_names)
@@ -1136,6 +1090,8 @@ class _ModelFreeCompressorCore:
             "disable_opt_rtn": self.disable_opt_rtn,
             "model_type": self.model_type,
             "source_quantization_config": self.source_quantization_config,
+            "fused_global_scale_enabled": envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE,
+            "fused_global_scale_policy": 1,
         }
         return json.loads(json.dumps(parameters, sort_keys=True, default=str))
 
@@ -1212,22 +1168,11 @@ class _ModelFreeCompressorCore:
                 cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
-        pending = [name for name in self.shard_names if name not in self._resume_processed_shards]
         if self._resume_processed_shards:
             logger.info(
                 f"Model-free resume: skipping {len(self._resume_processed_shards)}/{len(self.shard_names)} "
                 "validated output shard(s)."
             )
-
-        # Donor lifetimes only need to account for recipients still pending.
-        donor_recipients: dict[str, set[str]] = {}
-        for recipient in pending:
-            for donor in self.cross_shard_deps.get(recipient, {}):
-                donor_recipients.setdefault(donor, set()).add(recipient)
-        self._donor_remaining_recipients = {donor: len(recipients) for donor, recipients in donor_recipients.items()}
-        self._donor_self_consumed = {
-            donor: donor in self._resume_processed_shards for donor in self.donor_shard_tensors
-        }
         self._write_resume_manifest()
 
     def _mark_shard_completed(
@@ -1296,10 +1241,7 @@ class _ModelFreeCompressorCore:
                         _process_single_shard_task,
                         shard_idx,
                         shard_name,
-                        model_name_or_path=self.model_name_or_path,
-                        work_dir=self.work_dir,
                         source_dir=self.source_dir,
-                        is_streaming=self.is_streaming,
                         device=self.device,
                         default_scheme=self.default_scheme,
                         layer_config=self.layer_config,
@@ -1312,6 +1254,8 @@ class _ModelFreeCompressorCore:
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                         donor_tensors_to_exclude=donor_tensors,
+                        fused_gs_groups=self._fused_gs_groups_by_shard.get(shard_name),
+                        fused_gs_weight_map=self._fused_gs_weight_map,
                     )
                 )
 
@@ -1322,10 +1266,6 @@ class _ModelFreeCompressorCore:
                     progress.update(1)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard worker processes.")
-            _force_cleanup_process_pool(pool)
-            raise
-        except Exception:
-            _force_cleanup_process_pool(pool)
             raise
         finally:
             _force_cleanup_process_pool(pool)
@@ -1339,8 +1279,10 @@ class _ModelFreeCompressorCore:
         """Merge one shard-task result into global stats and weight map."""
         shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = result
         if shard_path is None or out_shard_name is None or tensor_names is None or quantized is None or ignored is None:
-            logger.warning(f"Shard not found: {shard_name}, skipping")
-            return
+            raise RuntimeError(
+                f"Source shard {shard_name} could not be loaded; aborting model-free quantization. "
+                "Rerun the same command to resume from the completed shards."
+            )
 
         memory_monitor.update()
         clear_memory()
@@ -1362,196 +1304,233 @@ class _ModelFreeCompressorCore:
 
         self._mark_shard_completed(shard_name, out_shard_name, tensor_names, quantized, ignored)
 
-        if self.is_streaming:
-            self._release_donor_dependency(shard_name)
+    def _plan_streaming_jobs(self) -> tuple[list[str], dict[str, set[str]]]:
+        """Plan pending shard jobs from the index alone.
 
-    def _release_donor_dependency(self, completed_shard_name: str) -> None:
-        """Update donor reference counts after *completed_shard_name* finishes.
-
-        Donor shard cache files are kept alive only as long as needed: once a
-        donor's own quantization task has read it AND every recipient shard
-        that depends on it has finished (and thus hydrated from it), the
-        cached file is deleted immediately rather than waiting for the whole
-        run to finish via :meth:`_cleanup_streaming_shard_cache`.
+        Returns the job priority order and, per job, the shards that must be local before it starts:
+        the shard itself, its scale donors, and every shard holding a weight or scale of its
+        cross-shard fused GS groups. Self-contained jobs go first, then related jobs in shard order so
+        partners are fetched together; within each tier, jobs whose shards are all cached lead.
         """
-        if completed_shard_name in self._donor_self_consumed:
-            self._donor_self_consumed[completed_shard_name] = True
-            self._maybe_cleanup_donor_shard(completed_shard_name)
+        shard_indices = {name: idx for idx, name in enumerate(self.shard_names)}
+        requires: dict[str, set[str]] = {}
+        for name in self.shard_names:
+            if name in self._resume_processed_shards:
+                continue
+            needed = {name, *self.cross_shard_deps.get(name, {})}
+            for group in self._fused_gs_groups_by_shard.get(name, ()):
+                needed.update(
+                    self._fused_gs_weight_map[tensor_name]
+                    for layer in group
+                    for suffix in _FUSED_GS_SOURCE_SUFFIXES
+                    if (tensor_name := f"{layer}.{suffix}") in self._fused_gs_weight_map
+                )
+            requires[name] = {shard for shard in needed if shard in shard_indices}
 
-        for donor in self.cross_shard_deps.get(completed_shard_name, {}):
-            if donor in self._donor_remaining_recipients:
-                self._donor_remaining_recipients[donor] = max(0, self._donor_remaining_recipients[donor] - 1)
-                self._maybe_cleanup_donor_shard(donor)
+        related = {shard for needed in requires.values() if len(needed) > 1 for shard in needed}
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        jobs = sorted(
+            requires,
+            key=lambda name: (
+                name in related,
+                not all(os.path.isfile(os.path.join(cache_dir, shard)) for shard in requires[name]),
+                shard_indices[name],
+            ),
+        )
+        return jobs, requires
 
-    def _maybe_cleanup_donor_shard(self, donor_name: str) -> None:
-        """Delete *donor_name*'s cached shard file once it is no longer needed."""
-        if not self._donor_self_consumed.get(donor_name, False):
+    @staticmethod
+    def _retain_donor_scale_tensors(shard_path: str, tensor_names: set[str] | list[str]) -> None:
+        """Atomically compact a completed donor shard to only the tensors recipients still need."""
+        shard_path = os.fspath(shard_path)
+        if not shard_path.endswith(".safetensors"):
             return
-        if self._donor_remaining_recipients.get(donor_name, 0) > 0:
-            return
-        shard_path = self._donor_shard_paths.pop(donor_name, None)
-        # Remove tracking regardless of whether the file still exists so we
-        # never attempt to clean this donor up twice.
-        self._donor_self_consumed.pop(donor_name, None)
-        self._donor_remaining_recipients.pop(donor_name, None)
-        if shard_path and os.path.exists(shard_path):
-            try:
-                os.remove(shard_path)
-                logger.debug(f"Removed donor shard cache file (no longer needed): {donor_name}")
-            except OSError as e:
-                logger.warning(f"Failed to remove donor shard cache file {donor_name}: {e}")
+
+        keep = set(tensor_names)
+        temp_path = None
+        try:
+            with safe_open(shard_path, framework="pt", device="cpu") as shard:
+                available = set(shard.keys())
+                if available == keep:
+                    return
+                retained = {name: shard.get_tensor(name) for name in keep.intersection(available)}
+
+            from safetensors.torch import save_file
+
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".donor-scales-", suffix=".safetensors", dir=os.path.dirname(shard_path)
+            )
+            os.close(fd)
+            save_file(retained, temp_path)
+            os.replace(temp_path, shard_path)
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            logger.warning(f"Could not compact donor shard '{shard_path}' to scale tensors: {exc}")
 
     def _process_all_shards_streaming_pipeline(self) -> None:
-        """Streaming-mode shard pipeline with dedicated downloader and quant workers.
+        """Download and quantize shards concurrently following :meth:`_plan_streaming_jobs`.
 
-        Design:
-        - one downloader worker serializes network bandwidth usage;
-        - N quant workers consume ready shards independently;
-        - shards are assigned for quantization as soon as download completes.
+        One downloader fetches the missing shards of the highest-priority waiting jobs, staying at most
+        ``_STREAMING_LOOKAHEAD_JOBS`` jobs ahead of the free quantizer slots. A job is submitted as soon
+        as all of its shards are local, and a shard is deleted once every job that needs it is done.
         """
         try:
             from tqdm import tqdm as _tqdm
         except ImportError:
             _tqdm = None
 
-        pending_names = {name for name in self.shard_names if name not in self._resume_processed_shards}
-        required_donors = {donor for recipient in pending_names for donor in self.cross_shard_deps.get(recipient, {})}
-        pipeline_shards = [
-            (shard_idx, shard_name)
-            for shard_idx, shard_name in enumerate(self.shard_names)
-            if shard_name in pending_names or shard_name in required_donors
-        ]
-        if not pipeline_shards:
+        jobs, requires = self._plan_streaming_jobs()
+        if not jobs:
             return
-
         os.makedirs(self._quant_output_dir, exist_ok=True)
 
-        worker_count = max(1, min(self.shard_parallelism, len(pending_names) or 1))
-        prefetch_depth = max(2, worker_count)
-        total_shards = len(self.shard_names)
-        total_pipeline_shards = len(pipeline_shards)
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        users = Counter(shard for name in jobs for shard in requires[name])
+        if os.path.isdir(cache_dir):
+            for entry in os.scandir(cache_dir):
+                if entry.is_file() and entry.name in self.shard_names and entry.name not in users:
+                    os.remove(entry.path)
 
+        shard_indices = {name: idx for idx, name in enumerate(self.shard_names)}
+        worker_count = max(1, min(self.shard_parallelism, len(jobs)))
+        subfolder = self.diffusion_component if self.is_diffusion_model else None
+        waiting = list(jobs)
+        local_paths: dict[str, str] = {}
+        downloads: dict = {}
+        running: dict = {}
+        completed_shards: set[str] = set()
+        cached_fused_global_scale_overrides: dict[str, float] = {}
         download_pool: ThreadPoolExecutor | None = None
         quant_pool: ProcessPoolExecutor | None = None
-        download_futures: dict = {}
-        quant_futures = set()
-        next_download_idx = 0
-        completed_pipeline_shards = 0
-
-        def _submit_next_download() -> bool:
-            nonlocal next_download_idx
-            if next_download_idx >= total_pipeline_shards:
-                return False
-            shard_idx, shard_name = pipeline_shards[next_download_idx]
-            future = download_pool.submit(
-                _prefetch_shard,
-                self.model_name_or_path,
-                shard_name,
-                self.work_dir,
-                self.source_dir,
-                self.is_streaming,
-                self.diffusion_component if self.is_diffusion_model else None,
-            )
-            download_futures[future] = (shard_idx, shard_name)
-            next_download_idx += 1
-            return True
-
+        progress = self._create_shard_progress(_tqdm)
         try:
             download_pool = ThreadPoolExecutor(max_workers=1)
             quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
-
-            for _ in range(min(prefetch_depth, total_pipeline_shards)):
-                _submit_next_download()
-
-            progress = self._create_shard_progress(_tqdm)
-
-            while completed_pipeline_shards < total_pipeline_shards:
-                wait_set = set(download_futures.keys()) | set(quant_futures)
-                if not wait_set:
-                    break
-
-                done, _ = wait(wait_set, return_when=FIRST_COMPLETED)
-                for future in done:
-                    if future in download_futures:
-                        shard_idx, shard_name = download_futures.pop(future)
-                        shard_path = future.result()
-                        if shard_path is None or not os.path.exists(shard_path):
-                            logger.warning(f"Prefetch failed for shard {shard_name}, skipping")
-                            completed_pipeline_shards += 1
-                            if progress is not None and shard_name in pending_names:
-                                progress.update(1)
-                        elif shard_name not in pending_names:
-                            self._donor_shard_paths[shard_name] = shard_path
-                            self._donor_self_consumed[shard_name] = True
-                            completed_pipeline_shards += 1
-                        else:
-                            # Donor shards must stay on disk until every recipient
-                            # that depends on them has been processed (tracked via
-                            # _donor_remaining_recipients / _release_donor_dependency),
-                            # so that recipient shards can still read scale_inv
-                            # tensors from them via
-                            # _hydrate_missing_fp8_scales_from_index. They are
-                            # deleted as soon as that's no longer needed; any
-                            # stragglers are swept up at the end by
-                            # _cleanup_streaming_shard_cache.
-                            shard_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
-                            is_donor = shard_name in self.donor_shard_tensors
-                            if is_donor:
-                                self._donor_shard_paths[shard_name] = shard_path
-                            donor_tensors = list(self.donor_shard_tensors.get(shard_name, ())) or None
-                            qf = quant_pool.submit(
-                                _quantize_local_shard_task,
-                                shard_idx,
-                                shard_name,
-                                shard_path=shard_path,
-                                device=self.device,
-                                default_scheme=self.default_scheme,
-                                layer_config=self.layer_config,
-                                ignore_patterns=self.ignore_patterns,
+            while waiting or running:
+                ready = [name for name in waiting if requires[name].issubset(local_paths)]
+                for name in ready[: worker_count - len(running)]:
+                    waiting.remove(name)
+                    fused_groups = self._fused_gs_groups_by_shard.get(name)
+                    groups_to_compute = [
+                        group
+                        for group in fused_groups or ()
+                        if any(layer not in cached_fused_global_scale_overrides for layer in group)
+                    ]
+                    if groups_to_compute:
+                        cached_fused_global_scale_overrides.update(
+                            _compute_cross_shard_fused_global_scales(
+                                groups_to_compute,
+                                self._fused_gs_weight_map,
+                                cache_dir,
                                 fp8_block_size=self.fp8_block_size,
-                                model_type=self.model_type,
-                                source_quantization_config=self.source_quantization_config,
-                                quant_output_dir=self._quant_output_dir,
-                                total_shards=total_shards,
-                                enable_torch_compile=self.enable_torch_compile,
-                                disable_opt_rtn=self.disable_opt_rtn,
-                                # Keep donor shards alive for recipient hydration.
-                                cleanup_source_shard=not is_donor,
-                                donor_tensors_to_exclude=donor_tensors,
-                                # Pass the work_dir as index_dir so workers can
-                                # find the index.json that was downloaded during
-                                # metadata fetch (not in the shard cache sub-dir).
-                                index_dir=self.work_dir,
-                                donor_shard_dir=shard_cache_dir,
+                                device=self.device,
                             )
-                            quant_futures.add(qf)
+                        )
+                    cached_overrides = (
+                        {
+                            layer: cached_fused_global_scale_overrides[layer]
+                            for group in fused_groups
+                            for layer in group
+                            if layer in cached_fused_global_scale_overrides
+                        }
+                        if fused_groups
+                        else None
+                    )
+                    future = quant_pool.submit(
+                        _quantize_local_shard_task,
+                        shard_indices[name],
+                        name,
+                        shard_path=local_paths[name],
+                        device=self.device,
+                        default_scheme=self.default_scheme,
+                        layer_config=self.layer_config,
+                        ignore_patterns=self.ignore_patterns,
+                        fp8_block_size=self.fp8_block_size,
+                        model_type=self.model_type,
+                        source_quantization_config=self.source_quantization_config,
+                        quant_output_dir=self._quant_output_dir,
+                        total_shards=len(self.shard_names),
+                        enable_torch_compile=self.enable_torch_compile,
+                        disable_opt_rtn=self.disable_opt_rtn,
+                        donor_tensors_to_exclude=list(self.donor_shard_tensors.get(name, ())) or None,
+                        index_dir=self.work_dir,
+                        donor_shard_dir=cache_dir,
+                        fused_gs_groups=self._fused_gs_groups_by_shard.get(name),
+                        fused_gs_weight_map=self._fused_gs_weight_map,
+                        precomputed_fused_global_scale_overrides=cached_overrides,
+                    )
+                    running[future] = name
 
-                        while len(download_futures) < prefetch_depth and _submit_next_download():
-                            pass
-                    elif future in quant_futures:
-                        quant_futures.remove(future)
-                        result = future.result()
-                        self._merge_shard_task_result(result)
-                        completed_pipeline_shards += 1
-                        if progress is not None:
-                            progress.update(1)
+                if not downloads:
+                    window = waiting[: worker_count - len(running) + _STREAMING_LOOKAHEAD_JOBS]
+                    missing = (
+                        shard
+                        for name in window
+                        for shard in sorted(requires[name].difference(local_paths), key=shard_indices.get)
+                    )
+                    shard = next(missing, None)
+                    if shard is not None:
+                        future = download_pool.submit(
+                            _prefetch_shard,
+                            self.model_name_or_path,
+                            shard,
+                            self.work_dir,
+                            self.source_dir,
+                            self.is_streaming,
+                            subfolder,
+                        )
+                        downloads[future] = shard
 
-            if progress is not None:
-                progress.close()
+                done, _ = wait({*downloads, *running}, return_when=FIRST_COMPLETED)
+                for future in done:
+                    if future in downloads:
+                        shard = downloads.pop(future)
+                        path = future.result()
+                        if path is None or not os.path.exists(path):
+                            # Skipping would leave an incomplete model and recipients without donor scales.
+                            raise RuntimeError(
+                                f"Failed to download source shard {shard}; aborting model-free quantization. "
+                                "Rerun the same command to resume from the completed shards."
+                            )
+                        local_paths[shard] = path
+                        continue
+
+                    name = running.pop(future)
+                    self._merge_shard_task_result(future.result())
+                    completed_shards.add(name)
+                    if progress is not None:
+                        progress.update(1)
+
+                    for shard in requires[name]:
+                        users[shard] -= 1
+                        if not users[shard]:
+                            try:
+                                os.remove(local_paths.pop(shard))
+                            except FileNotFoundError:
+                                pass
+
+                    active_sources = {shard for active_name in running.values() for shard in requires[active_name]}
+                    for shard, remaining_users in users.items():
+                        if (
+                            remaining_users <= 0
+                            or shard not in completed_shards
+                            or shard in active_sources
+                            or shard not in local_paths
+                        ):
+                            continue
+                        donor_tensors = self.donor_shard_tensors.get(shard)
+                        if donor_tensors:
+                            self._retain_donor_scale_tensors(local_paths[shard], donor_tensors)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard workers.")
-            _force_cleanup_process_pool(quant_pool)
-            raise
-        except Exception:
-            _force_cleanup_process_pool(quant_pool)
             raise
         finally:
             _force_cleanup_process_pool(quant_pool)
             if download_pool is not None:
-                try:
-                    download_pool.shutdown(wait=False, cancel_futures=True)
-                except Exception:
-                    pass
+                download_pool.shutdown(wait=True, cancel_futures=True)
+            if progress is not None:
+                progress.close()
 
     # -------------------------------------------------------------------
     # Output
@@ -1596,13 +1575,17 @@ class _ModelFreeCompressorCore:
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
-            ignore_patterns=self.ignore_patterns,
             quantized_layers=self.all_quantized_layers,
             ignored_layers=self.all_ignored_layers,
             block_name_to_quantize=block_name_to_quantize,
             format=self.format,
             source_quant_config=source_quant_config,
         )
+        # Record AutoRound hyper-parameters for llm-compressor style configs (no-op otherwise).
+        from auto_round.export.formats.compressed_tensors.utils import add_autoround_config
+        from auto_round.version import __version__
+
+        add_autoround_config(quantization_config, {**self.default_scheme, "iters": 0, "autoround_version": __version__})
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
@@ -1738,16 +1721,20 @@ class _ModelFreeCompressorCore:
 
         # ---- source resolution ----
         self._resolve_source()
-        self._detect_nvfp4_source_model()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
-        self._detect_fp8_source()
         self._resolve_model_type()
         self._discover_shards()
+
+        # ---- index/header-driven preflight (no tensor data is loaded) ----
+        self._load_source_weight_map()
+        self._detect_nvfp4_source_model()
+        self._detect_fp8_source()
         self._build_cross_shard_deps()
-        self._reorder_shards_by_dependency()
+        self._check_ignored_quantized_source()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
         self._prepare_resume_state()
+        self._prepare_fused_gs_groups()
 
         # Determine the output packing format based on scheme data type
         data_type = (self.default_scheme.get("data_type") or "int").lower()
@@ -1756,11 +1743,13 @@ class _ModelFreeCompressorCore:
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
+        elif data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3_gs"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
         supports_opt_rtn = (
             is_mx_fp(data_type)
-            or data_type == _NVFP4_E5M3_DATA_TYPE
+            or data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES
             or _layer_config_has_mxfp(self.layer_config)
             or _layer_config_has_nvfp4(self.layer_config)
         )
@@ -1883,16 +1872,13 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         disable_opt_rtn: bool = False,
         **kwargs,
     ) -> None:
-        import copy
-        from dataclasses import fields as dc_fields
-
         fallback_kwargs = dict(kwargs)
         self._force_model_free = bool(kwargs.get("model_free", False))
 
         # Collect per-field scheme overrides forwarded from AutoRound
         # (e.g. bits=4, sym=False passed as individual kwargs).
         self.user_scheme_overrides: dict = {}
-        for field in dc_fields(QuantizationScheme):
+        for field in fields(QuantizationScheme):
             if field.name in kwargs:
                 val = kwargs.pop(field.name)
                 if val is not None:
@@ -2218,7 +2204,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
-        elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
+        elif (
+            normalized_scheme is not None
+            and (normalized_scheme.data_type or "").lower() in _NVFP4_E5M3_FAMILY_DATA_TYPES
+        ):
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.

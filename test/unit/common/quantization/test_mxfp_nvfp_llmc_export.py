@@ -9,7 +9,7 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.export.export_to_autoround import export_to_nvfp_mx as autoround_nvfp_mx_export
+from auto_round.export.formats.autoround import float as autoround_nvfp_mx_export
 
 from ...envs import require_compressed_tensors
 
