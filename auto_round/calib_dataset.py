@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import itertools
 import json
 import logging
@@ -849,6 +850,7 @@ def get_ultradata_agent_dataset(
     apply_chat_template=True,
     system_prompt=None,
     nsamples=512,
+    config_name=None,
 ):
     """Agent/tool-calling calibration dataset.
 
@@ -860,7 +862,8 @@ def get_ultradata_agent_dataset(
 
     The dataset ships multiple configs (``Code-Agent``, ``Search-Agent``,
     ``General-Agent``, ``Tool-Use``); all of them are loaded and interleaved so
-    calibration covers the full range of agent behaviors.
+    calibration covers the full range of agent behaviors (or a single requested
+    config if ``config_name`` is specified).
 
     Length-aware sampling: conversations in this dataset can be very long. A
     sample whose *messages alone* already exceed ``seqlen`` would have its actual
@@ -883,15 +886,52 @@ def get_ultradata_agent_dataset(
     # which makes HF feature alignment fail. Since we only read ``messages`` and
     # ``tools`` and render them ourselves, we scan each config independently and
     # then balance the final selection across configs.
-    configs = ["Code-Agent", "Search-Agent", "General-Agent", "Tool-Use"]
+    if config_name is not None:
+        if isinstance(config_name, str):
+            configs = [c.strip() for c in config_name.split("+")] if "+" in config_name else [config_name]
+        else:
+            configs = list(config_name)
+    else:
+        configs = ["Code-Agent", "Search-Agent", "General-Agent", "Tool-Use"]
     sub_datasets = []
+    loaded_configs = []
     for cfg in configs:
+        cfg_dir_name = {
+            "code-agent": "Code_Agent",
+            "general-agent": "General_Agent",
+            "search-agent": "Search_Agent",
+            "tool-use": "Tool_Use",
+        }.get(cfg.lower().replace("_", "-"), cfg.replace("-", "_"))
+        pattern = f"data/{cfg_dir_name}/*.jsonl"
+        d = None
         try:
-            d = load_dataset(hub_repo_id, cfg, split=split, streaming=True)
-            d = d.shuffle(seed=seed, buffer_size=1000)
-            sub_datasets.append(d)
+            candidate = load_dataset(hub_repo_id, cfg, split=split, streaming=True)
+            # Probe whether the candidate stream can yield rows without a PyArrow schema cast error
+            _ = next(iter(candidate))
+            d = candidate
         except Exception as e:  # noqa: BLE001
-            logger.warning("Failed to load config '%s' of %s: %s", cfg, hub_repo_id, e)
+            logger.info(
+                "Config-based streaming for '%s' of %s encountered schema issue (%s); "
+                "falling back to direct jsonl stream via '%s'.",
+                cfg,
+                hub_repo_id,
+                e,
+                pattern,
+            )
+            try:
+                data_files = f"hf://datasets/{hub_repo_id}/{pattern}"
+                d = load_dataset("json", data_files=data_files, split=split, streaming=True)
+            except Exception as e2:  # noqa: BLE001
+                logger.warning("Failed to load config '%s' of %s via data_files: %s", cfg, hub_repo_id, e2)
+                continue
+
+        if d is not None:
+            try:
+                d = d.shuffle(seed=seed, buffer_size=1000)
+            except Exception:
+                pass
+            sub_datasets.append(d)
+            loaded_configs.append(cfg)
 
     if not sub_datasets:
         raise ValueError(f"Could not load any config of {hub_repo_id} (tried {configs}).")
@@ -1002,24 +1042,65 @@ def get_ultradata_agent_dataset(
     for i, d in enumerate(sub_datasets):
         scanned = 0
         candidates = []  # (messages, tools) that passed the cheap word-count filter
-        for sample in d:
-            if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
-                break
-            scanned += 1
-            messages = sample["messages"]
-            tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
+        cfg_name = loaded_configs[i] if i < len(loaded_configs) else f"config_{i}"
+        try:
+            for sample in d:
+                if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
+                    break
+                scanned += 1
+                messages = sample["messages"]
+                tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
 
-            # Decide once (at read time) whether to drop the long system prompt,
-            # so word-count, length check and final render all stay consistent.
-            messages = _maybe_drop_system(messages)
+                # Decide once (at read time) whether to drop the long system prompt,
+                # so word-count, length check and final render all stay consistent.
+                messages = _maybe_drop_system(messages)
 
-            # Fast path: if even the raw whitespace word count exceeds seqlen, the
-            # sample is definitely too long -> skip rendering/tokenizing.
-            if _approx_word_count(messages) > seqlen:
-                if len(fallback_by_cfg[i]) < per_cfg_quota:
-                    fallback_by_cfg[i].append((messages, tools))
-                continue
-            candidates.append((messages, tools))
+                # Fast path: if even the raw whitespace word count exceeds seqlen, the
+                # sample is definitely too long -> skip rendering/tokenizing.
+                if _approx_word_count(messages) > seqlen:
+                    if len(fallback_by_cfg[i]) < per_cfg_quota:
+                        fallback_by_cfg[i].append((messages, tools))
+                    continue
+                candidates.append((messages, tools))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Error reading samples from config '%s' of %s after %d candidates (%d scanned): %s",
+                cfg_name,
+                hub_repo_id,
+                len(candidates),
+                scanned,
+                e,
+            )
+            if len(candidates) < per_cfg_quota:
+                cfg_dir_name = {
+                    "code-agent": "Code_Agent",
+                    "general-agent": "General_Agent",
+                    "search-agent": "Search_Agent",
+                    "tool-use": "Tool_Use",
+                }.get(cfg_name.lower().replace("_", "-"), cfg_name.replace("-", "_"))
+                pattern = f"data/{cfg_dir_name}/*.jsonl"
+                try:
+                    data_files = f"hf://datasets/{hub_repo_id}/{pattern}"
+                    fallback_d = load_dataset("json", data_files=data_files, split=split, streaming=True)
+                    try:
+                        fallback_d = fallback_d.shuffle(seed=seed, buffer_size=1000)
+                    except Exception:
+                        pass
+                    for sample in fallback_d:
+                        if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
+                            break
+                        scanned += 1
+                        messages = sample["messages"]
+                        tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
+
+                        messages = _maybe_drop_system(messages)
+                        if _approx_word_count(messages) > seqlen:
+                            if len(fallback_by_cfg[i]) < per_cfg_quota:
+                                fallback_by_cfg[i].append((messages, tools))
+                            continue
+                        candidates.append((messages, tools))
+                except Exception as fb_e:  # noqa: BLE001
+                    logger.warning("Fallback data_files stream for '%s' also encountered error: %s", cfg_name, fb_e)
 
         # Batched accurate length check for this config's candidates.
         lengths = _batch_msg_lengths([_build_length_conversation(m) for m, _ in candidates])
@@ -1055,6 +1136,9 @@ def get_ultradata_agent_dataset(
                 n_preferred,
                 len(selected) - n_preferred,
             )
+
+    if not selected:
+        raise ValueError(f"Could not load any valid samples from {hub_repo_id} across configs {configs}.")
 
     # Global shuffle so configs/tiers are mixed across the calibration set.
     random.Random(seed).shuffle(selected)
@@ -1541,6 +1625,7 @@ def _get_generic_dataset(
     timeout=300,
     concat=False,
     trust_remote_code=False,
+    config_name=None,
 ):
     """Generic dataset loader that works with any HuggingFace dataset.
 
@@ -1578,11 +1663,40 @@ def _get_generic_dataset(
         trust_remote_code: Passed through to ``datasets.load_dataset``. Controlled
             by the AutoRound interface so the user decides whether to execute
             remote dataset-loading scripts. Defaults to ``False``.
+        config_name: Optional configuration/subset name passed to
+            ``datasets.load_dataset``.
 
     Returns:
         A tokenized HuggingFace Dataset.
     """
     import time
+
+    if config_name is not None and isinstance(config_name, str) and "+" in config_name:
+        sub_configs = [c.strip() for c in config_name.split("+")]
+        sub_datasets = []
+        for sub_cfg in sub_configs:
+            sub_ds = _get_generic_dataset(
+                tokenizer,
+                seqlen,
+                dataset_name=dataset_name,
+                split=split,
+                seed=seed,
+                apply_chat_template=apply_chat_template,
+                system_prompt=system_prompt,
+                fields=fields,
+                template=template,
+                separator=separator,
+                streaming=streaming,
+                nsamples=nsamples,
+                timeout=timeout,
+                concat=concat,
+                trust_remote_code=trust_remote_code,
+                config_name=sub_cfg,
+            )
+            sub_datasets.append(sub_ds)
+        from datasets import concatenate_datasets
+
+        return concatenate_datasets(sub_datasets)
 
     # Determine if we should use streaming
     # Local files are always loaded fully (they're already on disk)
@@ -1603,16 +1717,43 @@ def _get_generic_dataset(
         elif dataset_name.endswith(".txt"):
             loaded = load_dataset("text", data_files=dataset_name, split=split_arg)
         else:
-            loaded = load_dataset(dataset_name, split=split_arg)
+            load_kwargs = dict(split=split_arg)
+            if config_name is not None:
+                load_kwargs["name"] = config_name
+            loaded = load_dataset(dataset_name, **load_kwargs)
     else:
         # HuggingFace dataset. ``trust_remote_code`` is passed through from the
         # AutoRound interface so the user controls whether remote code runs.
-        loaded = load_dataset(
-            dataset_name,
+        load_kwargs = dict(
             split=split_arg,
             trust_remote_code=trust_remote_code,
             streaming=use_streaming,
         )
+        if config_name is not None:
+            load_kwargs["name"] = config_name
+        try:
+            loaded = load_dataset(dataset_name, **load_kwargs)
+        except ValueError as e:
+            if "Config name is missing" in str(e) and config_name is None:
+                try:
+                    from datasets import get_dataset_config_names
+
+                    available_configs = get_dataset_config_names(dataset_name, trust_remote_code=trust_remote_code)
+                except Exception:
+                    available_configs = None
+                if available_configs:
+                    chosen_config = available_configs[0]
+                    logger.info(
+                        f"Config name is missing for dataset '{dataset_name}'. "
+                        f"Defaulting to '{chosen_config}' (available: {available_configs}). "
+                        f"Specify explicitly with '{dataset_name}:config=<config>'."
+                    )
+                    load_kwargs["name"] = chosen_config
+                    loaded = load_dataset(dataset_name, **load_kwargs)
+                else:
+                    raise
+            else:
+                raise
 
     # When no split was requested, ``load_dataset`` returns a split dictionary;
     # reduce it (and any list result) to a single dataset for extraction below.
@@ -1661,9 +1802,7 @@ def _get_generic_dataset(
         total_scanned = 0
         skipped = 0
 
-        logger.info(
-            f"Streaming dataset '{dataset_name}': collecting up to {target} samples " f"(timeout={timeout}s)..."
-        )
+        logger.info(f"Streaming dataset '{dataset_name}': collecting up to {target} samples (timeout={timeout}s)...")
 
         # Shuffle the iterable dataset for random sampling
         iter_ds = calib_dataset.shuffle(seed=seed)
@@ -1800,10 +1939,13 @@ def select(dataset, indices):
         to optimize performance.
     """
     indices = set(indices)
+    if not indices:
+        raise ValueError("indices must not be empty")
+    max_idx = max(indices)
     for idx, sample in enumerate(dataset):
         if idx in indices:
             yield sample
-        if idx > max(indices):
+        if idx >= max_idx:
             break
 
 
@@ -1818,15 +1960,30 @@ def select_dataset(dataset, indices):
         A subset of the dataset, either using the dataset's `select` method or the
         `select` function defined above as a fallback.
     """
+    indices = list(indices)
+    if not indices:
+        if hasattr(dataset, "select"):
+            return dataset.select([])
+        from datasets import Dataset
+
+        return Dataset.from_list([])
     try:
+        if hasattr(dataset, "__len__"):
+            d_len = len(dataset)
+            indices = [idx for idx in indices if idx < d_len]
         return dataset.select(indices)
     except Exception:
         list_data = list(select(dataset, indices))
-        import pandas as pd
-
-        df = pd.DataFrame(list_data)
-        dataset = Dataset.from_pandas(df)
-        return dataset
+        cleaned_data = []
+        for row in list_data:
+            clean_row = {}
+            for k, v in row.items():
+                if hasattr(v, "tolist"):
+                    clean_row[k] = v.tolist()
+                else:
+                    clean_row[k] = v
+            cleaned_data.append(clean_row)
+        return Dataset.from_list(cleaned_data)
 
 
 def _get_dataset_impl(
@@ -1917,6 +2074,7 @@ def _get_dataset_impl(
         return dataset_new
 
     datasets, data_lens = [], {}
+    spec_target_nums = []
     system_prompt = "You are a helpful assistant."
     for name in dataset_names:
         split = None
@@ -1926,6 +2084,8 @@ def _get_dataset_impl(
         template = None
         separator = "\n\n"
         timeout = 300
+        config_name = None
+        num_target = None
 
         if ":" in name:
             # Split on unescaped ":" so values containing ":" (e.g. templates)
@@ -1946,7 +2106,10 @@ def _get_dataset_impl(
                 value = unescape_spec_value(raw_value if key == "separator" else raw_value.strip())
                 if key == "split":
                     split = value.split("+")
+                elif key in ("config", "subset"):
+                    config_name = value
                 elif key == "num":
+                    num_target = int(value)
                     data_lens[name] = int(value)
                 elif key == "concat":
                     do_concat = value.lower() != "false"
@@ -2001,6 +2164,7 @@ def _get_dataset_impl(
                     timeout=timeout,
                     concat=do_concat,
                     trust_remote_code=trust_remote_code,
+                    config_name=config_name,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -2031,6 +2195,7 @@ def _get_dataset_impl(
                     timeout=timeout,
                     concat=do_concat,
                     trust_remote_code=trust_remote_code,
+                    config_name=config_name,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -2049,6 +2214,13 @@ def _get_dataset_impl(
                     apply_chat_template=apply_chat_template,
                     system_prompt=system_prompt,
                 )
+                if config_name is not None:
+                    params = inspect.signature(get_dataset).parameters
+                    if "config_name" in params:
+                        dataset_kwargs["config_name"] = config_name
+                    elif "config" in params:
+                        dataset_kwargs["config"] = config_name
+                per_dataset_samples = num_target if num_target is not None else nsamples
                 if get_dataset is get_fineweb_edu_dataset:
                     # Scale the candidate pool with nsamples via AR_CALIB_DATA_MULTIPLIER
                     # (same knob the other streaming datasets use), keeping the
@@ -2056,7 +2228,7 @@ def _get_dataset_impl(
                     # large enough pool after the downstream length filter.
                     dataset_kwargs["max_samples"] = max(
                         _FINEWEB_EDU_MIN_CANDIDATES,
-                        data_lens.get(name, nsamples) * envs.AR_CALIB_DATA_MULTIPLIER,
+                        per_dataset_samples * envs.AR_CALIB_DATA_MULTIPLIER,
                     )
                 elif get_dataset in (
                     get_pile_dataset,
@@ -2068,7 +2240,7 @@ def _get_dataset_impl(
                     get_ultrafinweb_dataset,
                     get_ultradata_agent_dataset,
                 ):
-                    dataset_kwargs["nsamples"] = nsamples
+                    dataset_kwargs["nsamples"] = per_dataset_samples
                 dataset = get_dataset(**dataset_kwargs)
 
         if do_concat:
@@ -2077,7 +2249,9 @@ def _get_dataset_impl(
         if isinstance(dataset, IterableDataset):
             # Filter and limit the stream before materializing it in memory.
             dataset = dataset.filter(filter_func)
-            if name in data_lens:
+            if num_target is not None:
+                dataset = select_dataset(dataset, range(num_target))
+            elif name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
             # select_dataset may have already materialized the requested rows.
             if isinstance(dataset, IterableDataset):
@@ -2088,12 +2262,16 @@ def _get_dataset_impl(
             # buffer conversion for each indexed Arrow row.
             dataset = cast_dataset_columns(dataset)
             dataset = dataset.filter(filter_func)
-            if name in data_lens:
-                dataset = select_dataset(dataset, range(data_lens[name]))
+            d_len = get_dataset_len(dataset)
+            if num_target is not None:
+                dataset = select_dataset(dataset, range(min(num_target, d_len)))
+            elif name in data_lens:
+                dataset = select_dataset(dataset, range(min(data_lens[name], d_len)))
         # Format last: tensorizing whole batches during filter/select would run torch ops that
         # are not fork-safe (libgomp) in the preprocessing subprocess.
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         datasets.append(dataset)
+        spec_target_nums.append(num_target)
 
     if len(datasets) == 1:
         dataset_final = datasets[0]
@@ -2108,10 +2286,17 @@ def _get_dataset_impl(
         # res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
         indices = [item[0] for item in res]
         datasets = [datasets[item[0]] for item in res]
-        dataset_names = [dataset_names[index] for index in indices]
+        dataset_names = [dataset_names[item[0]] for item in res]
+        spec_target_nums = [spec_target_nums[item[0]] for item in res]
         # Keep the lengths aligned with the reordered datasets.
         lens = [item[1] for item in res]
-        cnt = 0 if not data_lens else sum(data_lens.values())
+
+        configured_sum = sum(n for n in spec_target_nums if n is not None)
+        cnt = (
+            configured_sum
+            if (configured_sum > 0 and configured_sum <= nsamples)
+            else (0 if not data_lens else sum(data_lens.values()))
+        )
         dataset_cnt_info = {}
         if cnt > nsamples:
             cnt = 0
@@ -2119,18 +2304,26 @@ def _get_dataset_impl(
         # Datasets are visited from smallest to largest, so dividing the remaining
         # budget by the number of datasets still to fill lets later (larger) datasets
         # take up what earlier (smaller) ones could not provide.
-        remaining = sum(1 for dataset_name in dataset_names if dataset_name.split(":")[0] not in data_lens)
+        remaining = sum(1 for n in spec_target_nums if n is None)
+        if remaining == 0 and not any(spec_target_nums):
+            remaining = sum(1 for dataset_name in dataset_names if dataset_name.split(":")[0] not in data_lens)
+
         for i in range(len(datasets)):
             name = dataset_names[i].split(":")[0]
-            if name not in data_lens:
-                target_cnt = (nsamples - cnt) // remaining
+            if spec_target_nums[i] is not None:
+                target_cnt = min(spec_target_nums[i], lens[i])
+                if target_cnt < spec_target_nums[i]:
+                    cnt -= spec_target_nums[i] - target_cnt
+            elif name not in data_lens:
+                target_cnt = (nsamples - cnt) // remaining if remaining > 0 else 0
                 remaining -= 1
                 target_cnt = min(target_cnt, lens[i])
                 cnt += target_cnt
             else:
-                target_cnt = data_lens[name]
+                target_cnt = min(data_lens[name], lens[i])
             datasets[i] = select_dataset(datasets[i], range(target_cnt))
-            dataset_cnt_info[name] = target_cnt
+            label = dataset_names[i] if name in dataset_cnt_info else name
+            dataset_cnt_info[label] = target_cnt
         if len(datasets) > 1:
             from datasets import concatenate_datasets
 
