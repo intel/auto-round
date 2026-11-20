@@ -27,6 +27,7 @@ import torch
 from torch import nn
 
 from auto_round.export.formats.awq.utils import WQLinear_GEMM
+from auto_round.utils.bit_packing import unpack_bitstream
 from auto_round_extension.torch.qlinear_torch import QuantLinear as QuantLinearDirect
 from auto_round_extension.torch.qlinear_torch_zp import QuantLinear as QuantLinearMinusOne
 
@@ -260,3 +261,38 @@ def test_minus_one_scalar_zp_packs_float_scalars(bits):
     q_ref = _pack(float(maxq + 1))  # in-range zp storing maxq
     assert torch.isfinite(q1(torch.eye(IN_F))).all(), "float scalar zp=1.0 must pack, not crash"
     assert torch.equal(q_over.qzeros, q_ref.qzeros), "oversized float scalar must clamp to maxq"
+
+
+@pytest.mark.parametrize("bits", [5, 6, 7])
+@pytest.mark.parametrize("minus_one", [False, True])
+def test_pack_clamps_levels_generic_bits(bits, minus_one):
+    """The generic 5/6/7-bit stream keeps only the low ``bits`` bits of a level.
+
+    ``pack_bitstream`` masks each value with ``2**bits - 1``, so an unclamped
+    level of ``maxq + 2`` decodes as ``1`` -- the dequantized weight is then off
+    by almost the whole range, while the packed artifact still looks well formed.
+    Both torch packers must store the clamped grid here too.
+    """
+    torch.manual_seed(0)
+    w, scale, zp = _make_inputs(bits)
+    cls = QuantLinearMinusOne if minus_one else QuantLinearDirect
+    q = cls(bits, GROUP, IN_F, OUT_F, bias=False)
+    q.device = torch.device("cpu")
+    q.pack(SimpleNamespace(weight=w, bias=None), scale, zp, None, device="cpu")
+
+    maxq = 2**bits - 1
+    expected = torch.clamp(
+        torch.round(w / scale.repeat_interleave(GROUP, 1) + zp.repeat_interleave(GROUP, 1)), 0, maxq
+    ).to(torch.int64)
+    got = unpack_bitstream(q.qweight, bits, dim=0).t().to(torch.int64)
+    assert got.min() >= 0 and got.max() <= maxq
+    assert torch.equal(got, expected), "packed levels must equal the clamped fake-quantization"
+
+    # ... and the layer dequantizes to that clamped grid, not to the wrapped
+    # level. (The (zp-1) variant stores a shifted zero point, so the plain
+    # reconstruction below is only the contract of the raw zero-point packer.)
+    if not minus_one:
+        s16 = scale.half().float().repeat_interleave(GROUP, 1)
+        zrep = zp.repeat_interleave(GROUP, 1)
+        ref_w = (expected.to(torch.float32) - zrep) * s16
+        torch.testing.assert_close(q(torch.eye(IN_F)).t(), ref_w, rtol=0, atol=5e-3)
