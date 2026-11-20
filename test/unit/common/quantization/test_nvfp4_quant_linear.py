@@ -8,6 +8,7 @@ from transformers.quantizers.auto import AutoHfQuantizer
 from auto_round.data_type.nvfp import (
     calculate_gparam,
     calculate_gparam_e5m3,
+    nv_fp4,
     nvfp4_v2,
     nvfp4_v2_gs,
     nvfp4_v2_with_static_gs,
@@ -22,6 +23,64 @@ from auto_round.schemes import PRESET_SCHEMES
 QMODULE_MAPPING = {
     BackendDataType.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
+
+
+class TestNVFPGlobalScaleExport:
+    @staticmethod
+    def _model(amax=2.0):
+        model = torch.nn.Module()
+        layer = torch.nn.Linear(16, 8, bias=False)
+        layer.bits = layer.act_bits = 4
+        layer.group_size = layer.act_group_size = 16
+        layer.sym = True
+        layer.data_type = "nv_fp4"
+        layer.act_data_type = "nv_fp4_with_static_gs"
+        layer.act_max = torch.tensor([amax])
+        layer.weight_global_scale = calculate_gparam(layer.weight)
+        qdq, scale, _ = nv_fp4(layer.weight, global_scale=layer.weight_global_scale)
+        layer.weight.data.copy_(qdq)
+        layer.scale = scale.reshape(8, 1)
+        model.projection = layer
+        return model
+
+    @pytest.mark.parametrize("field", ["weight_global_scale", "input_global_scale"])
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan"), 1e-45])
+    def test_invalid_export_scale_reports_module_name(self, field, value):
+        from auto_round.export.formats.compressed_tensors.float import pack_layer
+
+        model = self._model()
+        setattr(model.projection, field, torch.tensor([value]))
+        with pytest.raises(ValueError, match=f"projection.{field}.*finite and positive"):
+            pack_layer("projection", model, device="cpu")
+        assert isinstance(model.projection, torch.nn.Linear)
+
+    @pytest.mark.parametrize("has_attribute", [False, True])
+    def test_missing_calibration_reports_module_name(self, has_attribute):
+        from auto_round.export.formats.compressed_tensors.float import pack_layer
+
+        model = self._model()
+        if has_attribute:
+            model.projection.act_max = None
+        else:
+            del model.projection.act_max
+        with pytest.raises(ValueError, match="Missing activation statistics.*projection.input_global_scale"):
+            pack_layer("projection", model, device="cpu")
+
+    @pytest.mark.parametrize("amax", [0.0, 1e-40, 2.0])
+    def test_packed_checkpoint_has_finite_invertible_scales(self, tmp_path, amax):
+        from safetensors.torch import load_file, save_file
+
+        from auto_round.export.formats.compressed_tensors.float import pack_layer
+
+        model = self._model(amax)
+        pack_layer("projection", model, device="cpu")
+        path = tmp_path / "model.safetensors"
+        save_file(model.state_dict(), path)
+        state = load_file(path)
+        for key in ("projection.weight_global_scale", "projection.input_global_scale"):
+            assert torch.isfinite(state[key]).all() and (state[key] > 0).all()
+            assert torch.isfinite(state[key].reciprocal()).all()
+        assert state["projection.weight_packed"].dtype == torch.uint8
 
 
 @pytest.fixture(autouse=True)
