@@ -251,7 +251,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 
 - W4A16 的 AWQ 收益依赖模型和后续量化方法。最明确的收益是 Llama 上 `AWQ_AR` 相比 `AR` 提升 +1.13 平均分，AVG 相对提升 +1.63%。
 - `AWQ_RTN` 不适合作为 W4A16 的强默认项。它相对 `RTN` 和 `opt_rtn` 的 AVG 胜率为 2/4，但收益较小且不稳定。
-- `AWQ_AR2` 在两个模型上都提升 AVG，但增益较小（+0.25 分和 +0.05 分），需要结合额外耗时判断是否值得启用。
+- `AWQ_AR2` 在两个模型上都提升 AVG，但增益较小（+0.25 分和 +0.05 分）。
 
 ## 8B 模型上的补充 W2/W3/W4 结果
 
@@ -308,7 +308,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 
 ## Qwen3.8-27B 案例：W4A16 与 MXFP4 W4A4
 
-本节独立于上方的 `--format fake` 表格，使用导出 checkpoint 和 vLLM 在 B200 上评测，评测环境为 `lm-eval` 0.4.12、vLLM 0.27.1。HellaSwag、MMLU、PIQA、Winogrande 使用 `acc`，GSM8K 使用 `exact_match,strict-match`。
+本节独立于上方的 `--format fake` 表格，使用导出 checkpoint 和 vLLM 评测，评测环境为 `lm-eval` 0.4.12、vLLM 0.27.1。HellaSwag、MMLU、PIQA、Winogrande 使用 `acc`，GSM8K 使用 `exact_match,strict-match`。
 
 ### 实验设置
 
@@ -342,7 +342,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 | AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
 | AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
 
-量化时间为参考值；本次运行中，`off` 相比 `full` 约节省26.3%的量化时间，AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ + opt-RTN 整体最快，且 AVG 基本持平。
+量化时间为参考值；本次运行中，`off` 相比 `full` 约节省 26.3% 的量化时间，AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ + opt-RTN 整体最快，且 AVG 基本持平。
 
 ### MXFP4 W4A4
 
@@ -358,6 +358,124 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 | AWQ + opt-RTN | 95.30 | 61.73 | 80.35 | 79.00 | 75.30 | 78.34 |
 
 最佳 AWQ W4A4 结果是 AWQ + AR2 full，AVG 为 **78.42**，仅比 AWQ + opt-RTN 高 0.08 分。相对 native AR2，AWQ + AR2 full 提升 0.46 分；相对 native opt-RTN，AWQ + opt-RTN 提升 1.28 分。Native plain RTN 和 model-free RTN 分别达到 78.14 和 78.08，是强基线。
+
+### Hadamard + AWQ MXFP4 W4A4
+
+本小节在 MXFP4 案例的基础上加入确定性的分块 Hadamard 旋转。旋转在 AWQ smoothing 之前执行，导出的 `rotation_config` 使 vLLM 在加载 checkpoint 时应用在线 Hadamard。实验使用 vLLM PR [#54006](https://github.com/vllm-project/vllm/pull/54006)（`vllm 0.32.0rc1.dev110`）和 `lm-eval` 0.4.13；vLLM 为 MXFP4 GEMM 选择 `FlashInferMxFp4LinearKernel`。旋转选项见 [rotation_details](rotation_details.md)。
+
+各 recipe（算法顺序：Hadamard 旋转 → AWQ smoothing → 可选 TEQ scale 优化 → 终端量化器）：
+
+| 表中名称 | 算法参数 |
+| --- | --- |
+| `hmt_awq` | `--algorithm awq,rtn --disable_opt_rtn --iters 0` |
+| `hmt_awq_opt_rtn` | `--algorithm awq,rtn --enable_opt_rtn --iters 0` |
+| `hmt_awq_opt_rtn_awq2048` | `--algorithm awq,rtn --enable_opt_rtn --awq_seqlen 2048 --iters 0` |
+| `hmt_awq_ar2` | `--algorithm awq,auto_round_v2 --awq-v2-scale-search full --iters 200` |
+| `hmt_awq_teq_opt_rtn` | `--algorithm awq,teq,rtn --enable_opt_rtn --iters 0` |
+| `hmt_awq_teq_ar2` | `--algorithm awq,teq,auto_round_v2 --awq-v2-scale-search full --iters 200` |
+| `hmt_awq_teq_ar2_rceil` | `--scheme MXFP4_RCEIL --algorithm awq,teq,auto_round --awq-n-grid 20 --iters 200 --teq-iters 5 --enable_alg_ext` |
+
+除明确标注的 `MXFP4_RCEIL` 行外，所有行均使用 `--scheme MXFP4 --format auto_round --rotation_type hadamard --rotation_block_size 32 --nsamples 128 --seqlen 2048 --awq_nsamples 128`。32B TEQ 后续实验沿用与 `hmt_awq_teq_ar2` 相同的 `awq,teq,auto_round_v2` 组合，在本地配置中命名为 `hmt_awq_teq_default_main`。
+
+`hmt_awq` 使用 PR [#2301](https://github.com/intel/auto-round/pull/2301) 引入的 rotation-aware AWQ 评分。下文的 legacy 评分行使用相同 recipe，并通过仅用于实验的源码开关恢复 #2301 之前的 `QDQ(W * s) / s` 目标；该开关不是上游 CLI 选项。
+
+| 模型 | 配置 | GSM8K strict (%) | GSM8K flexible (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | BF16 | 77.71 | 84.08 | 57.09 | 72.87 | 76.50 | 67.88 | 70.41 |
+| Qwen3-8B | Hadamard + AWQ (`hmt_awq`) | 81.88 | 84.91 | 54.88 | 70.29 | 75.90 | 66.85 | 69.96 |
+| Qwen3-8B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 83.32 | 85.60 | 55.02 | 70.08 | 75.68 | 68.98 | 70.62 |
+| Qwen3.8-27B | BF16 | 97.19 | 97.19 | 63.69 | 83.46 | 80.79 | 75.77 | 80.18 |
+| Qwen3.8-27B | Hadamard + AWQ (`hmt_awq`) | 94.77 | 94.69 | 62.26 | 82.03 | 80.09 | 74.43 | 78.71 |
+| Qwen3.8-27B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 91.96 | 92.12 | 62.26 | 82.22 | 81.01 | 74.35 | 78.36 |
+| Qwen3-32B | BF16 | 92.87 | 93.03 | 63.90 | 80.80 | 81.28 | 73.32 | 78.44 |
+| Qwen3-32B | Hadamard + AWQ (`hmt_awq`) | 91.58 | 92.27 | 62.82 | 78.39 | 79.98 | 72.69 | 77.09 |
+| Qwen3-32B | Hadamard + AWQ，legacy 评分 | 90.90 | 92.57 | 62.52 | 78.87 | 79.87 | 70.17 | 76.47 |
+| Qwen3-32B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 92.95 | 93.03 | 62.65 | 79.08 | 80.47 | 72.77 | 77.58 |
+
+AVG 为 GSM8K strict-match、HellaSwag、MMLU、PIQA 和 WinoGrande 的五项平均。HellaSwag、MMLU、PIQA、WinoGrande 使用 `acc`。BF16 行在相同的 vLLM/`lm-eval` 环境中重新评测；Qwen3.8-27B BF16 AVG 与之前表格一致（80.18 对 80.09）。Qwen3-8B BF16 的 strict/flexible 差距较大，因此 strict 主要反映答案格式提取，而非推理精度。
+
+下方消融在相同环境下重新运行了 `hmt_awq`，得到 69.97（Qwen3-8B）和 78.75（Qwen3.8-27B）；与上方表格的微小差异属于评测噪声。
+
+- Qwen3.8-27B：Hadamard + AWQ + 优化 RTN 优于普通 RTN：AVG 为 **78.98**，使用 `--awq_seqlen 2048` 后达到 **79.26**。普通 RTN 为 78.71，AR2 更低，为 78.36。因此除 `MXFP4_RCEIL` 外，旋转后最佳的 27B 结果是 TEQ-free 的 `AWQ_opt_rtn_awq2048` recipe。
+- Qwen3-8B：旋转后 AR2 比普通 RTN 高 0.66 AVG（70.62 对 69.96），主要来自 GSM8K（strict +1.44）和 WinoGrande（+2.13）；HellaSwag、MMLU、PIQA 基本持平或略低。最终 AVG 与本套件上的 BF16 持平。
+- Qwen3-32B：Hadamard + AWQ + 普通 RTN 在 rotation-aware 评分下达到 **77.09** AVG，legacy 评分为 **76.47**，分别比同环境 BF16（78.44）低 1.35 和 1.97。rotation-aware 在 GSM8K（+0.68）、HellaSwag（+0.30）、PIQA（+0.11）和 WinoGrande（+2.53）上更高，MMLU 低 0.48。
+- Qwen3-32B：叠加 AR2 后，rotation-aware 结果从 **77.09 提升到 77.58 AVG**。提升主要来自 GSM8K strict（+1.37）、MMLU（+0.69）、PIQA（+0.49）和 WinoGrande（+0.08），HellaSwag 基本持平（-0.17）。AR2 仍比 BF16 低 0.86 AVG。AWQ2048 优化 RTN 和默认 TEQ + AR2 均未超过 AR2：AVG 分别为 77.14 和 77.15。
+- 跨环境比较：上一张表的行使用 vLLM 0.27.1、`lm-eval` 0.4.12 和 `--format llm_compressor`；本节的行使用 vLLM PR #54006、`lm-eval` 0.4.13 和 `--format auto_round`。重新评测的 BF16 行表明环境差异很小。
+
+#### TEQ 与优化 RTN 组合
+
+以下 sweep 使用相同的 Hadamard → AWQ → TEQ → 终端量化器流程。`MXFP4_RCEIL` 行使用不同的 activation 方案和评测环境，因此约 0.15 分以内的差异视为跨环境持平。
+
+| 模型 | 配置 | GSM8K strict (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | BF16 | 97.19 | 63.69 | 83.46 | 80.79 | 75.77 | **80.18** |
+| Qwen3.8-27B | AWQ + 普通 RTN | 94.77 | 62.26 | 82.03 | 80.09 | 74.43 | 78.71 |
+| Qwen3.8-27B | AWQ + opt-RTN | 95.00 | 62.17 | 82.44 | 80.25 | 75.06 | 78.98 |
+| Qwen3.8-27B | AWQ + opt-RTN, AWQ2048 | 94.92 | 62.36 | 82.32 | 81.01 | 75.69 | **79.26** |
+| Qwen3.8-27B | AWQ + AR2 | 91.96 | 62.26 | 82.22 | 81.01 | 74.35 | 78.36 |
+| Qwen3.8-27B | AWQ + TEQ + opt-RTN | 83.24 | 62.29 | 81.41 | 80.47 | 76.24 | 76.73 |
+| Qwen3.8-27B | AWQ + TEQ + AR2 | 95.15 | 61.87 | 81.80 | 80.25 | 74.27 | 78.67 |
+| Qwen3.8-27B | MXFP4_RCEIL + AWQ + TEQ + AR2 † | 97.04 | 61.87 | 82.01 | 79.38 | 76.01 | **79.26** |
+| Qwen3-32B | BF16 | 92.87 | 63.90 | 80.80 | 81.28 | 73.32 | **78.44** |
+| Qwen3-32B | AWQ + 普通 RTN | 91.58 | 62.82 | 78.39 | 79.98 | 72.69 | 77.09 |
+| Qwen3-32B | AWQ + opt-RTN, AWQ2048 | 92.57 | 62.60 | 79.16 | 79.71 | 71.67 | 77.14 |
+| Qwen3-32B | AWQ + AR2 | 92.95 | 62.65 | 79.08 | 80.47 | 72.77 | **77.58** |
+| Qwen3-32B | AWQ + TEQ + AR2（默认） | 90.90 | 62.57 | 79.07 | 79.16 | 74.03 | 77.15 |
+
+TEQ 运行使用 5 次迭代、学习率 `1.5e-4`、scale 范围 `[1e-5, 3]`，以及 32 个长度为 512 的校准样本；32B 默认行还启用 `awq_init`。
+
+- 27B 的 TEQ-free 对照表明优化 RTN 优于普通 RTN：`AWQ_opt_rtn` 的 AVG 为 78.98，将 AWQ 校准长度扩展到 2048 后提升到 79.26。这修正了此前“普通 RTN 是旋转后 27B 最佳 recipe”的结论。
+- 在标准 MXFP4 行中，TEQ + AR2 是唯一能恢复 GSM8K 的 TEQ 组合：GSM8K 为 95.15，AVG 为 78.67，但仍低于 TEQ-free `AWQ_opt_rtn`，只与普通 RTN 持平。TEQ + 优化 RTN 会把 GSM8K 降到 83.24、AVG 降到 76.73，因此不应把 TEQ 当作优化 RTN 的默认预初始化器。
+- `MXFP4_RCEIL` + AWQ + TEQ + AR2 与 `AWQ_opt_rtn_awq2048` 的 AVG 并列 79.26。它使用不同的 activation 方案和评测环境，属于跨环境持平，不能作为 TEQ 必需的证据。
+- Qwen3-32B 上 AR2 仍是实测最佳 recipe，AVG 为 77.58。使用 AWQ2048 的优化 RTN 达到 77.14 AVG，仅比普通 RTN 高 +0.05。默认 TEQ + AR2 为 77.15 AVG，低于 AR2，接近优化 RTN。
+- Qwen3-8B 上，strict HMT-vLLM TEQ Adam 结果为 69.74 AVG，低于 AR2 的 71.22，因此 TEQ 也没有改善 8B recipe。
+
+† `MXFP4_RCEIL` 使用与 serving 对齐的 rceil activation 规则，并通过 `--enable_alg_ext` 启用 `auto_round_v2`。
+
+#### Rotation-aware AWQ 评分消融
+
+PR [#2301](https://github.com/intel/auto-round/pull/2301) 修改了发布等价变换对的层的 AWQ 候选评分目标。旧目标在未旋转的基下评分 `QDQ(W * s) / s`；新目标评分部署时的旋转形式 `QDQ(T_w(W * s))`，并配套输入侧 `T_i(x / s)`。对 Hadamard `transform` 后端，`T_w(W) = W @ H.T`、`T_i(x) = x @ H`，两个变换互为精确逆变换（合成层上的往返相对误差为 `2e-7`）。该修改影响 smoothing scale 的选择，而不影响变换对的正确性。
+
+消融使用同一份私有 auto-round 代码（`f29a48e8` 加一个仅用于实验的开关），两个分支的校准数据、recipe 和评测设置完全一致。legacy 分支设置 `AUTO_ROUND_AWQ_ROTATION_AWARE=0`；关闭开关时，无 parent replay 的回退路径也会跳过权重变换，因此两条评分路径都与 #2301 之前的公式一致。相比直接 checkout `17e7cb6d^`，该做法不会混入 batched-RTN staging 修复（`f29a48e8`）之前的行为差异。
+
+| 模型 | Legacy AVG (%) | Rotation-aware AVG (%) | Δ AVG | Δ GSM8K | Δ HellaSwag | Δ MMLU | Δ PIQA | Δ WinoGrande |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 69.83 | 69.97 | +0.14 | +0.00 | +0.26 | +0.23 | -0.16 | +0.39 |
+| Qwen3.8-27B | 78.64 | 78.75 | +0.10 | -0.76 | -0.40 | +0.07 | +0.33 | +1.26 |
+| Qwen3-32B | 76.47 | 77.09 | +0.63 | +0.68 | +0.30 | -0.48 | +0.11 | +2.53 |
+
+Δ 为 rotation-aware 减 legacy，单位为百分点。AVG 使用 GSM8K strict-match，与上方表格一致。
+
+- 在这三个模型上，rotation-aware 分支的 AVG 均不低于 legacy（+0.14、+0.10、+0.63）。该 `awq,rtn --disable_opt_rtn` 消融没有复现 Qwen3-32B 约 1% 的回归。8B 和 27B 的差异接近单 seed 评测噪声；32B 的差异是任务间的取舍，WinoGrande 和 GSM8K 的提升抵消了 MMLU 的下降。
+- 本消融只隔离 `rotation_aware` 评分分支。对普通 RTN，该 commit 的其他修改不生效：不使用对角 `imatrix`，`v2_scale_search=reuse` 不适用，AWQ clipping 已关闭。若回归只出现在 `hmt_awq_ar2`（旋转层丢弃 `imatrix` 并禁用 scale reuse），需要单独的 AR2 消融。
+
+```bash
+# Hadamard + AWQ + 普通 RTN（8B 运行时把 --model 换成 Qwen3-8B）
+auto-round --model Qwen3.8-27B --scheme MXFP4 --format auto_round \
+  --algorithm awq,rtn --disable_opt_rtn --iters 0 \
+  --rotation_type hadamard --rotation_block_size 32 \
+  --nsamples 128 --seqlen 2048 --awq_nsamples 128 \
+  --output_dir Qwen3.8-27B-mxfp4-hmt-awq
+
+# Hadamard + AWQ + AR2 full
+auto-round --model Qwen3.8-27B --scheme MXFP4 --format auto_round \
+  --algorithm awq,auto_round_v2 --awq-v2-scale-search full --iters 200 \
+  --rotation_type hadamard --rotation_block_size 32 \
+  --nsamples 128 --seqlen 2048 --awq_nsamples 128 \
+  --output_dir Qwen3.8-27B-mxfp4-hmt-awq-ar2
+```
+
+评测使用与现有案例相同的 vLLM 参数：
+
+```bash
+lm_eval run --model vllm \
+  --model_args pretrained=<checkpoint>,tensor_parallel_size=1,max_model_len=8192,max_num_batched_tokens=32768,max_num_seqs=128,add_bos_token=True,gpu_memory_utilization=0.85,dtype=bfloat16,max_gen_toks=2048,enable_prefix_caching=False,reasoning_parser=qwen3,language_model_only=True,enable_thinking=False,kv_cache_dtype=auto \
+  --tasks gsm8k --batch_size 64 --seed 42 --apply_chat_template --fewshot_as_multiturn
+
+lm_eval run --model vllm \
+  --model_args pretrained=<checkpoint>,tensor_parallel_size=1,max_model_len=8192,max_num_batched_tokens=32768,max_num_seqs=128,add_bos_token=True,gpu_memory_utilization=0.85,dtype=bfloat16,max_gen_toks=2048,enable_prefix_caching=False,reasoning_parser=qwen3,language_model_only=True,enable_thinking=False,kv_cache_dtype=auto \
+  --tasks hellaswag,mmlu,piqa,winogrande --batch_size 64 --seed 42
+```
 
 ## INT8 / W8A8
 
@@ -428,4 +546,4 @@ AWQ 更适合量化误差对 activation-aware weight smoothing 敏感的 scheme�
 
 AWQ 不会给最终量化模型增加持续性内存开销，并且与终端量化算法正交，因此可以与 RTN、AutoRound 或 AutoRound2 组合，而不改变这些算法本身的核心量化逻辑。
 
-在 Qwen3.8-27B 案例中，W4A16 INT 对 AWQ 的 QDQ 策略不敏感：`off` 相比 `full` 降低了量化时间，AVG 仅变化 0.09 分；`reuse` 和 opt-RTN 也很有竞争力。对于 MXFP4 W4A4，AWQ + AR2 的 `full` 和 `reuse` 给出最强的 AWQ 结果。
+在 Qwen3.8-27B 案例中，W4A16 INT 对 AWQ 的 QDQ 策略不敏感：`off` 相比 `full` 降低了量化时间，AVG 仅变化 0.09 分；`reuse` 和 opt-RTN 也很有竞争力。对于不含旋转的 MXFP4 W4A4，AWQ + AR2 的 `full` 和 `reuse` 是最强的 AWQ 结果。加入确定性 Hadamard 旋转后，27B 的最佳 recipe 变为 AWQ + 优化 RTN：AVG 为 78.98，使用 2048-token AWQ 校准时为 79.26，高于普通 RTN 的 78.71 和 AR2 的 78.36。
