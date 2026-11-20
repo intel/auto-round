@@ -28,6 +28,22 @@ class NestedRopeBlock(torch.nn.Module):
         return hidden_states + rope["main"][0] + rope["compress"][1]
 
 
+def test_nested_rope_is_staged_on_actual_block_device(monkeypatch):
+    runner = BlockForwardRunner(device="cpu", amp=False, enable_torch_compile=False)
+    # Meta exercises recursive staging without occupying an evaluation GPU.
+    monkeypatch.setattr(runner, "_forward_device", lambda block: torch.device("meta"))
+
+    def forward(block, hidden_states, others, *args):
+        assert hidden_states.device.type == "meta"
+        assert others["position_embeddings"]["main"][0].device.type == "meta"
+        assert others["position_embeddings"]["nested"]["cos"].device.type == "meta"
+        return hidden_states
+
+    monkeypatch.setattr(runner, "_eager_block_forward", forward)
+    rope = {"main": (torch.ones(1, 4, 8),), "nested": {"cos": torch.ones(1, 4, 8)}}
+    runner._forward_one_batch(NestedRopeBlock(), torch.zeros(1, 4, 8), {"position_embeddings": rope}, eager=True)
+
+
 def test_non_v4_runner_does_not_select_nested_dicts():
     rope = {"main": (torch.randn(2, 4, 8), torch.randn(2, 4, 8))}
     runner = BlockForwardRunner(amp=False, shared_cache_keys=("position_embeddings",), enable_torch_compile=False)

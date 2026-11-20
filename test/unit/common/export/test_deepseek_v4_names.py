@@ -21,6 +21,7 @@ import torch
 from auto_round.export.common.deepseek_v4_names import (
     build_checkpoint_name_maps,
     prepare_native_export,
+    restore_quantization_names,
     restore_tensor_name,
 )
 
@@ -49,14 +50,28 @@ def test_native_names_preserve_packed_objects_and_nonweight_parameters(tmp_path)
     }
     config = {"config_groups": {"nvfp4": {"targets": ["model.layers.0.mlp.experts.255.gate_proj", "RoutedExperts"]}}}
     model = SimpleNamespace(config=SimpleNamespace(quantization_config=config))
-    restored = prepare_native_export(model, state, str(tmp_path))
+    restored, restored_config = prepare_native_export(model, state, str(tmp_path))
     assert restored["layers.0.ffn.experts.255.w1.weight_packed"] is packed
     assert restored["layers.0.hc_attn_base"] is state["model.layers.0.attn_hc.base"]
-    assert model.config.quantization_config["config_groups"]["nvfp4"]["targets"] == [
+    assert model.config.quantization_config is config
+    assert config["config_groups"]["nvfp4"]["targets"][0] == "model.layers.0.mlp.experts.255.gate_proj"
+    assert restored_config["config_groups"]["nvfp4"]["targets"] == [
         "layers.0.ffn.experts.255.w1",
         "RoutedExperts",
     ]
-    assert "layers.0.attn.wo_a" in model.config.quantization_config["ignore"]
+    assert "layers.0.attn.wo_a" in restored_config["ignore"]
+
+
+@pytest.mark.parametrize("config", [None, [], {}, {"config_groups": []}])
+def test_native_config_requires_groups_dictionary(config):
+    with pytest.raises(ValueError, match="DeepSeek V4.*config_groups dictionary"):
+        restore_quantization_names(config, {}, [])
+
+
+@pytest.mark.parametrize("group", [None, [], {}, {"targets": "Linear"}])
+def test_native_config_requires_target_lists(group):
+    with pytest.raises(ValueError, match="DeepSeek V4.*targets list"):
+        restore_quantization_names({"config_groups": {"nvfp4": group}}, {}, [])
 
 
 def test_unmapped_names_fail_closed():
@@ -65,7 +80,8 @@ def test_unmapped_names_fail_closed():
 
 
 @pytest.mark.parametrize("remote", [False, True])
-def test_save_model_disables_reverse_numeric_conversions(tmp_path, remote):
+@pytest.mark.parametrize("failure", [None, RuntimeError, TypeError])
+def test_save_model_disables_reverse_numeric_conversions(tmp_path, remote, failure):
     from auto_round.export.common.serialization import save_model
 
     source = tmp_path / "source"
@@ -86,18 +102,40 @@ def test_save_model_disables_reverse_numeric_conversions(tmp_path, remote):
     )
     packed = torch.tensor([[255]], dtype=torch.uint8)
     model.state_dict.return_value = {"model.layers.0.mlp.experts.0.gate_proj.weight_packed": packed}
+    original_config = model.config.quantization_config
+
+    def save_pretrained(*args, **kwargs):
+        assert model.config.quantization_config["config_groups"]["nvfp4"]["targets"] == ["layers.0.ffn.experts.0.w1"]
+        if failure is not None:
+            raise failure("simulated save failure")
+
+    model.save_pretrained.side_effect = save_pretrained
     with (
         patch("auto_round.export.common.serialization.apply_post_save_source_fixes"),
         patch("auto_round.export.common.serialization._save_source_config"),
+        patch("auto_round.export.common.serialization._save_model_configs") as save_configs,
+        patch("safetensors.torch.save_file") as save_file,
         patch(
             "transformers.utils.hub.cached_file", return_value=str(source / "model.safetensors.index.json")
         ) as cached,
     ):
-        save_model(model, str(tmp_path / "output"))
+        if failure is RuntimeError:
+            with pytest.raises(RuntimeError, match="simulated save failure"):
+                save_model(model, str(tmp_path / "output"))
+        else:
+            # A second export must receive the original runtime names again.
+            for _ in range(2):
+                save_model(model, str(tmp_path / "output"))
+                saved = json.loads((tmp_path / "output" / "quantization_config.json").read_text())
+                assert saved["config_groups"]["nvfp4"]["targets"] == ["layers.0.ffn.experts.0.w1"]
+                assert model.config.quantization_config is original_config
+        if failure is TypeError:
+            assert save_configs.call_count == save_file.call_count == 2
+    assert model.config.quantization_config is original_config
+    assert original_config["config_groups"]["nvfp4"]["targets"] == ["model.layers.0.mlp.experts.0.gate_proj"]
     if remote:
-        cached.assert_called_once_with(
-            model.name_or_path, "model.safetensors.index.json", revision="pinned-source-commit"
-        )
+        assert cached.call_count == (1 if failure is RuntimeError else 2)
+        cached.assert_called_with(model.name_or_path, "model.safetensors.index.json", revision="pinned-source-commit")
     else:
         cached.assert_not_called()
     kwargs = model.save_pretrained.call_args.kwargs

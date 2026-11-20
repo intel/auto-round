@@ -71,6 +71,11 @@ def restore_tensor_name(name, aliases, modules, source_keys):
 
 def restore_quantization_names(config, modules, tensor_names):
     """Restore explicit targets and derive ignores from actual saved precision."""
+    if not isinstance(config, dict) or not isinstance(config.get("config_groups"), dict):
+        raise ValueError("DeepSeek V4 native export requires a quantization config with a config_groups dictionary")
+    for name, group in config["config_groups"].items():
+        if not isinstance(group, dict) or not isinstance(group.get("targets"), list):
+            raise ValueError(f"DeepSeek V4 native export config group {name!r} requires a targets list")
     result = copy.deepcopy(config)
     for group in result["config_groups"].values():
         group["targets"] = [modules.get(name, name) for name in group["targets"]]
@@ -95,7 +100,7 @@ def restore_quantization_names(config, modules, tensor_names):
 
 
 def prepare_native_export(model, state_dict, source_dir):
-    """Return a rename-only state dict, preserving each tensor object and dtype."""
+    """Return renamed tensors and a copied config without mutating the model."""
     if source_dir is None:
         raise ValueError("DeepSeek V4 native export requires a source checkpoint directory or Hub ID")
     if os.path.isdir(source_dir):
@@ -115,5 +120,5 @@ def prepare_native_export(model, state_dict, source_dir):
         if target in renamed:
             raise ValueError(f"Duplicate DeepSeek V4 export tensor: {target}")
         renamed[target] = tensor
-    model.config.quantization_config = restore_quantization_names(model.config.quantization_config, modules, renamed)
-    return renamed
+    config = restore_quantization_names(model.config.quantization_config, modules, renamed)
+    return renamed, config

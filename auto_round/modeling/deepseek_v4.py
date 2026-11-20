@@ -29,6 +29,9 @@ def expand_layer_config(layer_config):
 
     result = copy.deepcopy(layer_config)
     rules = [rule for rule in get_checkpoint_conversion_mapping("deepseek_v4") if isinstance(rule, WeightRenaming)]
+    for rule in rules:
+        if len(rule.source_patterns) != 1 or len(rule.target_patterns) != 1:
+            raise ValueError("Expected scalar DeepSeek V4 rename rule")
     for original, config in layer_config.items():
         name = original
         for rule in rules:

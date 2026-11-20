@@ -194,6 +194,24 @@ def test_expand_layer_config_for_deepseek_v4_actual_forward_mapping():
     assert all(expanded[k] == v for k, v in config.items())
 
 
+@pytest.mark.parametrize(
+    "sources,targets", [([], ["target"]), (["source"], []), (["a", "b"], ["target"]), (["source"], ["a", "b"])]
+)
+def test_deepseek_v4_aliases_reject_non_scalar_renames(monkeypatch, sources, targets):
+    mapping = pytest.importorskip("transformers.conversion_mapping")
+    pytest.importorskip("transformers.core_model_loading")
+    from transformers.core_model_loading import WeightRenaming
+
+    from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+    rule = object.__new__(WeightRenaming)
+    rule.source_patterns = sources
+    rule.target_patterns = targets
+    monkeypatch.setattr(mapping, "get_checkpoint_conversion_mapping", lambda _: [rule])
+    with pytest.raises(ValueError, match="scalar DeepSeek V4 rename rule"):
+        expand_layer_config({"source": {"bits": 4}})
+
+
 def test_rename_only_mapping_preserves_default_tensor_conversions():
     pytest.importorskip("transformers.conversion_mapping")
     from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
@@ -213,7 +231,8 @@ def test_rename_only_mapping_preserves_default_tensor_conversions():
     converter_sources = {
         source for rule in rules if isinstance(rule, WeightConverter) for source in rule.source_patterns
     }
-    assert converter_sources
+    if not converter_sources:
+        pytest.skip("installed transformers has no DeepSeek V4 tensor converters")
     assert converter_sources <= full.keys()
     assert not (converter_sources & expected.keys())
 
