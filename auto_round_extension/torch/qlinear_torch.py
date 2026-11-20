@@ -75,6 +75,14 @@ class GenericBitPackingMixin:
             intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
         else:
             intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + zeros)
+        # Clamp into [0, maxq], for the same reason ``pack_248_bits`` and
+        # ``pack_3bits`` do: the searched (scale, zp) grid may leave
+        # round(W/s + zp) outside the level range, and an out-of-range level
+        # does not round-trip -- the generic bit-stream keeps only the low
+        # ``bits`` bits, so a level of maxq + 2 decodes as 1 and the
+        # dequantized weight is off by nearly the whole range. The 2/3/4/8-bit
+        # paths already clamp; the generic 5/6/7-bit path did not.
+        intweight = intweight.clamp_(0, self.maxq)
         return intweight.to(torch.int32)
 
     def pack_generic_bits(self, linear, scales, zeros, g_idx=None, device=None, zp_offset=0):
