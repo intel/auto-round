@@ -538,7 +538,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=[],
             format="llm_compressor",
@@ -552,7 +551,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=["model.layers.0.mlp.down_proj"],
             ignored_layers=[],
             format="llm_compressor",
@@ -566,7 +564,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
             format="llm_compressor",
@@ -719,7 +716,6 @@ class TestBuildQuantizationConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=[],
             ignored_layers=ignored,
         )
@@ -860,6 +856,17 @@ class TestBuildMxfpConfig:
         cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
         assert cfg["format"] == "mxfp4-pack-quantized"
         assert cfg["config_groups"]["group_0"]["targets"] == quantized
+
+    @require_compressed_tensors
+    def test_build_mxfp_config_single_nvfp4_group_uses_nvfp4_scheme(self):
+        from auto_round.export.formats.compressed_tensors.config import initialize_quantization
+
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {"model.layers.0.mlp.fc1": {"bits": 4, "group_size": 16, "data_type": "nv_fp"}}
+        cfg = _build_mxfp_quantization_config(default, ["model.layers.0.mlp.fc1"], [], layer_config=layer_config)
+        expected = initialize_quantization(scheme="NVFP4", ignore=[]).to_dict()["config_groups"]["group_0"]
+        assert cfg["format"] == "nvfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["weights"] == expected["weights"]
 
     @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
@@ -1436,7 +1443,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=[],
             format="auto_round",
@@ -1450,7 +1456,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=["lm_head"],
             format="llm_compressor",

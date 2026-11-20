@@ -27,6 +27,7 @@ def split_inputs(
     *,
     is_diffusion: bool,
     shared_cache_keys: tuple = (),
+    model_type: str | None = None,
 ) -> tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
@@ -49,6 +50,8 @@ def split_inputs(
         return input_ids, input_others
     input_ids = inputs.get(first_input_name, None)
     inputs.pop(first_input_name, None)
+    if model_type == "deepseek_v4" and first_input_name == "input_ids" and "_ar_block_token_ids" in inputs:
+        inputs["input_ids"] = inputs.pop("_ar_block_token_ids")
     input_others = inputs
     return input_ids, input_others
 
@@ -82,6 +85,7 @@ def preprocess_block_inputs(
         first_input_name,
         is_diffusion=model_context.is_diffusion,
         shared_cache_keys=getattr(model_context, "shared_cache_keys", ()),
+        model_type=getattr(getattr(getattr(model_context, "model", None), "config", None), "model_type", None),
     )
     clear_memory(device_list=device_manager.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32

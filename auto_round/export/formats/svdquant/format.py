@@ -21,31 +21,15 @@ from typing import Any
 import torch
 
 from auto_round.export.base import OutputFormat
-from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme
-
-
-def _invoke_save_hook(hook: Callable[[str], Any], output_dir: str) -> None:
-    hook(output_dir)
+from auto_round.export.formats.svdquant.base import SVDQuantFormatBase
+from auto_round.schemes import QuantizationScheme
 
 
 @OutputFormat.register("svdquant_nunchaku")
-class SVDQuantNunchakuFormat(OutputFormat):
+class SVDQuantNunchakuFormat(SVDQuantFormatBase):
     support_schemes = ["MXFP4"]
     format_name = "svdquant_nunchaku"
     _e2m1_aliases = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
-
-    def __init__(self, format: str, scheme: QuantizationScheme, ctx: Any):
-        self.output_format = format
-        self.backend = None
-        self.mllm = ctx.mllm
-        self.check_scheme_args(scheme)
-        self._resolved_scheme = scheme.copy()
-
-    def is_supported_immediate_packing(self) -> bool:
-        return False
-
-    def is_supported_immediate_saving(self) -> bool:
-        return False
 
     @classmethod
     def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:
@@ -78,42 +62,6 @@ class SVDQuantNunchakuFormat(OutputFormat):
                 )
         return True
 
-    def _validate_svd_layer_overrides(self, model: torch.nn.Module, layer_config: dict | None) -> None:
-        if model is None or not layer_config:
-            return
-        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
-
-        for name, module in model.named_modules():
-            if not isinstance(module, SVDQuantLinear):
-                continue
-            for layer_name in (name, f"{name}.residual_linear"):
-                if layer_name not in layer_config:
-                    continue
-                override = layer_config[layer_name]
-                if isinstance(override, str):
-                    scheme = PRESET_SCHEMES[override.upper()].copy()
-                elif isinstance(override, QuantizationScheme):
-                    scheme = override.copy()
-                elif isinstance(override, dict):
-                    values = dict(override)
-                    preset_name = values.pop("scheme", None)
-                    scheme = (
-                        PRESET_SCHEMES[preset_name.upper()].copy()
-                        if preset_name is not None
-                        else self._resolved_scheme.copy()
-                    )
-                    scheme.update_from_dict(values)
-                else:
-                    raise TypeError(
-                        f"Unsupported layer_config value for SVDQuant residual {layer_name!r}: {type(override)}"
-                    )
-                try:
-                    self.check_scheme_args(scheme)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"{self.format_name} layer {layer_name!r} has an incompatible residual scheme: {exc}"
-                    ) from exc
-
     def check_and_reset_format(self, scheme: QuantizationScheme, ctx: Any):
         self._validate_svd_layer_overrides(ctx.model, ctx.layer_config)
         quant_block_list = ctx.quant_block_list
@@ -125,9 +73,6 @@ class SVDQuantNunchakuFormat(OutputFormat):
             if callable(adapter_quant_block_list):
                 quant_block_list = adapter_quant_block_list(ctx.model)
         return None, scheme, ctx.layer_config, quant_block_list
-
-    def pack_layer(self, layer_name, model, device=None, **kwargs):
-        return None
 
     def save_quantized(
         self,
@@ -156,12 +101,12 @@ class SVDQuantNunchakuFormat(OutputFormat):
         self._validate_svd_layer_overrides(model, layer_config)
         save_config = getattr(model, "save_config", None)
         if callable(save_config):
-            _invoke_save_hook(save_config, output_dir)
+            save_config(output_dir)
         else:
             model_config = getattr(model, "config", None)
             save_pretrained = getattr(model_config, "save_pretrained", None)
             if callable(save_pretrained):
-                _invoke_save_hook(save_pretrained, output_dir)
+                save_pretrained(output_dir)
         model_adapter = model_adapter or getattr(model, "_autoround_svdquant_model_adapter", "auto")
         if isinstance(model_adapter, str):
             from auto_round.export.formats.svdquant.adapters import resolve_svdquant_model_adapter
@@ -171,7 +116,7 @@ class SVDQuantNunchakuFormat(OutputFormat):
             if adapter is not None:
                 raise TypeError("Pass only one of model_adapter and adapter.")
             adapter = model_adapter
-        from auto_round.export.formats.svdquant.nunchaku import IdentitySVDQuantModelAdapter
+        from auto_round.export.formats.svdquant.common import IdentitySVDQuantModelAdapter
 
         if isinstance(adapter, IdentitySVDQuantModelAdapter):
             raise ValueError(
