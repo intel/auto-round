@@ -17,12 +17,12 @@
 from __future__ import annotations
 
 from auto_round.export.base import OutputFormat
-from auto_round.export.formats.svdquant.format import SVDQuantNunchakuFormat
+from auto_round.export.formats.svdquant.base import SVDQuantFormatBase
 
 
 @OutputFormat.register("svdquant_omni")
-class SVDQuantOmniFormat(SVDQuantNunchakuFormat):
-    """Reuse full-model SVDQuant export handling, but select the Omni tensor ABI."""
+class SVDQuantOmniFormat(SVDQuantFormatBase):
+    """Export full-model SVDQuant checkpoints using the Omni tensor ABI."""
 
     support_schemes = ["NVFP4", "MXFP4"]
     format_name = "svdquant_omni"
