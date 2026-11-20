@@ -12,29 +12,19 @@ namespace moe_decode_detail {
 // ----------------------------------------------------------------------------
 // Device scratch for the int4 decode fallbacks.
 //
-// These buffers used to come from a `DeviceScratchPool` built as a function
-// local static *in this header*, keyed by raw `sycl::queue*`. That had three
-// problems: the instance was not guaranteed unique across translation units or
-// DSOs; a slab outlived the queue it was allocated against, so a destroyed
-// queue left a dangling entry (and a recycled queue address could hand a slab
-// to an unrelated queue); and two wrappers around the same device allocated two
-// slabs. `release_all()` also called `queue->wait()` while holding its mutex,
-// putting an unbounded device sync inside the lock.
-//
-// Both buffers are therefore served from the extension-wide `DeviceMemoryPool`,
-// which keys on (device UUID, SYCL context, queue identity) rather than on a
-// raw queue pointer, so slab identity follows the concrete execution stream and
-// is immune to queue lifetime and address reuse. The bookkeeping below lives in
-// `sycl_tla_moe_decode_scratch.cpp`, so there is exactly one instance in the
-// module; this header only declares it.
+// Both buffers are owned by the extension-wide `DeviceMemoryPool`, keyed by
+// device UUID, SYCL context and queue identity rather than a raw queue pointer.
+// The pool reuses each slot and grows it automatically for larger requests.
+// There is no decode-specific allocation state or manual create/release API.
 //
 // Slabs are intentionally never freed from a static destructor: the SYCL
-// context may already be torn down at that point. `release_decode_scratch`
-// provides explicit teardown for callers that need it (exposed to Python as
-// `moe_decode_release_scratch`).
+// context may already be torn down at that point. Allocations persist for the
+// lifetime of the process, just like the pool's other scratch slots.
 //
 // Keying includes queue identity, so concurrent streams in one context use
 // independent slabs while still reusing within each stream queue.
+// The thin accessors live in `sycl_tla_moe_decode_scratch.cpp` to keep utils.hpp
+// and its bestla JIT dependencies out of this include chain.
 // ----------------------------------------------------------------------------
 
 // `DeviceMemoryPool` slots owned by the decode path. Slots 0-7 belong to the
@@ -43,27 +33,13 @@ namespace moe_decode_detail {
 inline constexpr size_t kInt4RepackScratchLoc = 9;
 inline constexpr size_t kActGroupSumScratchLoc = 10;
 
-// Acquire the N-tiled int4 weight-repack buffer.
-//
-// The slab carries an optional *tag* -- the address of the source weight buffer
-// plus a caller-supplied key that folds in everything else the repacked bytes
-// depend on (expert count, shape). `tag_hit` reports whether the slab already
-// holds the repack for that exact tag, which lets the caller skip regenerating
-// it. The tag is only consulted when the caller opts in (see
-// `moe_decode_int4_repack_cache_enabled`), because the address half of a tag is
-// a pointer identity and a freed-then-reallocated buffer can land on the same
-// address.
-uint8_t* acquire_int4_repack_scratch(sycl::queue* q, size_t bytes, const void* tag_ptr, size_t tag_key, bool use_tag,
-                                     bool* tag_hit);
+// Acquire the N-tiled int4 weight-repack buffer. Contents are regenerated on
+// every call so weight updates and allocator address reuse need no invalidation.
+// Both accessors return nullptr for zero bytes and reject a null queue.
+uint8_t* acquire_int4_repack_scratch(sycl::queue* q, size_t bytes);
 
 // Acquire the per-(token, K-group) activation-sum buffer (asym int4 only).
 float* acquire_act_group_sum_scratch(sycl::queue* q, size_t bytes);
-
-// Release both slabs for every device they were allocated on, dropping any
-// cached repack with them. Must not overlap an acquire on the same device: the
-// acquire entry points hand out a raw pointer, so a caller that is between the
-// acquire and its kernel submission would have the memory freed underneath it.
-void release_decode_scratch();
 
 }  // namespace moe_decode_detail
 }  // namespace ark

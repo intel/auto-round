@@ -467,42 +467,28 @@ the GEMV itself. Both the repack buffer and the activation-sum table now
 come from a persistent, grow-on-demand slab, so steady-state decode
 performs no allocation and introduces no host-side synchronization;
 ordering between the producer kernels and the GEMV is already guaranteed
-by the in-order queue. `ark.moe_decode_release_scratch()` (pybind
-`moe_decode_release_scratch`) hands the memory back.
+by the in-order queue. Scratch persists for the process lifetime and needs
+no manual creation or release.
 
 The slabs are served from the extension-wide `DeviceMemoryPool` (slots 9
 and 10), the same manager the dnnl/xpu wrappers, the SDPA kernels and the
-DPAS work-group counter use. It keys on the *device UUID*, so slab
-identity follows the device rather than a raw `sycl::queue*` — which
-means a slab can no longer outlive the queue it was keyed on, a recycled
-queue address can no longer be handed someone else's slab, and two
-wrappers around one device no longer allocate two slabs. The bookkeeping
-lives in `sycl_tla_moe_decode_scratch.cpp` so the module holds exactly one
-instance of it (`sycl_tla_moe_decode_scratch.hpp` declares the API only),
-and `release_decode_scratch()` detaches the slabs from the pool under its
-lock and then runs `queue::wait()`/`sycl::free()` *after* releasing it, so
-no unbounded device sync happens inside the lock. The flip side of keying
-by device is that two queues on the same device now share a slab, so these
-entry points must not be driven concurrently from two queues on one
-device.
+DPAS work-group counter use. It keys on device UUID, SYCL context and queue
+identity rather than a raw `sycl::queue*`, so different streams use independent
+slabs while wrappers around the same queue reuse the same allocation. The
+pool alone owns the queue handles, allocation state, locking and automatic
+growth. `sycl_tla_moe_decode_scratch.cpp` only provides thin accessors, keeping
+the pool's heavyweight headers out of the decode translation units; it has no
+separate scratch state or lifecycle.
 
-The repack *kernel* still runs on every call by default. Setting
-`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` reuses the previous repack when the
-weight buffer address and shape are unchanged, which is valid for a real
-inference loop where the weights are fixed. It is **off by default**
-because the tag is a pointer identity: a freed-then-reallocated weight
-tensor can land on the same address (torch's caching allocator makes this
-common in test loops), and a stale repack would silently produce wrong
-results. Callers that enable it must call
-`ark.moe_decode_release_scratch()` before dropping the weight tensor.
-Growing the slab also drops the cached repack, since the reallocated
-bytes are undefined.
+The repack *kernel* runs on every call, reusing the allocation but regenerating
+its contents from the current weights. The old opt-in pointer-tag repack cache
+has been removed: weight mutation or allocator address reuse no longer requires
+manual invalidation. The default compute path is unchanged.
 
 | Env var | Default | Effect |
 | ------- | ------- | ------ |
 | `ARK_MOE_DECODE_COALESCE_INT4` | ON | Use the coalesced, 4-byte-blocked repack GEMV for the int4 scalar fallback; `0` forces the legacy per-lane-strided `launch_int4`. |
 | `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | Minimum total tokens before the coalesced kernel is worth its repack pass; `0` disables the gate (what the parity/A-B tests set). |
-| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | OFF | Reuse the repack across calls on the same weight buffer. Only safe when the caller owns the weight lifetime. |
 
 Perf A/B for the coalesced path is
 `test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided` (toggles
@@ -511,7 +497,8 @@ covered by `test_moe.py::test_decode_int4_coalesced_matches_scalar`,
 `::test_decode_int4_coalesced_token_blocking`,
 `::test_decode_int4_coalesced_unaligned_group_size` (group sizes that are
 not a multiple of 8, exercising the scalar prologue/epilogue) and
-`::test_decode_int4_repack_cache`.
+`::test_decode_int4_scratch_reuse` (repeated calls, larger then smaller shapes,
+and in-place weight updates without any manual scratch lifecycle).
 
 **Occupancy-gate threshold sweep.** The default
 `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` of 8 was derived from the row count of
