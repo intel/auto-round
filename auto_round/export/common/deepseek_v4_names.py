@@ -30,7 +30,10 @@ def build_checkpoint_name_maps(source_keys):
     from transformers.conversion_mapping import get_checkpoint_conversion_mapping
     from transformers.core_model_loading import WeightRenaming
 
+    from auto_round.modeling.deepseek_v4 import get_v4_rename_patterns
+
     rules = [r for r in get_checkpoint_conversion_mapping("deepseek_v4") if isinstance(r, WeightRenaming)]
+    patterns = [get_v4_rename_patterns(rule) for rule in rules]
     aliases, modules = {}, {}
 
     def add(table, alias, original):
@@ -42,10 +45,8 @@ def build_checkpoint_name_maps(source_keys):
         if original.startswith("mtp."):
             continue
         name = original
-        for rule in rules:
-            if len(rule.source_patterns) != 1 or len(rule.target_patterns) != 1:
-                raise ValueError("Expected scalar DeepSeek V4 rename rule")
-            name = re.sub(rule.source_patterns[0], rule.target_patterns[0], name)
+        for source, target in patterns:
+            name = re.sub(source, target, name)
         name = re.sub(
             r"(\.experts\.\d+)\.w([123])\.",
             lambda match: match[1] + "." + {"1": "gate_proj", "2": "down_proj", "3": "up_proj"}[match[2]] + ".",

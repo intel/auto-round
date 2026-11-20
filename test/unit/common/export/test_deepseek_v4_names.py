@@ -74,6 +74,26 @@ def test_native_config_requires_target_lists(group):
         restore_quantization_names({"config_groups": {"nvfp4": group}}, {}, [])
 
 
+@pytest.mark.parametrize("container", [str, list, tuple])
+def test_v4_aliases_accept_scalar_and_sequence_patterns(monkeypatch, container):
+    mapping = pytest.importorskip("transformers.conversion_mapping")
+    from transformers.core_model_loading import WeightRenaming
+
+    from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+    source, target = r"\.attn\.", ".self_attn."
+    rule = object.__new__(WeightRenaming)
+    rule.source_patterns = source if container is str else container([source])
+    rule.target_patterns = target if container is str else container([target])
+    monkeypatch.setattr(mapping, "get_checkpoint_conversion_mapping", lambda _: [rule])
+    native = "layers.0.attn.wq.weight"
+    loaded = "layers.0.self_attn.wq.weight"
+    expanded = expand_layer_config({native: {"bits": 4}})
+    assert expanded[loaded] == {"bits": 4}
+    aliases, _ = build_checkpoint_name_maps([native])
+    assert aliases[loaded] == native
+
+
 def test_unmapped_names_fail_closed():
     with pytest.raises(ValueError, match="Unmapped"):
         restore_tensor_name("model.unknown.weight_packed", {}, {}, {})

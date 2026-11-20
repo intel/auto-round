@@ -23,19 +23,35 @@ def is_deepseek_v4(model):
     return getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4"
 
 
+def get_v4_rename_patterns(rule):
+    """Accept V4 rename patterns stored as strings or singleton sequences."""
+    source = rule.source_patterns
+    target = rule.target_patterns
+    source = [source] if isinstance(source, str) else source
+    target = [target] if isinstance(target, str) else target
+    if (
+        not isinstance(source, (list, tuple))
+        or not isinstance(target, (list, tuple))
+        or len(source) != 1
+        or len(target) != 1
+        or not isinstance(source[0], str)
+        or not isinstance(target[0], str)
+    ):
+        raise ValueError("Expected scalar DeepSeek V4 rename rule")
+    return source[0], target[0]
+
+
 def expand_layer_config(layer_config):
     from transformers.conversion_mapping import get_checkpoint_conversion_mapping
     from transformers.core_model_loading import WeightRenaming
 
     result = copy.deepcopy(layer_config)
     rules = [rule for rule in get_checkpoint_conversion_mapping("deepseek_v4") if isinstance(rule, WeightRenaming)]
-    for rule in rules:
-        if len(rule.source_patterns) != 1 or len(rule.target_patterns) != 1:
-            raise ValueError("Expected scalar DeepSeek V4 rename rule")
+    patterns = [get_v4_rename_patterns(rule) for rule in rules]
     for original, config in layer_config.items():
         name = original
-        for rule in rules:
-            name = re.sub(rule.source_patterns[0], rule.target_patterns[0], name)
+        for source, target in patterns:
+            name = re.sub(source, target, name)
         name = re.sub(
             r"(\.experts\.\d+)\.w([123])(?=\.|$)",
             lambda match: match[1] + "." + {"1": "gate_proj", "2": "down_proj", "3": "up_proj"}[match[2]],
