@@ -1604,6 +1604,11 @@ def expand_layer_config_for_weight_renames(
     if model is None:
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
+    if to_model_names and getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+        from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+        return expand_layer_config(expanded)
+
     if to_model_names:
         # get_reverse_checkpoint_conversion_mapping is intended.
         # get_checkpoint_conversion_mapping cannot handle all cases correctly.
