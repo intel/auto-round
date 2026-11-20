@@ -95,10 +95,13 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 # projection *and* its companion scale directly in the tensor name, with no
 # dot separator (e.g. ``experts.w13_weight``, ``experts.w2_weight_scale``,
 # ``experts.w2_weight_scale_2``, ``experts.w13_input_scale``), unlike the
-# dotted ``experts.<proj>.weight`` convention used elsewhere. Order matters
-# only for readability here: none of these suffixes is itself a suffix of
-# another, so matching is unambiguous.
+# dotted ``experts.<proj>.weight`` convention used elsewhere. Block-FP8
+# checkpoints with fused 3-D experts (e.g. Hy4-flash) also store the per-block
+# scale as ``experts.gate_up_proj_scale_inv``. ``_weight_scale_inv`` must be
+# checked before ``_scale_inv`` (first match wins).
 _MOE_NATIVE_SUFFIXES: list[tuple[str, str]] = [
+    ("_weight_scale_inv", "weight_scale_inv"),
+    ("_scale_inv", "weight_scale_inv"),
     ("_weight_scale_2", "weight_scale_2"),
     ("_weight_scale", "weight_scale"),
     ("_weight", "weight"),
@@ -3002,7 +3005,16 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
             weight_map = {k: "model.safetensors" for k in weight_map}
         return
 
-    index = {"metadata": {"total_size": 0}, "weight_map": weight_map}
+    total_size = 0
+    for shard_name in set(weight_map.values()):
+        with open(os.path.join(output_dir, shard_name), "rb") as f:
+            header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
+        total_size += sum(
+            v["data_offsets"][1] - v["data_offsets"][0]
+            for k, v in header.items()
+            if k != "__metadata__" and weight_map.get(k) == shard_name
+        )
+    index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
     with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
         json.dump(index, f, indent=2)
 
