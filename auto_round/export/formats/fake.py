@@ -16,6 +16,7 @@ import copy
 import glob
 import json
 import os
+import tempfile
 from collections.abc import Callable
 from typing import Any
 
@@ -68,7 +69,21 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
             state = safe_load_file(file_path)
             normalized, changed = _normalize_state_dict_keys(state)
             if changed:
-                safe_save_file(normalized, file_path)
+                # ``safe_load_file`` may leave tensors backed by the source file.
+                # Overwriting it in place can invalidate that mapping mid-write
+                # and crash with SIGBUS, so replace the shard atomically.
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=output_dir,
+                    prefix=f".{os.path.basename(file_path)}.",
+                    suffix=".tmp",
+                )
+                os.close(fd)
+                try:
+                    safe_save_file(normalized, tmp_path)
+                    os.replace(tmp_path, file_path)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
                 rewrote_safetensors = True
         except Exception as exc:
             logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
