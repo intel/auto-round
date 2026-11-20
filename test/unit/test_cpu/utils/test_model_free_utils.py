@@ -830,6 +830,22 @@ class TestBuildMxfpConfig:
         assert "lm_head" in cfg["ignore"]
         assert len(cfg["config_groups"]) == 1
 
+    @pytest.mark.parametrize(
+        ("data_type", "expected_format"),
+        [
+            ("mx_fp", "mxfp4-pack-quantized"),
+            ("nv_fp", "nvfp4-pack-quantized"),
+            ("nvfp4_v2", "nvfp4-e5m3-pack-quantized"),
+        ],
+    )
+    @require_compressed_tensors
+    def test_single_group_format_is_serialized(self, data_type, expected_format):
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": data_type}
+        cfg = _build_mxfp_quantization_config(default, ["model.layers.0.fc1"], [], layer_config={})
+
+        assert cfg["format"] == expected_format
+        assert cfg["config_groups"]["group_0"]["format"] == expected_format
+
     @require_compressed_tensors
     def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
         default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
