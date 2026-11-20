@@ -361,7 +361,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 
 ### Hadamard + AWQ MXFP4 W4A4
 
-本小节在 MXFP4 案例的基础上加入确定性的分块 Hadamard 旋转。旋转在 AWQ smoothing 之前执行，导出的 `rotation_config` 使 vLLM 在加载 checkpoint 时应用在线 Hadamard。实验使用 vLLM PR [#54006](https://github.com/vllm-project/vllm/pull/54006)（`vllm 0.32.0rc1.dev110`）和 `lm-eval` 0.4.13；vLLM 为 MXFP4 GEMM 选择 `FlashInferMxFp4LinearKernel`。旋转选项见 [rotation_details](rotation_details.md)。
+本节在 MXFP4 案例的基础上引入确定性的分块 Hadamard 旋转。旋转先于 AWQ smoothing 执行，导出的 `rotation_config` 供 vLLM 在加载 checkpoint 时应用在线 Hadamard 变换。实验使用 vLLM PR [#54006](https://github.com/vllm-project/vllm/pull/54006)（`vllm 0.32.0rc1.dev110`）和 `lm-eval` 0.4.13，MXFP4 GEMM 采用 `FlashInferMxFp4LinearKernel`。旋转相关选项见 [rotation_details](rotation_details.md)。
 
 各 recipe（算法顺序：Hadamard 旋转 → AWQ smoothing → 可选 TEQ scale 优化 → 终端量化器）：
 
@@ -392,7 +392,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 | Qwen3-32B | Hadamard + AWQ，legacy 评分 | 90.90 | 92.57 | 62.52 | 78.87 | 79.87 | 70.17 | 76.47 |
 | Qwen3-32B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 92.95 | 93.03 | 62.65 | 79.08 | 80.47 | 72.77 | 77.58 |
 
-AVG 为 GSM8K strict-match、HellaSwag、MMLU、PIQA 和 WinoGrande 的五项平均。HellaSwag、MMLU、PIQA、WinoGrande 使用 `acc`。BF16 行在相同的 vLLM/`lm-eval` 环境中重新评测；Qwen3.8-27B BF16 AVG 与之前表格一致（80.18 对 80.09）。Qwen3-8B BF16 的 strict/flexible 差距较大，因此 strict 主要反映答案格式提取，而非推理精度。
+AVG 为 GSM8K strict-match、HellaSwag、MMLU、PIQA 和 WinoGrande 的五项平均。HellaSwag、MMLU、PIQA、WinoGrande 使用 `acc`。BF16 行在相同的 vLLM/`lm-eval` 环境中重新评测；Qwen3.8-27B BF16 AVG 与之前表格接近，相差 0.09 分（80.18 对 80.09）。Qwen3-8B BF16 的 strict/flexible 差距较大，因此 strict 主要反映答案格式提取，而非推理精度。
 
 下方消融在相同环境下重新运行了 `hmt_awq`，得到 69.97（Qwen3-8B）和 78.75（Qwen3.8-27B）；与上方表格的微小差异属于评测噪声。
 
@@ -435,8 +435,6 @@ TEQ 运行使用 5 次迭代、学习率 `1.5e-4`、scale 范围 `[1e-5, 3]`，�
 #### Rotation-aware AWQ 评分消融
 
 PR [#2301](https://github.com/intel/auto-round/pull/2301) 修改了发布等价变换对的层的 AWQ 候选评分目标。旧目标在未旋转的基下评分 `QDQ(W * s) / s`；新目标评分部署时的旋转形式 `QDQ(T_w(W * s))`，并配套输入侧 `T_i(x / s)`。对 Hadamard `transform` 后端，`T_w(W) = W @ H.T`、`T_i(x) = x @ H`，两个变换互为精确逆变换（合成层上的往返相对误差为 `2e-7`）。该修改影响 smoothing scale 的选择，而不影响变换对的正确性。
-
-消融使用同一份私有 auto-round 代码（`f29a48e8` 加一个仅用于实验的开关），两个分支的校准数据、recipe 和评测设置完全一致。legacy 分支设置 `AUTO_ROUND_AWQ_ROTATION_AWARE=0`；关闭开关时，无 parent replay 的回退路径也会跳过权重变换，因此两条评分路径都与 #2301 之前的公式一致。相比直接 checkout `17e7cb6d^`，该做法不会混入 batched-RTN staging 修复（`f29a48e8`）之前的行为差异。
 
 | 模型 | Legacy AVG (%) | Rotation-aware AVG (%) | Δ AVG | Δ GSM8K | Δ HellaSwag | Δ MMLU | Δ PIQA | Δ WinoGrande |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
