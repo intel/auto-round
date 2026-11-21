@@ -278,3 +278,37 @@ def test_finalize_skips_unpacked_weight_of_resumed_packed_module(
         index = json.load(index_file)
     assert index["metadata"]["total_parameters"] == sum(tensor.numel() for tensor in saved.values())
     assert index["metadata"]["total_size"] == sum(tensor.nbytes for tensor in saved.values())
+
+
+def test_resaving_into_a_directory_that_already_has_shards(tmp_path, monkeypatch):
+    """A second run into the same directory must overwrite the shards it finds.
+
+    ``finalize()`` renames each temp shard onto its final name. On Windows
+    ``os.rename`` refuses to replace an existing file (FileExistsError /
+    WinError 183), while POSIX overwrites silently, so this only failed on
+    Windows. It is a behavioural test rather than a platform branch: on Linux it
+    passes either way, on Windows it fails if the rename stops replacing.
+    """
+    model = _DiffusionStyleModel()
+    shard_path = os.path.join(tmp_path, "model.bin")
+
+    first = _make_writer(model, str(tmp_path), monkeypatch)
+    first.save_module(model.transformer_blocks[0], "transformer_blocks.0")
+    first.finalize()
+    assert os.path.exists(shard_path)
+
+    # Poison the shard so a successful second pass is distinguishable from "the
+    # file was there all along".
+    with open(shard_path, "wb") as fh:
+        fh.write(b"stale")
+
+    # A fresh model: finalize() moves the saved modules' tensors to the meta
+    # device, so reusing the same instance would leave nothing to write.
+    second_model = _DiffusionStyleModel()
+    second = _make_writer(second_model, str(tmp_path), monkeypatch)
+    second.save_module(second_model.transformer_blocks[0], "transformer_blocks.0")
+    second.finalize()
+
+    assert os.path.getsize(shard_path) > len(b"stale"), "the existing shard must be replaced, not left stale"
+    saved_tensors = torch.load(shard_path, map_location="cpu")
+    assert "transformer_blocks.0.linear.weight" in saved_tensors
