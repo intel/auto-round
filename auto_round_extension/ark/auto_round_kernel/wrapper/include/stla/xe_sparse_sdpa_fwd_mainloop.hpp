@@ -30,7 +30,8 @@ using namespace cute;
 template <class DispatchPolicy_, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_,
           class TiledMMAQK_, class TiledMMAPV_, int VTiles_, class TensorQ_, class TensorK_, class TensorV_,
           class TensorK_cache_, class TensorV_cache_, class TiledCopyQ_ = void, class TiledCopyK_ = void,
-          class TiledCopyV_ = void, class TiledCopyK_cache_ = void, class TiledCopyV_cache_ = void>
+          class TiledCopyV_ = void, class TiledCopyK_cache_ = void, class TiledCopyV_cache_ = void,
+          bool CacheQuery_ = false>
 struct SPARSESDPAFwdMainloop {
   static_assert(cutlass::detail::dependent_false<DispatchPolicy_>, "Could not find a mainloop specialization.");
 };
@@ -38,11 +39,11 @@ struct SPARSESDPAFwdMainloop {
 template <int Stages, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_, class TiledMMAQK_,
           class TiledMMAPV_, int VTiles_, class TensorQ_, class TensorK_, class TensorV_, class TensorK_cache_,
           class TensorV_cache_, class TiledCopyQ_, class TiledCopyK_, class TiledCopyV_, class TiledCopyK_cache_,
-          class TiledCopyV_cache_>
+          class TiledCopyV_cache_, bool CacheQuery_>
 struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, FullMask_, CachedKV_, PagedKV_,
                              TiledMMAQK_, TiledMMAPV_, VTiles_, TensorQ_, TensorK_, TensorV_, TensorK_cache_,
                              TensorV_cache_, TiledCopyQ_, TiledCopyK_, TiledCopyV_, TiledCopyK_cache_,
-                             TiledCopyV_cache_> {
+                             TiledCopyV_cache_, CacheQuery_> {
   using TiledMMAQK = TiledMMAQK_;
   using TiledMMAPV = TiledMMAPV_;
   using TileShapeQK = decltype(TiledMMAQK{}.tile_mnk());
@@ -85,7 +86,6 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
   using FragSCol = decltype(reduce<0>(FragS{}, sycl::plus<void>{}));
   using ElementS = typename TiledMMAQK::ValTypeD;
   using ElementM = typename TiledMMAQK::ValTypeA;
-
   using SingleFragA = FragC<TiledMMAPV>;
   using FragA = expand_sg_fragment_t<SingleFragA, 1, VTiles>;
   using FragARow = decltype(reduce<1>(FragA{}, sycl::plus<void>{}));
@@ -111,6 +111,9 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     int const* ptr_page_table = nullptr;
     int page_size = 0;
     int const* num_pages_per_seq = nullptr;
+    // Optional per-64-token K route block valid lengths. Null keeps the
+    // original behaviour where every routed key column takes part in softmax.
+    int const* k_block_valid = nullptr;
   };
 
   using Params = Arguments;
@@ -126,9 +129,14 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
   static constexpr Params to_underlying_arguments(Arguments const& args, void* /* workspace */) {
     constexpr double kLog2e = 1.4426950408889634074;
     float val = args.scale * static_cast<float>(kLog2e);
-    return Params{val, args.mask, args.scale_block_size, args.qscale, args.kscale, args.vscale, args.lut,
-                  args.valid_block_num, args.num_q_blocks, args.num_k_blocks, args.sparse_q_block_size,
-                  args.canonical_nhd_k, args.ptr_page_table, args.page_size, args.num_pages_per_seq};
+    return Params{val,           args.mask,
+                  args.scale_block_size, args.qscale,
+                  args.kscale,   args.vscale,
+                  args.lut,      args.valid_block_num,
+                  args.num_q_blocks, args.num_k_blocks,
+                  args.sparse_q_block_size, args.canonical_nhd_k,
+                  args.ptr_page_table, args.page_size,
+                  args.num_pages_per_seq, args.k_block_valid};
   }
 
   CUTLASS_HOST_DEVICE static bool can_implement(Arguments const&) { return true; }
@@ -160,6 +168,8 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
                                  [[maybe_unused]] float* scaleV, int full_tile_offset, int discard_seq_coord,
                                  int const* lut_rows_base = nullptr, int const* valid_blocks_base = nullptr,
                                  int sparse_q_rows_in_tile = 1,
+                                 int const* execution_schedule_rows = nullptr, int execution_schedule_rounds = 0,
+                                 int execution_schedule_max_rounds = 0,
                                  TensorK_cache2D const& K_cache_2D = TensorK_cache2D{},
                                  TensorV_cache2D const& V_cache_2D = TensorV_cache2D{}) {
     using namespace sycl::ext::oneapi::this_work_item;
@@ -213,6 +223,9 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     auto tArP = thr_mma_pv.partition_sg_fragment_A(cP);
     auto tVrV = thr_copy_v.partition_sg_fragment_D(gV_split(_, _, 0, 0));
     auto tArV = thr_mma_pv.partition_sg_fragment_B(gV_split(_, _, 0, 0));
+    // The D128 launcher opts into retaining all four D32 query fragments.
+    constexpr int cached_query_tiles = 128 / int(get<2>(TileShapeQK{}));
+    decltype(tSrQ) cached_q[CacheQuery_ ? cached_query_tiles : 1];
 
     auto prefetch_q = make_block_2d_prefetch(copy_q);
     auto prefetch_k = make_block_2d_prefetch(copy_k);
@@ -229,6 +242,13 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     int kblocks_cache = ceil_div(seq_len_kv_cache, get<1>(TileShapeQK{}));
     for (int D = 0; D < size<3>(pQgQ); D++) {
       prefetch(prefetch_q, pQgQ(_, _, _, D));
+    }
+    if constexpr (CacheQuery_) {
+      CUTLASS_PRAGMA_UNROLL
+      for (int D = 0; D < cached_query_tiles; ++D) {
+        copy(copy_q, tQgQ(_, _, _, D), tQrQ);
+        reorder(tQrQ, cached_q[D]);
+      }
     }
     if (lut_rows_base == nullptr) {
       for (int D = 0; D < size<4>(pKgK); D++) {
@@ -262,6 +282,10 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         sparse_q_block_size > 0 ? cute::max(1, sparse_q_block_size / q_sg_tile) : 1;
     int subgroup_q_row_in_tile = get_sub_group_id() / sg_rows_per_sparse_q_block;
     subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
+
+    // The LUT routes on a fixed 64-token K block grid and `k_block_valid`
+    // describes that same grid, independent of the physical K tile width (K32).
+    static constexpr int k_sparse_k_block_tokens = 64;
 
     int sparse_route_blocks = params.num_k_blocks > 0 ? params.num_k_blocks : total_blk;
     // The causal scheduler shortens total_blk for each Q subgroup.  Deriving
@@ -298,10 +322,13 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
       }
     };
 
-    auto mainloop_body = [&](auto cached_k, int K, bool first_block, bool subgroup_selected, int sparse_prefetch_block,
-                             auto& copy_k_cur, auto& copy_v_cur, auto& prefetch_v_cur, auto& tKgK_cur,
-                             auto& tVgV_cur, auto& pVgV_cur) {
-      barrier_arrive(ScopeWorkgroup);
+    bool synchronize_scheduled_round = true;
+    auto mainloop_body = [&](auto cached_k, int K, int route_block, bool first_block, bool subgroup_selected,
+                             int sparse_prefetch_block, bool synchronize, auto& copy_k_cur, auto& copy_v_cur,
+                             auto& prefetch_v_cur, auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
+      if (synchronize) {
+        barrier_arrive(ScopeWorkgroup);
+      }
       constexpr bool is_cache = decltype(cached_k)::value;
 
       int k_idx;
@@ -314,22 +341,31 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         k_idx = K - kblocks_cache;
       }
 
-      clear(tSrS);
-      CUTLASS_PRAGMA_UNROLL
-      for (int D = 0; D < size<4>(tKgK); D++) {
-        copy(copy_q, tQgQ(_, _, _, D), tQrQ);
-        copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
-        reorder(tQrQ, tSrQ);
-        reorder(tKrK, tSrK);
-        cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
-      }
-
-      CUTLASS_PRAGMA_UNROLL
-      for (int VV = 0; VV < VTiles; VV++) {
-        prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
-      }
-
       if (subgroup_selected) {
+        clear(tSrS);
+        if constexpr (CacheQuery_) {
+          CUTLASS_PRAGMA_UNROLL
+          for (int D = 0; D < cached_query_tiles; ++D) {
+            copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
+            reorder(tKrK, tSrK);
+            cute::gemm(mma_qk, cached_q[D], tSrK, tSrS);
+          }
+        } else {
+          CUTLASS_PRAGMA_UNROLL
+          for (int D = 0; D < size<4>(tKgK); D++) {
+            copy(copy_q, tQgQ(_, _, _, D), tQrQ);
+            copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
+            reorder(tQrQ, tSrQ);
+            reorder(tKrK, tSrK);
+            cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
+          }
+        }
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int VV = 0; VV < VTiles; VV++) {
+          prefetch(prefetch_v_cur, pVgV_cur(_, _, _, VV, k_idx));
+        }
+
         if constexpr (!is_cache && CausalMask) {
           // K32 splits each logical 64-token sparse route block into two
           // physical K tiles.  The diagonal can therefore occur in any
@@ -388,6 +424,32 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
           }
         }
 
+        if constexpr (!is_cache) {
+          if (params.k_block_valid != nullptr && route_block >= 0) {
+            // `k_block_valid[route_block]` counts the real tokens inside this
+            // 64-token route block. A physical K32 tile can hold the tail of a
+            // partial block (edge blocks, truncated prefixes), so mask every
+            // column past the valid limit before softmax instead of letting the
+            // zero-padded keys contribute to the denominator.
+            int valid_tokens = params.k_block_valid[route_block];
+            if (valid_tokens < k_sparse_k_block_tokens) {
+              int k_limit = route_block * k_sparse_k_block_tokens + valid_tokens;
+              FragSCol k_blk_valid_mask;
+              int k = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + get_sub_group().get_local_id()[0];
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < k_blk_valid_mask.size(); i++, k += intel::sg_size) {
+                // +INFINITY is an explicit fmin() no-op for valid columns; -INFINITY
+                // masks the padded tail.
+                k_blk_valid_mask(i) = (k < k_limit) ? ElementS(INFINITY) : ElementS(-INFINITY);
+              }
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tSrS.size(); i++) {
+                tSrS(i) = sycl::fmin(tSrS(i), broadcast<1>(k_blk_valid_mask, tSrS, i));
+              }
+            }
+          }
+        }
+
         auto rescale = softmax(first_block, tSrS, tA_max, tA_sum);
         reorder(tSrS, tArP);
 
@@ -429,40 +491,88 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         prefetch_sparse_k_block(sparse_prefetch_block);
       }
 
-      barrier_wait(ScopeWorkgroup);
+      if (synchronize) {
+        barrier_wait(ScopeWorkgroup);
+      }
     };
 
     auto run_sparse_route_block = [&](int route_block, bool subgroup_selected, auto& subgroup_started,
                                       int sparse_prefetch_block) {
       if (route_block < 0 || route_block >= sparse_route_blocks) return;
+      // The scheduled path already advances one 64-token route block per round.
+      // Synchronize once around its two K32 microtiles instead of once per
+      // microtile, reducing barrier pressure on the 32-subgroup workgroup.
+      const bool synchronize_route_block = execution_schedule_rows != nullptr && synchronize_scheduled_round;
+      if (synchronize_route_block) {
+        barrier_arrive(ScopeWorkgroup);
+      }
       for (int micro_tile = 0; micro_tile < k_tiles_per_sparse_route_block; ++micro_tile) {
         int K = route_block_to_k_tile(route_block, micro_tile);
         if (K >= total_blk) break;
+        bool last_micro_tile = micro_tile + 1 == k_tiles_per_sparse_route_block ||
+                               route_block_to_k_tile(route_block, micro_tile + 1) >= total_blk;
+        int next_prefetch_block = last_micro_tile ? sparse_prefetch_block : sparse_route_blocks;
         bool first_selected_block = subgroup_selected ? !subgroup_started : false;
         if constexpr (CachedKV) {
           if (K < kblocks_cache) {
             if (K >= blk_k0 && K < blk_k1) {
-              mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                            sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                            tVgV_cache, pVgV_cache);
+              mainloop_body(std::bool_constant<true>{}, K, route_block, first_selected_block, subgroup_selected,
+                            next_prefetch_block, !synchronize_route_block, copy_k_cache, copy_v_cache,
+                            prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
               if (subgroup_selected) subgroup_started = true;
             }
           } else if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
-            mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                          sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
+            mainloop_body(std::bool_constant<false>{}, K, route_block, first_selected_block, subgroup_selected,
+                          next_prefetch_block, !synchronize_route_block, copy_k, copy_v, prefetch_v, tKgK, tVgV,
+                          pVgV);
             if (subgroup_selected) subgroup_started = true;
           }
         } else if (K >= blk_k0 && K < blk_k1) {
-          mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, sparse_prefetch_block,
-                        copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
+          mainloop_body(std::bool_constant<false>{}, K, route_block, first_selected_block, subgroup_selected,
+                        next_prefetch_block, !synchronize_route_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
           if (subgroup_selected) subgroup_started = true;
         }
+      }
+      if (synchronize_route_block) {
+        barrier_wait(ScopeWorkgroup);
       }
     };
 
     if (lut_rows_base != nullptr && valid_blocks_base != nullptr) {
       bool subgroup_started = false;
-      if (sparse_q_rows_in_tile == 1) {
+      if (execution_schedule_rows != nullptr && execution_schedule_rounds > 0) {
+        int const* row_schedule =
+            execution_schedule_rows + subgroup_q_row_in_tile * execution_schedule_max_rounds;
+        int prefetch_round = 0;
+        for (int stage = 0; stage < Stages && prefetch_round < execution_schedule_rounds; ++stage, ++prefetch_round) {
+          int sparse_prefetch_block = row_schedule[prefetch_round];
+          if (sparse_prefetch_block >= 0) prefetch_sparse_k_block(sparse_prefetch_block);
+        }
+
+        for (int round = 0; round < execution_schedule_rounds; ++round) {
+          constexpr int barrier_period =
+#if defined(ARK_SPARSE_SCHEDULE_BARRIER_PERIOD)
+              ARK_SPARSE_SCHEDULE_BARRIER_PERIOD;
+#else
+              1;
+#endif
+          if constexpr (barrier_period <= 0) {
+            synchronize_scheduled_round = false;
+          } else {
+            synchronize_scheduled_round = (round % barrier_period == 0);
+          }
+          int next_block = row_schedule[round];
+          bool subgroup_selected = next_block >= 0;
+          // Every subgroup must participate in the workgroup barriers even when
+          // its routing row is idle in this round. Use block zero as a barrier-
+          // only dummy; no K/V compute occurs when subgroup_selected is false.
+          int barrier_block = subgroup_selected ? next_block : 0;
+          int sparse_prefetch_block =
+              prefetch_round < execution_schedule_rounds ? row_schedule[prefetch_round] : -1;
+          ++prefetch_round;
+          run_sparse_route_block(barrier_block, subgroup_selected, subgroup_started, sparse_prefetch_block);
+        }
+      } else if (sparse_q_rows_in_tile == 1) {
         int const* row_ptr = lut_rows_base;
         int row_valid = valid_blocks_base[0];
         int row_pos = 0;
@@ -498,6 +608,56 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
           int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
           run_sparse_route_block(next_block, subgroup_selected, subgroup_started, sparse_prefetch_block);
           advance_single_sparse_block(row_pos, row_cur_block);
+        }
+      } else if (sparse_q_rows_in_tile > 1) {
+        static constexpr int kMaxSparseRowsPerTile = cute::max(1, int(get<0>(TileShapeQK{})) / 64);
+        int max_row_valid = 0;
+        CUTLASS_PRAGMA_UNROLL
+        for (int row = 0; row < kMaxSparseRowsPerTile; ++row) {
+          if (row < sparse_q_rows_in_tile) {
+            max_row_valid = cute::max(max_row_valid, valid_blocks_base[row]);
+          }
+        }
+
+        int selected_row = subgroup_q_row_in_tile;
+        int const* row_ptr = lut_rows_base + selected_row * params.num_k_blocks;
+        int row_valid = valid_blocks_base[selected_row];
+        int row_pos = 0;
+        int row_cur_block = row_valid > 0 ? logical_block_from_delta_row(row_ptr, row_valid, 0) : sparse_route_blocks;
+        bool subgroup_started = false;
+
+        auto advance_sparse_block = [&](int& frontier_pos, int& frontier_cur_block) {
+          frontier_pos += 1;
+          if (frontier_pos < row_valid) {
+            frontier_cur_block += row_ptr[frontier_pos];
+          } else {
+            frontier_cur_block = sparse_route_blocks;
+          }
+        };
+
+        auto pop_sparse_block = [&](int& frontier_pos, int& frontier_cur_block) {
+          int block = frontier_cur_block;
+          advance_sparse_block(frontier_pos, frontier_cur_block);
+          return block;
+        };
+
+        int prefetch_pos = row_pos;
+        int prefetch_cur_block = row_cur_block;
+        for (int stage = 0; stage < Stages; ++stage) {
+          int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
+          if (sparse_prefetch_block >= sparse_route_blocks) break;
+          prefetch_sparse_k_block(sparse_prefetch_block);
+        }
+
+        for (int block_idx = 0; block_idx < max_row_valid; ++block_idx) {
+          bool subgroup_selected = block_idx < row_valid;
+          int next_block = subgroup_selected ? row_cur_block : 0;
+          int sparse_prefetch_block =
+              subgroup_selected ? pop_sparse_block(prefetch_pos, prefetch_cur_block) : sparse_route_blocks;
+          run_sparse_route_block(next_block, subgroup_selected, subgroup_started, sparse_prefetch_block);
+          if (subgroup_selected) {
+            advance_sparse_block(row_pos, row_cur_block);
+          }
         }
       } else {
         static constexpr int kMaxSparseRowsPerTile = cute::max(1, int(get<0>(TileShapeQK{})) / 64);
@@ -589,14 +749,14 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     } else {
       if constexpr (CachedKV) {
         for (int K = blk_k0; K < kblocks_cache; K++) {
-          mainloop_body(std::bool_constant<true>{}, K, K == blk_k0, true, total_blk, copy_k_cache, copy_v_cache,
-                        prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
+          mainloop_body(std::bool_constant<true>{}, K, -1, K == blk_k0, true, total_blk, true, copy_k_cache,
+                        copy_v_cache, prefetch_v_cache, tKgK_cache, tVgV_cache, pVgV_cache);
         }
       }
       for (int K = (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache); K < blk_k1; K++) {
-        mainloop_body(std::bool_constant<false>{}, K,
-                      K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, copy_k, copy_v,
-                      prefetch_v, tKgK, tVgV, pVgV);
+        mainloop_body(std::bool_constant<false>{}, K, -1,
+                      K == (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache), true, total_blk, true, copy_k,
+                      copy_v, prefetch_v, tKgK, tVgV, pVgV);
       }
     }
   }
