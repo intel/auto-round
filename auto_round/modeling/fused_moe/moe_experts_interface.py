@@ -222,6 +222,12 @@ def _expert_mlp(experts: nn.Module, expert: nn.Module, expert_input: torch.Tenso
     up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts (Mixtral/Qwen3-MoE/...)
     additionally own gate_proj. Mirrors the grouped path (grouped_linear_experts_forward), which keys
     the same branch off gate_proj presence.
+
+    While tuning, linear_loop_experts_forward runs this under torch.utils.checkpoint, so backward calls it
+    a second time on the same input. That is exact only while the expert's forward has no side effects:
+    a projection that updated state during forward (an activation scale or amax history refreshed from
+    the batch) would quantise differently on the recompute and its gradients would drift. The cast back
+    to the hidden-states dtype stays outside, in the caller.
     """
     up_out = expert.up_proj(expert_input)
     if hasattr(expert, "gate_proj"):
