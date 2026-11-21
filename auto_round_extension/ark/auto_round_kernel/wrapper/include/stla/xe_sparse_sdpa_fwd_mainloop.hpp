@@ -322,12 +322,11 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
       }
     };
 
-    bool sparse_subgroup_routing = false;
     bool synchronize_scheduled_round = true;
     auto mainloop_body = [&](auto cached_k, int K, int route_block, bool first_block, bool subgroup_selected,
                              int sparse_prefetch_block, bool synchronize, auto& copy_k_cur, auto& copy_v_cur,
                              auto& prefetch_v_cur, auto& tKgK_cur, auto& tVgV_cur, auto& pVgV_cur) {
-      if (!sparse_subgroup_routing && synchronize) {
+      if (synchronize) {
         barrier_arrive(ScopeWorkgroup);
       }
       constexpr bool is_cache = decltype(cached_k)::value;
@@ -439,7 +438,9 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
               int k = get<0>(tKgK_cur(0, 0, 0, k_idx, 0)) + get_sub_group().get_local_id()[0];
               CUTLASS_PRAGMA_UNROLL
               for (int i = 0; i < k_blk_valid_mask.size(); i++, k += intel::sg_size) {
-                k_blk_valid_mask(i) = (k < k_limit) ? ElementS(sycl::nan(0u)) : ElementS(-INFINITY);
+                // +INFINITY is an explicit fmin() no-op for valid columns; -INFINITY
+                // masks the padded tail.
+                k_blk_valid_mask(i) = (k < k_limit) ? ElementS(INFINITY) : ElementS(-INFINITY);
               }
               CUTLASS_PRAGMA_UNROLL
               for (int i = 0; i < tSrS.size(); i++) {
@@ -490,7 +491,7 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         prefetch_sparse_k_block(sparse_prefetch_block);
       }
 
-      if (!sparse_subgroup_routing && synchronize) {
+      if (synchronize) {
         barrier_wait(ScopeWorkgroup);
       }
     };
@@ -501,8 +502,7 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
       // The scheduled path already advances one 64-token route block per round.
       // Synchronize once around its two K32 microtiles instead of once per
       // microtile, reducing barrier pressure on the 32-subgroup workgroup.
-      const bool synchronize_route_block = execution_schedule_rows != nullptr && !sparse_subgroup_routing &&
-                                           synchronize_scheduled_round;
+      const bool synchronize_route_block = execution_schedule_rows != nullptr && synchronize_scheduled_round;
       if (synchronize_route_block) {
         barrier_arrive(ScopeWorkgroup);
       }

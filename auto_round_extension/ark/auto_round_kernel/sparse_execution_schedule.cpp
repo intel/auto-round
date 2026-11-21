@@ -4,8 +4,10 @@
 
 #include <sycl/sycl.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace ark {
 namespace {
@@ -58,7 +60,7 @@ void build_sparse_execution_schedule(std::uintptr_t stream, std::uintptr_t lut, 
     throw std::invalid_argument("build_sparse_execution_schedule: device pointers must be non-null");
   }
   if (batch <= 0 || num_heads <= 0 || num_q_blocks <= 0 || num_k_blocks <= 0 || rows_per_group < 1 ||
-      rows_per_group > 8 || max_rounds < num_k_blocks) {
+      rows_per_group > 8 || max_rounds < 1) {
     throw std::invalid_argument("build_sparse_execution_schedule: invalid problem shape");
   }
 
@@ -72,6 +74,26 @@ void build_sparse_execution_schedule(std::uintptr_t stream, std::uintptr_t lut, 
   int num_groups = batch * num_heads * q_groups;
   int mask_count = 1 << rows_per_group;
   int bucket_words = (max_rounds + 63) / 64;
+
+  // Every accessor below is workgroup-local memory. Validate the total footprint
+  // against the device limit up front so an oversized routing grid fails with an
+  // actionable message instead of an opaque launch error.
+  std::size_t local_bytes = 0;
+  local_bytes += static_cast<std::size_t>(num_k_blocks) * sizeof(std::uint16_t);              // block_masks
+  local_bytes += static_cast<std::size_t>(max_rounds) * sizeof(std::uint16_t);                // free_masks
+  local_bytes += static_cast<std::size_t>(mask_count) * bucket_words * sizeof(std::uint64_t); // buckets
+  local_bytes += static_cast<std::size_t>(mask_count) * sizeof(int) * 2;                      // active masks
+  local_bytes += static_cast<std::size_t>(max_rounds) * sizeof(int) * 3;                      // round arrays
+  local_bytes += static_cast<std::size_t>(num_k_blocks + 1) * sizeof(int);                    // metric_counts
+  local_bytes += 4u * sizeof(int);                                                            // control
+  local_bytes += static_cast<std::size_t>(kScheduleWorkgroupSize) * sizeof(std::uint64_t);    // lane_keys
+  std::size_t local_limit = queue->get_device().get_info<sycl::info::device::local_mem_size>();
+  if (local_bytes > local_limit) {
+    throw std::invalid_argument(
+        "build_sparse_execution_schedule: routing grid needs " + std::to_string(local_bytes) +
+        " bytes of workgroup local memory but the device supports " + std::to_string(local_limit) +
+        "; reduce num_k_blocks, max_rounds or rows_per_group");
+  }
 
   queue->submit([&](sycl::handler& handler) {
     sycl::local_accessor<std::uint16_t, 1> block_masks(num_k_blocks, handler);
@@ -264,7 +286,7 @@ void build_sparse_execution_schedule(std::uintptr_t stream, std::uintptr_t lut, 
                       }
                     }
                   }
-                  if (lane < rows_per_group && (piece & (1 << lane)) != 0) {
+                  if (best_round >= 0 && lane < rows_per_group && (piece & (1 << lane)) != 0) {
                     schedule_ptr[schedule_base + lane * max_rounds + best_round] = block;
                   }
                   sycl::group_barrier(item.get_group());
@@ -310,7 +332,9 @@ void build_sparse_execution_schedule(std::uintptr_t stream, std::uintptr_t lut, 
                 schedule_ptr[row_base + round] = row_copy[round_order[round]];
               }
             }
-            rounds_ptr[group] = round_count;
+            // A negative round count reports that the row needed more rounds than
+            // max_rounds allows; callers must treat it as a build failure.
+            rounds_ptr[group] = control[kControlOverflow] != 0 ? -1 : round_count;
           }
         });
   });

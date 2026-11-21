@@ -279,7 +279,7 @@ def block_sparse_sdpa(
             raise ValueError("k_block_valid must be on the same XPU device as Q/K/V")
         if not k_block_valid.is_contiguous():
             raise ValueError("k_block_valid must be contiguous")
-        if torch.any(k_block_valid < 0).item() or torch.any(k_block_valid > 64).item():
+        if bool(((k_block_valid < 0) | (k_block_valid > 64)).any().item()):
             raise ValueError("k_block_valid entries must be in [0, 64]")
     if torch.any(valid_block_num < 0).item():
         raise ValueError("valid_block_num entries must be non-negative")
@@ -756,23 +756,18 @@ def supports_k_block_valid(device: torch.device | str | torch.Tensor = "xpu") ->
     return "k_block_valid" in (getattr(kernel, "__doc__", "") or "")
 
 
-def supports_q256_multirow() -> bool:
-    """Return whether ARK can run independent 64Q routing rows inside one Q256 tile."""
-    try:
-        return (
-            _resolve_sparse_prefill_q_tile_override(
-                head_dim=128,
-                quant_block_size=64,
-                q_tile_override=256,
-                sparse_q_block_tokens=64,
-                sparse_k_block_tokens=64,
-                tensor_layout="NHD",
-                allow_multi_row_tile=True,
-            )
-            == 256
-        )
-    except (TypeError, ValueError):
+def supports_q256_multirow(device: torch.device | str | torch.Tensor = "xpu") -> bool:
+    """Return whether the loaded ARK extension runs independent 64Q rows in one Q256 tile.
+
+    The check reports the compiled extension, not the Python routing rules: a
+    build whose native module lacks the Q256 row-64k kernel reports ``False``
+    even though the Python wrapper knows how to describe the configuration.
+    """
+    probe = device if isinstance(device, torch.Tensor) else torch.empty(0, device=device)
+    lib = get_lib(probe)
+    if lib is None or not hasattr(lib, "block_sparse_sdpa"):
         return False
+    return bool(getattr(lib, "ARK_BLOCK_SPARSE_Q256_MULTIROW", False))
 
 
 def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:

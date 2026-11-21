@@ -1736,14 +1736,18 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("execution_schedule") = 0, pybind11::arg("execution_schedule_rounds") = 0,
         pybind11::arg("execution_schedule_max_rounds") = 0, pybind11::arg("k_block_valid") = 0);
-  // Capability flag so Python can tell whether this build understands per-K-block
-  // valid lengths without relying on private helpers or docstring parsing.
+  // Capability flags so Python can tell what this compiled extension supports
+  // without relying on private helpers or docstring parsing.
   m.attr("ARK_BLOCK_SPARSE_K_BLOCK_VALID") = pybind11::bool_(true);
+  m.attr("ARK_BLOCK_SPARSE_Q256_MULTIROW") = pybind11::bool_(true);
   m.def("build_sparse_execution_schedule", &ark::build_sparse_execution_schedule,
-        pybind11::arg("stream"), pybind11::arg("lut"), pybind11::arg("valid_block_num"),
-        pybind11::arg("execution_schedule"), pybind11::arg("execution_schedule_rounds"),
-        pybind11::arg("batch"), pybind11::arg("num_heads"), pybind11::arg("num_q_blocks"),
-        pybind11::arg("num_k_blocks"), pybind11::arg("rows_per_group"),
+        "Build a round-based multirow execution schedule.\n\n"
+        "execution_schedule must be [batch, heads, q_groups, rows_per_group, max_rounds]. "
+        "A negative entry in execution_schedule_rounds means the routing row needed more than "
+        "max_rounds rounds; callers must treat that as a build failure.", pybind11::arg("stream"),
+        pybind11::arg("lut"), pybind11::arg("valid_block_num"), pybind11::arg("execution_schedule"),
+        pybind11::arg("execution_schedule_rounds"), pybind11::arg("batch"), pybind11::arg("num_heads"),
+        pybind11::arg("num_q_blocks"), pybind11::arg("num_k_blocks"), pybind11::arg("rows_per_group"),
         pybind11::arg("max_rounds"));
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
