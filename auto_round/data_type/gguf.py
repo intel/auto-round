@@ -921,12 +921,15 @@ def quant_tensor_gguf_sym_dq(
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        min_scale: Minimum scale coefficient for tensor
-        max_scale: Maximum scale coefficient for tensor
-        tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
-        tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
+        v: Rounding value perturbation
+        imatrix: Importance matrix used to weight the scale search. Defaults to None.
+        scale: Scale from a previous call, reused when `prev_scale` is set. Defaults to None.
+        d_scale: Double-quantization scale paired with `scale`. Defaults to None.
+        prev_scale: Scale carried over from an earlier iteration, reused while `iter % 10 != 0`
+        prev_d_scale: Double-quantization scale paired with `prev_scale`
+        iter: Iteration counter driving the scale-reuse heuristic. Defaults to None, read as 0
         scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
-        q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+        split_num: Chunk count for the scale search on very large tensors. Defaults to 1
 
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
