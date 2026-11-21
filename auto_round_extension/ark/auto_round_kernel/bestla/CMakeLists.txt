@@ -62,7 +62,19 @@ if(BTLA_SYCL)
   file(GLOB sycl_headers ${PROJECT_NAME}/sycl/*.h ${PROJECT_NAME}/sycl/*.hpp)
   target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_SYCL)
   list(APPEND sycl_libs IntelSYCL::SYCL_CXX)
-  target_compile_options(${PROJECT_NAME} INTERFACE -march=native)
+  # A wheel must not inherit the build host ISA. On an AVX-512 host -march=native
+  # puts EVEX instructions into auto_round_kernel_xpu, and the published wheel then
+  # dies with SIGILL on CPUs without AVX-512 (issue #2659). Keep a fixed baseline
+  # for anything that can be shipped; make the native build an explicit opt-in.
+  option(BTLA_NATIVE_ARCH "Compile with -march=native (local builds only, not portable)" OFF)
+  if(BTLA_NATIVE_ARCH)
+    target_compile_options( INTERFACE -march=native)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    # x86-64-v3 baseline: AVX2 stays available (the CompileAVX2() kernels need it),
+    # AVX-512 does not. -march=x86-64-v2 was rejected because it compiles the AVX2
+    # paths out as well.
+    target_compile_options( INTERFACE -mavx2 -mfma -mf16c -mtune=generic)
+  endif()
   target_link_libraries(${PROJECT_NAME} INTERFACE ${sycl_libs})
   # add_link_options(-fsycl-targets=spir64 -Xsycl-target-backend "-options -ze-opt-large-register-file")
 endif(BTLA_SYCL)

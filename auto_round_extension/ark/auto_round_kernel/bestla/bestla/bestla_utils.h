@@ -62,7 +62,11 @@
 
 // As long as the compiler supports the ISA, we will enable it.
 // Only the ISA you use in your project will be compiled.
-#if defined(_MSC_VER) && defined(__INTEL_LLVM_COMPILER)
+// With BTLA_SYCL the host ISA has to come from the compiler's own macros: the
+// BTLA_*_FOUND values are produced by FindSIMD.cmake and describe the build host,
+// so a wheel built on an AVX-512 machine would enable AVX-512 paths while the
+// compile line only guarantees the baseline. See issue #2659.
+#if (defined(_MSC_VER) && defined(__INTEL_LLVM_COMPILER)) || defined(BTLA_SYCL)
 #define CompileAVX512F() defined(__AVX512F__)
 #define CompileAVX512VNNI() defined(__AVX512VNNI__)
 #define CompileAVX2() defined(__AVX2__) && defined(__F16C__) && defined(__FMA__)
