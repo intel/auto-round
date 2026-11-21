@@ -46,6 +46,11 @@ def _tiny_model_config_fingerprint(path):
         return json.load(config_file)
 
 
+def _hub_token_available():
+    """Whether a HuggingFace token is configured for gated repositories."""
+    return bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+
+
 def _tiny_model_ready(path, signature=None):
     marker_path = os.path.join(path, ".autoround_ready")
     if not os.path.isfile(marker_path):
@@ -344,10 +349,27 @@ def tiny_llama4_model_path():
     if _tiny_model_ready(tiny_model_path):
         yield tiny_model_path
         return
+    if not _hub_token_available():
+        # The Llama-4 config only exists behind the gated meta-llama repo, so
+        # building this fixture without a token fails with an HTTP 401/404 from
+        # the hub. Skip instead: the cases that need it are covered in CI, which
+        # has the org token.
+        pytest.skip("meta-llama/Llama-4-Scout-17B-16E-Instruct is gated; set HF_TOKEN to build the tiny llama4 fixture")
     from transformers import Llama4ForConditionalGeneration
 
-    model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
-    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    try:
+        model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
+        config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    except OSError as exc:
+        # A token can be present and still not read this repo -- expired, or
+        # scoped to another org. huggingface_hub reports that as OSError with
+        # "You are trying to access a gated repo." (raised while resolving the
+        # config, hence the wider try); treating it as a skip keeps the failure
+        # mode this fixture is trying to avoid from returning through the token
+        # branch. Anything else is re-raised.
+        if "gated repo" not in str(exc).lower():
+            raise
+        pytest.skip(f"meta-llama/Llama-4-Scout-17B-16E-Instruct is not readable with the configured token: {exc}")
     # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
     config.pad_token_id = None
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing
