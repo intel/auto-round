@@ -14,9 +14,9 @@
 
 """The tiny llama4 fixture needs a hub token: its config lives behind a gated repo."""
 
-import pytest
-
 from test import fixtures
+
+import pytest
 
 
 def test_llama4_fixture_skips_without_hub_token(monkeypatch):
