@@ -2755,12 +2755,12 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     total = len(files)
     if total == 1:
         new = f"{prefix}.safetensors"
-        os.rename(files[0], os.path.join(path, new))
+        os.replace(files[0], os.path.join(path, new))
         return
 
     for i, f in enumerate(files, 1):
         new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
-        os.rename(f, os.path.join(path, new))
+        os.replace(f, os.path.join(path, new))
 
     # rename index.json
     idx = os.path.join(path, "model.safetensors.index.json")
