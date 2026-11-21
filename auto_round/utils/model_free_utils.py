@@ -3107,7 +3107,7 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
             src = os.path.join(output_dir, shard_names[0])
             dst = os.path.join(output_dir, "model.safetensors")
             if os.path.exists(src):
-                os.rename(src, dst)
+                os.replace(src, dst)
             weight_map = {k: "model.safetensors" for k in weight_map}
         return
 
