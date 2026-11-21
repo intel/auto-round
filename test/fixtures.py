@@ -357,8 +357,19 @@ def tiny_llama4_model_path():
         pytest.skip("meta-llama/Llama-4-Scout-17B-16E-Instruct is gated; set HF_TOKEN to build the tiny llama4 fixture")
     from transformers import Llama4ForConditionalGeneration
 
-    model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
-    config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    try:
+        model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
+        config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+    except OSError as exc:
+        # A token can be present and still not read this repo -- expired, or
+        # scoped to another org. huggingface_hub reports that as OSError with
+        # "You are trying to access a gated repo." (raised while resolving the
+        # config, hence the wider try); treating it as a skip keeps the failure
+        # mode this fixture is trying to avoid from returning through the token
+        # branch. Anything else is re-raised.
+        if "gated repo" not in str(exc).lower():
+            raise
+        pytest.skip(f"meta-llama/Llama-4-Scout-17B-16E-Instruct is not readable with the configured token: {exc}")
     # TODO: Remove after https://github.com/huggingface/transformers/issues/43525 is resolved
     config.pad_token_id = None
     config.vision_config.num_hidden_layers = 1  # Reduce layers for testing

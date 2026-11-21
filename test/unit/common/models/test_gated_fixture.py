@@ -41,3 +41,40 @@ def test_llama4_fixture_accepts_either_token_variable(monkeypatch):
 
     monkeypatch.delenv("HF_TOKEN", raising=False)
     assert fixtures._hub_token_available() is False
+
+
+def test_llama4_fixture_skips_when_the_token_cannot_read_the_repo(monkeypatch):
+    """A token that exists but is not authorised must skip too.
+
+    ``_hub_token_available`` only proves a variable is set; an expired token, or
+    one scoped to another org, fails later with ``OSError: You are trying to
+    access a gated repo.``. Reproduced locally with a dummy ``HF_TOKEN`` before
+    this was handled, which is what the CI org secret looks like when it lapses.
+    """
+    monkeypatch.setattr(fixtures, "_tiny_model_ready", lambda *args, **kwargs: False)
+    monkeypatch.setenv("HF_TOKEN", "hf_dummy_token")
+
+    def _gated(*args, **kwargs):
+        raise OSError("You are trying to access a gated repo.")
+
+    monkeypatch.setattr(fixtures, "get_model_path", _gated)
+
+    generator = fixtures.tiny_llama4_model_path.__wrapped__()
+    with pytest.raises(pytest.skip.Exception) as skip:
+        next(generator)
+    assert "not readable" in str(skip.value)
+
+
+def test_other_failures_still_propagate(monkeypatch):
+    """Only the gated-repo error becomes a skip; anything else stays a failure."""
+    monkeypatch.setattr(fixtures, "_tiny_model_ready", lambda *args, **kwargs: False)
+    monkeypatch.setenv("HF_TOKEN", "hf_dummy_token")
+
+    def _broken(*args, **kwargs):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(fixtures, "get_model_path", _broken)
+
+    generator = fixtures.tiny_llama4_model_path.__wrapped__()
+    with pytest.raises(OSError, match="No space left on device"):
+        next(generator)
