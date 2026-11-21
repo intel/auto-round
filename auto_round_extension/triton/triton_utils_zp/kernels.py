@@ -342,8 +342,13 @@ def transpose_quant_matmul_248_kernel(
     b_ptrs = b_ptr + (
         (offs_bk[:, None] // infearure_per_bits) * stride_bk + offs_n[None, :] * stride_bn
     )  # (BLOCK_SIZE_K, BLOCK_SIZE_N)
+    # The K axis is walked by the grid, not by the loop below, so the tail can
+    # reach past g_ptr as well; clamping the tail rows to group 0 keeps the
+    # scales/zeros pointers in bounds (the epilogue masks the stores, so the
+    # garbage those rows contribute is never written).
+    k_mask = offs_bk < K
     g_ptrs = g_ptr + offs_bk
-    g_idx = tl.load(g_ptrs)
+    g_idx = tl.load(g_ptrs, mask=k_mask, other=0)
 
     # shifter is used to extract the N bits of each element in the 32-bit word from B
     scales_ptrs = scales_ptr + offs_n[None, :] + g_idx[:, None] * stride_scales
@@ -356,8 +361,6 @@ def transpose_quant_matmul_248_kernel(
     # K that does not divide BLOCK_SIZE_K leaves the tail of `b_ptrs`, indexed by
     # offs_bk // infearure_per_bits, past the packed rows. The N axis needs a mask that
     # moves with the loop, because N is the axis this loop walks.
-    k_mask = offs_bk < K
-
     for k in range(num_pid_n):
         n_mask = (k * BLOCK_SIZE_N + offs_n) < N
         # Fetch scales and zeros; these are per-outfeature and thus reused in the inner loop
