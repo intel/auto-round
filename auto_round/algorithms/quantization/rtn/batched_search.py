@@ -54,7 +54,7 @@ def _staged_weight(wrapper: WrapperLinear) -> torch.Tensor:
 
     if type(wrapper.orig_layer) == transformers.pytorch_utils.Conv1D:
         weight = weight.t()
-    return weight
+    return wrapper._apply_equivalent_weight_transform(weight)
 
 
 def _staged_imatrix(wrapper: WrapperLinear, weight: torch.Tensor) -> torch.Tensor | None:

@@ -25,6 +25,10 @@ from auto_round.export.common.serialization import (
     save_config_artifact,
     save_model,
 )
+from auto_round.export.formats.compressed_tensors.transform import (
+    _export_hadamard_transform_config,
+    _save_immediate_hadamard_weights,
+)
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
     assign_config_group_targets,
@@ -399,6 +403,9 @@ def save_checkpoint(
     )
     quantization_config_dict["provider"] = "auto-round"
     quantization_config_dict = add_autoround_config(quantization_config_dict, serialization_dict)
+    transform_config = _export_hadamard_transform_config(model, (serialization_dict or {}).get("data_type", "mx_fp"))
+    if transform_config is not None:
+        quantization_config_dict["transform_config"] = transform_config
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:
@@ -408,6 +415,10 @@ def save_checkpoint(
     save_config_artifact(model, output_dir)
 
     save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
+    if immediate_saving and transform_config is not None:
+        if not safe_serialization:
+            raise ValueError("Hadamard immediate export requires safe_serialization=True")
+        _save_immediate_hadamard_weights(model, output_dir)
 
     try:
         copy_python_files_from_model_cache(model, output_dir)
