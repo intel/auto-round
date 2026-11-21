@@ -216,7 +216,13 @@ def _install_compact_expert_repr(module: nn.Module) -> None:
 
 
 def _expert_mlp(experts: nn.Module, expert: nn.Module, expert_input: torch.Tensor) -> torch.Tensor:
-    """One expert's MLP as linear_loop_experts_forward computes it (gated or not)."""
+    """One expert's MLP for linear_loop_experts_forward.
+
+    Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False)) expose only
+    up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts (Mixtral/Qwen3-MoE/...)
+    additionally own gate_proj. Mirrors the grouped path (grouped_linear_experts_forward), which keys
+    the same branch off gate_proj presence.
+    """
     up_out = expert.up_proj(expert_input)
     if hasattr(expert, "gate_proj"):
         gate_out = expert.gate_proj(expert_input)
@@ -295,34 +301,15 @@ def linear_loop_experts_forward(
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
-            if torch.is_grad_enabled() and str(envs.AR_MOE_EXPERT_RECOMPUTE) not in ("0", "false", "off", "no"):
-                # Tuning: each expert's fake-quantised weights (fp32, weight-sized) would stay alive until
-                # backward - for every routed expert at once (hundreds of experts: tens of GiB). Recompute
-                # the expert in backward instead: the same ops on the same inputs, the same gradients.
+            if torch.is_grad_enabled():
+                # Tuning: keeping every routed expert's fake-quantised weights (fp32, weight-sized) alive
+                # until backward costs tens of GiB with hundreds of experts. Recompute each expert in
+                # backward instead: the same ops on the same inputs, the same gradients.
                 expert_out = torch.utils.checkpoint.checkpoint(
                     _expert_mlp, self, expert, expert_input, use_reentrant=False
                 )
-                output_batches.append(expert_out.to(hidden_states.dtype))
-                continue
-            up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
-
-            # Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False))
-            # expose only up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts
-            # (Mixtral/Qwen3-MoE/...) additionally own gate_proj. Mirror the grouped path
-            # (grouped_linear_experts_forward) which keys the same branch off gate_proj presence.
-            if hasattr(expert, "gate_proj"):
-                gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
-                # Apply gating
-                if hasattr(self, "_apply_gate"):
-                    gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-                    gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
-                else:
-                    gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
             else:
-                gated_out = self.act_fn(up_out)  # (num_samples, intermediate_dim)
-
-            # Down projection
-            expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
+                expert_out = _expert_mlp(self, expert, expert_input)
             output_batches.append(expert_out.to(hidden_states.dtype))
 
         if output_batches:

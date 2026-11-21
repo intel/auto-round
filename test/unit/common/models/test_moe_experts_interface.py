@@ -23,6 +23,7 @@ This verifies that:
 
 import pytest
 import torch
+import torch.utils.checkpoint
 from torch import nn
 
 from auto_round.modeling.fused_moe.replace_modules import (
@@ -426,8 +427,13 @@ def test_linear_loop_expert_recompute_matches_saved_activations(monkeypatch, has
     top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1)
 
     results = {}
-    for mode in ("0", "1"):
-        monkeypatch.setenv("AR_MOE_EXPERT_RECOMPUTE", mode)
+    recompute = torch.utils.checkpoint.checkpoint
+    for mode in ("saved", "recomputed"):
+        if mode == "saved":
+            # Reference: the same forward with activations kept for backward.
+            monkeypatch.setattr(torch.utils.checkpoint, "checkpoint", lambda fn, *args, **kwargs: fn(*args))
+        else:
+            monkeypatch.setattr(torch.utils.checkpoint, "checkpoint", recompute)
         module.zero_grad(set_to_none=True)
         hidden_states.grad = None
         output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
@@ -438,8 +444,8 @@ def test_linear_loop_expert_recompute_matches_saved_activations(monkeypatch, has
             hidden_states.grad.clone(),
         )
 
-    out_saved, grads_saved, input_grad_saved = results["0"]
-    out_recomputed, grads_recomputed, input_grad_recomputed = results["1"]
+    out_saved, grads_saved, input_grad_saved = results["saved"]
+    out_recomputed, grads_recomputed, input_grad_recomputed = results["recomputed"]
     assert torch.equal(out_saved, out_recomputed)
     assert len(grads_saved) == len(grads_recomputed) > 0
     assert all(torch.equal(a, b) for a, b in zip(grads_saved, grads_recomputed))
