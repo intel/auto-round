@@ -4,6 +4,23 @@ project(bestla LANGUAGES CXX VERSION 0.1.0)
 if(BTLA_SYCL)
   include(cmake/sycl.cmake)
 endif()
+
+# The published XPU wheel must not inherit the build host ISA: with -march=native
+# on an AVX-512 builder, auto_round_kernel_xpu carried EVEX instructions and died
+# with SIGILL on CPUs without AVX-512 (issue #2659). Pin the ISA detection to an
+# x86-64-v3 baseline instead, unless a local build asks for the native ISA.
+# This runs before FindSIMD.cmake, so the BTLA_*_FOUND definitions below follow
+# the same choice for host and device compilation and the guards in
+# bestla_utils.h stay untouched.
+if(BTLA_SYCL)
+  option(BTLA_NATIVE_ARCH "Use the host ISA (-march=native); local builds only, not portable" OFF)
+  if(NOT BTLA_NATIVE_ARCH)
+    foreach(_isa AVX512 AVX512_VNNI AVX512_BF16 AVX512_FP16 AMX_BF16 AMX_INT8 AMX_FP16)
+      set(${_isa}_FOUND FALSE CACHE BOOL "Forced off for the portable XPU wheel (issue #2659)" FORCE)
+    endforeach()
+  endif()
+endif()
+
 include(cmake/FindSIMD.cmake)
 
 file(GLOB headers ${PROJECT_NAME}/*.h ${PROJECT_NAME}/*.hpp)
@@ -66,14 +83,13 @@ if(BTLA_SYCL)
   # puts EVEX instructions into auto_round_kernel_xpu, and the published wheel then
   # dies with SIGILL on CPUs without AVX-512 (issue #2659). Keep a fixed baseline
   # for anything that can be shipped; make the native build an explicit opt-in.
-  option(BTLA_NATIVE_ARCH "Compile with -march=native (local builds only, not portable)" OFF)
   if(BTLA_NATIVE_ARCH)
-    target_compile_options( INTERFACE -march=native)
+    target_compile_options(${PROJECT_NAME} INTERFACE -march=native)
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     # x86-64-v3 baseline: AVX2 stays available (the CompileAVX2() kernels need it),
     # AVX-512 does not. -march=x86-64-v2 was rejected because it compiles the AVX2
     # paths out as well.
-    target_compile_options( INTERFACE -mavx2 -mfma -mf16c -mtune=generic)
+    target_compile_options(${PROJECT_NAME} INTERFACE -mavx2 -mfma -mf16c -mtune=generic)
   endif()
   target_link_libraries(${PROJECT_NAME} INTERFACE ${sycl_libs})
   # add_link_options(-fsycl-targets=spir64 -Xsycl-target-backend "-options -ze-opt-large-register-file")
