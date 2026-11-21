@@ -86,7 +86,9 @@ def search_scales(data: torch.Tensor, bits: int, qw: None | torch.Tensor | float
 
 
 @register_dtype("opt_rtn_int_sym")
-def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, **kwargs):
+def quant_tensor_opt_rtn_sym(
+    tensor, bits=4, group_size=-1, v=0, q_scale_thresh=1e-5, imatrix=None, return_qdq=True, **kwargs
+):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
     Args:
@@ -115,6 +117,8 @@ def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+    if not return_qdq:
+        return None, scale, maxq
     int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
@@ -130,6 +134,7 @@ def quant_tensor_rtn_sym(
     min_scale=1.0,
     max_scale=1.0,
     scale_dtype=torch.float16,
+    return_qdq=True,
     **kwargs
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
@@ -156,6 +161,8 @@ def quant_tensor_rtn_sym(
     max_v = (2 * (wmax_abs < wmin_abs).int() - 1) * torch.max(wmax_abs, wmin_abs)
     scale = (max_v / maxq).to(scale_dtype)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
+    if not return_qdq:
+        return None, scale.unsqueeze(dim=-1), maxq
     scale = scale.unsqueeze(dim=-1)
     int_w = tensor.div(scale).round_().clamp_(-maxq, maxq - 1)
     qdq_result = (int_w.mul_(scale)).to(tensor.dtype)
@@ -253,6 +260,7 @@ def quant_tensor_asym(
     q_scale_thresh=1e-5,
     init_scale=None,
     init_zp=None,
+    return_qdq=True,
     **kwargs
 ):
     """Quantize and de-quantize tensor asymmetrically.
@@ -290,6 +298,8 @@ def quant_tensor_asym(
         scale = scale.to(scale_dtype)
         scale = torch.clamp(scale, min=q_scale_thresh)
         zp = init_zp
+        if not return_qdq:
+            return None, scale, zp
         int_w = round_ste(tensor / scale + v)
         q = torch.clamp(int_w + zp, 0, maxq)
         qdq_result = (scale * (q - zp)).to(tensor.dtype)
@@ -314,6 +324,8 @@ def quant_tensor_asym(
     scale = ((wmax - wmin) / maxq).to(scale_dtype)
     scale = torch.clamp(scale, min=q_scale_thresh)
     zp = round_ste(-wmin / scale)  # pylint: disable=E1130
+    if not return_qdq:
+        return None, scale.unsqueeze(dim=-1), zp.unsqueeze(dim=-1)
     scale = scale.unsqueeze(dim=-1)
     zp = zp.unsqueeze(dim=-1)
     int_w = round_ste(tensor / scale + v)

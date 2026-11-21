@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.compressors.base import BaseCompressor
 from auto_round.export.formats.svdquant.format import SVDQuantNunchakuFormat
 from auto_round.formats import get_formats
@@ -117,21 +119,40 @@ def test_svdquant_nunchaku_rejects_incompatible_scheme():
         SVDQuantNunchakuFormat.check_scheme_args(scheme)
 
 
-def test_format_rejects_incompatible_residual_override():
-    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
-
-    residual = torch.nn.Linear(32, 32)
+@pytest.mark.parametrize(
+    "format_name,preset",
+    [("svdquant_nunchaku", "MXFP4"), ("svdquant_omni", "MXFP4"), ("svdquant_omni", "NVFP4")],
+)
+@pytest.mark.parametrize("layer_name", ["projection", "projection.residual_linear"])
+@pytest.mark.parametrize("override_kind", ["preset", "scheme", "dict", "partial"])
+def test_residual_override_preserves_input_and_runtime_validation(format_name, preset, layer_name, override_kind):
     model = torch.nn.Module()
-    model.svd = SVDQuantLinear(
-        residual,
-        torch.nn.Linear(32, 1, bias=False),
-        torch.nn.Linear(1, 32, bias=False),
+    model.projection = SVDQuantLinear(
+        torch.nn.Linear(32, 16),
+        torch.nn.Linear(32, 8, bias=False),
+        torch.nn.Linear(8, 16, bias=False),
         torch.ones(32),
     )
-    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    scheme = PRESET_SCHEMES[preset].copy()
+    override = {
+        "preset": preset,
+        "scheme": scheme,
+        "dict": {"scheme": preset, "act_dynamic": True},
+        "partial": {"act_dynamic": True},
+    }[override_kind]
+    layer_config = {layer_name: override}
+    original = copy.deepcopy(layer_config)
+    output_format = get_formats(format_name, SimpleNamespace(scheme=preset))[0]
+    ctx = SimpleNamespace(model=model, layer_config=layer_config, quant_block_list=[["blocks.0"]])
 
-    with pytest.raises(ValueError, match=r"group_size=64.*group_size=32"):
-        output_format._validate_svd_layer_overrides(model, {"svd.residual_linear": {"group_size": 64}})
+    result = output_format.check_and_reset_format(scheme, ctx)
+
+    assert result == (None, scheme, layer_config, ctx.quant_block_list)
+    assert layer_config == original
+    for field, value in (("act_bits", 16), ("group_size", 64)):
+        ctx.layer_config = {layer_name: {field: value}}
+        with pytest.raises(ValueError, match=rf"incompatible residual scheme.*{field}"):
+            output_format.check_and_reset_format(scheme, ctx)
 
 
 def test_full_model_format_disables_immediate_packing_and_saving():
