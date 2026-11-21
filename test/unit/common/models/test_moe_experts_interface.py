@@ -394,3 +394,53 @@ def test_apply_custom_replacements_skips_linearized_moe_and_logs_reason(monkeypa
     assert replaced == []
     assert isinstance(model.block, DummyMoEForLinearizeSkipUT)
     assert any("skipped because linearize_moe" in msg for msg in messages)
+
+
+@pytest.mark.parametrize("has_gate", [True, False])
+def test_linear_loop_expert_recompute_matches_saved_activations(monkeypatch, has_gate):
+    """Recomputing each expert in backward gives the same output and gradients bit for bit."""
+    from auto_round.modeling.fused_moe.moe_experts_interface import linear_loop_experts_forward
+
+    num_experts, hidden_dim, intermediate_dim, num_tokens, top_k = 6, 16, 24, 40, 2
+
+    class Expert(nn.Module):
+        def __init__(self):
+            super().__init__()
+            if has_gate:
+                self.gate_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
+            self.up_proj = nn.Linear(hidden_dim, intermediate_dim, bias=False)
+            self.down_proj = nn.Linear(intermediate_dim, hidden_dim, bias=False)
+
+    class Experts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_experts = num_experts
+            self.act_fn = nn.SiLU()
+            for i in range(num_experts):
+                setattr(self, str(i), Expert())
+
+    torch.manual_seed(0)
+    module = Experts()
+    hidden_states = torch.randn(num_tokens, hidden_dim, requires_grad=True)
+    top_k_index = torch.randint(0, num_experts, (num_tokens, top_k))
+    top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1)
+
+    results = {}
+    for mode in ("0", "1"):
+        monkeypatch.setenv("AR_MOE_EXPERT_RECOMPUTE", mode)
+        module.zero_grad(set_to_none=True)
+        hidden_states.grad = None
+        output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+        output.pow(2).sum().backward()
+        results[mode] = (
+            output.detach().clone(),
+            [p.grad.clone() for p in module.parameters() if p.grad is not None],
+            hidden_states.grad.clone(),
+        )
+
+    out_saved, grads_saved, input_grad_saved = results["0"]
+    out_recomputed, grads_recomputed, input_grad_recomputed = results["1"]
+    assert torch.equal(out_saved, out_recomputed)
+    assert len(grads_saved) == len(grads_recomputed) > 0
+    assert all(torch.equal(a, b) for a, b in zip(grads_saved, grads_recomputed))
+    assert torch.equal(input_grad_saved, input_grad_recomputed)

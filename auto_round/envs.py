@@ -239,6 +239,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Results are identical for any value -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
     "AR_MOE_CHUNK": lambda: os.getenv("AR_MOE_CHUNK", "auto").lower(),
+    # linear_loop MoE tuning: recompute each routed expert's MLP in backward instead of keeping its
+    # fake-quantised weights alive from forward to backward (torch.utils.checkpoint per expert). Same
+    # gradients; the saved state drops from weight-sized fp32 tensors per routed expert to its input rows.
+    # "1" (default) on, "0" off.
+    "AR_MOE_EXPERT_RECOMPUTE": lambda: os.getenv("AR_MOE_EXPERT_RECOMPUTE", "1").lower(),
     # Where to place huge, non-quantizable per-layer ngram/PLE embeddings (e.g. Qwen4-Exp's
     # ~95 GiB table) during per-block tuning. They do not participate in tuning but must run to
     # produce correct block outputs.

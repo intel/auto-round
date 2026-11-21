@@ -32,6 +32,7 @@ Usage:
 """
 
 import torch
+import torch.utils.checkpoint
 from torch import nn
 
 from auto_round import envs
@@ -214,6 +215,20 @@ def _install_compact_expert_repr(module: nn.Module) -> None:
         cls.__iter__ = _iter
 
 
+def _expert_mlp(experts: nn.Module, expert: nn.Module, expert_input: torch.Tensor) -> torch.Tensor:
+    """One expert's MLP as linear_loop_experts_forward computes it (gated or not)."""
+    up_out = expert.up_proj(expert_input)
+    if hasattr(expert, "gate_proj"):
+        gate_out = expert.gate_proj(expert_input)
+        if hasattr(experts, "_apply_gate"):
+            gated_out = experts._apply_gate(torch.cat([gate_out, up_out], dim=-1))
+        else:
+            gated_out = experts.act_fn(gate_out) * up_out
+    else:
+        gated_out = experts.act_fn(up_out)
+    return expert.down_proj(gated_out)
+
+
 @_opaque_to_dynamo
 def linear_loop_experts_forward(
     self: nn.Module,
@@ -280,6 +295,15 @@ def linear_loop_experts_forward(
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
+            if torch.is_grad_enabled() and str(envs.AR_MOE_EXPERT_RECOMPUTE) not in ("0", "false", "off", "no"):
+                # Tuning: each expert's fake-quantised weights (fp32, weight-sized) would stay alive until
+                # backward - for every routed expert at once (hundreds of experts: tens of GiB). Recompute
+                # the expert in backward instead: the same ops on the same inputs, the same gradients.
+                expert_out = torch.utils.checkpoint.checkpoint(
+                    _expert_mlp, self, expert, expert_input, use_reentrant=False
+                )
+                output_batches.append(expert_out.to(hidden_states.dtype))
+                continue
             up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
             # Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False))
