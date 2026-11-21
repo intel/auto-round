@@ -32,6 +32,7 @@ Usage:
 """
 
 import torch
+import torch.utils.checkpoint
 from torch import nn
 
 from auto_round import envs
@@ -214,6 +215,26 @@ def _install_compact_expert_repr(module: nn.Module) -> None:
         cls.__iter__ = _iter
 
 
+def _expert_mlp(experts: nn.Module, expert: nn.Module, expert_input: torch.Tensor) -> torch.Tensor:
+    """One expert's MLP for linear_loop_experts_forward.
+
+    Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False)) expose only
+    up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts (Mixtral/Qwen3-MoE/...)
+    additionally own gate_proj. Mirrors the grouped path (grouped_linear_experts_forward), which keys
+    the same branch off gate_proj presence.
+    """
+    up_out = expert.up_proj(expert_input)
+    if hasattr(expert, "gate_proj"):
+        gate_out = expert.gate_proj(expert_input)
+        if hasattr(experts, "_apply_gate"):
+            gated_out = experts._apply_gate(torch.cat([gate_out, up_out], dim=-1))
+        else:
+            gated_out = experts.act_fn(gate_out) * up_out
+    else:
+        gated_out = experts.act_fn(up_out)
+    return expert.down_proj(gated_out)
+
+
 @_opaque_to_dynamo
 def linear_loop_experts_forward(
     self: nn.Module,
@@ -280,25 +301,15 @@ def linear_loop_experts_forward(
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
-            up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
-
-            # Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False))
-            # expose only up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts
-            # (Mixtral/Qwen3-MoE/...) additionally own gate_proj. Mirror the grouped path
-            # (grouped_linear_experts_forward) which keys the same branch off gate_proj presence.
-            if hasattr(expert, "gate_proj"):
-                gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
-                # Apply gating
-                if hasattr(self, "_apply_gate"):
-                    gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-                    gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
-                else:
-                    gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
+            if torch.is_grad_enabled():
+                # Tuning: keeping every routed expert's fake-quantised weights (fp32, weight-sized) alive
+                # until backward costs tens of GiB with hundreds of experts. Recompute each expert in
+                # backward instead: the same ops on the same inputs, the same gradients.
+                expert_out = torch.utils.checkpoint.checkpoint(
+                    _expert_mlp, self, expert, expert_input, use_reentrant=False
+                )
             else:
-                gated_out = self.act_fn(up_out)  # (num_samples, intermediate_dim)
-
-            # Down projection
-            expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
+                expert_out = _expert_mlp(self, expert, expert_input)
             output_batches.append(expert_out.to(hidden_states.dtype))
 
         if output_batches:
