@@ -88,6 +88,61 @@ def test_update_running_max_per_side():
     assert cache.v_amax[2] == pytest.approx(8.0)
 
 
+def test_mla_fp8_uses_shared_scale_for_qdq_and_export():
+    from auto_round.experimental.kv_cache import (
+        calibrate_kv_cache_output_hook,
+        initialize_quantized_kv_cache,
+    )
+
+    class FakeMLAAttention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer_idx = 0
+            self.kv_lora_rank = 16
+            self.qk_rope_head_dim = 4
+            self.k_proj = torch.nn.Linear(4, 4, bias=False)
+            self.k_scale = torch.nn.Parameter(torch.zeros(1))
+            self.v_scale = torch.nn.Parameter(torch.zeros(1))
+
+    module = FakeMLAAttention()
+    initialize_quantized_kv_cache(module)
+    key_states = torch.ones(1, 1, 2, 16)
+    value_states = torch.full((1, 1, 2, 16), 16.0)
+
+    qdq_key, qdq_value = module.kv_cache.update(key_states, value_states, 0)
+    calibrate_kv_cache_output_hook(module, (), None)
+
+    expected_scale = torch.tensor([16.0 / torch.finfo(torch.float8_e4m3fn).max])
+    torch.testing.assert_close(module.k_scale, expected_scale)
+    torch.testing.assert_close(module.v_scale, expected_scale)
+    torch.testing.assert_close(module.kv_cache.k_scales[0], module.kv_cache.v_scales[0])
+    torch.testing.assert_close(qdq_key, key_states, rtol=0.03, atol=0.03)
+    torch.testing.assert_close(qdq_value, value_states, rtol=0.03, atol=0.03)
+
+
+def test_mla_fp8_qdq_uses_unified_historical_scale():
+    cache = QuantizedKVParameterCache(dtype=torch.float8_e4m3fn)
+    cache.shared_scale_layers.add(0)
+    cache.k_scales.append(torch.tensor([1.0]))
+    cache.v_scales.append(torch.tensor([0.5]))
+    key_states = torch.full((1, 1, 2, 16), 1e-4)
+    value_states = torch.full((1, 1, 2, 16), 2e-4)
+
+    with cache.kv_qdq_context():
+        qdq_key, qdq_value = cache.update(key_states, value_states, 0)
+
+    shared_scale = torch.tensor([1.0])
+    expected_max = shared_scale * torch.finfo(torch.float8_e4m3fn).max
+    from auto_round.experimental.utils import fp8_qdq
+
+    expected_key, _ = fp8_qdq(key_states, tensor_max=expected_max, granularity="tensor")
+    expected_value, _ = fp8_qdq(value_states, tensor_max=expected_max, granularity="tensor")
+    torch.testing.assert_close(qdq_key, expected_key)
+    torch.testing.assert_close(qdq_value, expected_value)
+    torch.testing.assert_close(cache.k_scales[0], shared_scale)
+    torch.testing.assert_close(cache.v_scales[0], shared_scale)
+
+
 def test_stored_nvfp4_scale_uses_vllm_dequant_multiplier_convention():
     """The checkpoint scale must be amax / 2688 (vLLM dequant multiplier).
 
