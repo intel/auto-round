@@ -1,4 +1,5 @@
 import shutil
+from test.helpers import check_version
 
 import pytest
 import torch
@@ -74,6 +75,16 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
         loaded_out = loaded_model(inp)
 
 
+@pytest.mark.skipif(
+    check_version("transformers>=5.24.0"),
+    reason=(
+        "transformers 5.24.0 reads outputs.image_outputs from a MoeCausalLMOutputWithPast "
+        "in Llama4ForConditionalGeneration.forward, so any text-only forward raises "
+        "AttributeError (reproducible without a checkpoint: Llama4TextConfig + "
+        "Llama4VisionConfig, then model(input_ids=...)). Re-enable once upstream carries "
+        "the field or reads it defensively."
+    ),
+)
 def test_llama4(tiny_llama4_model_path):
     output_dir = "./tmp/test_quantized_llama4"
     quantized_model, save_folder = quantize_model(
