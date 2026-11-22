@@ -17,6 +17,7 @@
 
 
 import contextlib
+import inspect
 from enum import Enum
 from functools import partial
 from typing import Any
@@ -139,9 +140,16 @@ class QuantizedKVParameterCache(DynamicCache):
         value_states: torch.Tensor,
         layer_idx: int,
         cache_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Get the k_scale and v_scale and output the quant-dequant key_states and value_states
+        Get the k_scale and v_scale and output the quant-dequant key_states and value_states.
+
+        `**kwargs` swallows whatever extra keyword the calling attention module uses for
+        the same information: transformers <= 5.23 pass `cache_kwargs`, and 5.24 onwards
+        pass `kwargs=...`. Both are optional here, so accepting either (and ignoring it)
+        keeps calibration working across versions instead of raising TypeError on the
+        first forward.
         """
         if not self._qdq_enabled:
             self._observe(key_states, KVCacheScaleType.KEY, layer_idx)
@@ -327,6 +335,18 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     update_parameter_data(module, init_scale.clone(), KVCacheScaleType.VALUE.value)
 
 
+# Order matters: newest name first, older names only used when the module's
+# `forward` does not declare the newer one.
+_CACHE_ARGUMENT_NAMES = ("cache", "past_key_values", "past_key_value")
+
+
+def _forward_parameter_names(module: torch.nn.Module) -> set[str]:
+    try:
+        return set(inspect.signature(module.forward).parameters)
+    except (TypeError, ValueError):  # C-extension or otherwise uninspectable
+        return set()
+
+
 def calibrate_kv_cache_input_hook(
     module: torch.nn.Module, args: Any, kwargs: dict[str, Any]
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -336,12 +356,20 @@ def calibrate_kv_cache_input_hook(
     kv_cache to singleton QuantizedKVParameterCache.
     """
     kv_cache = module.kv_cache
-    #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
-    # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
-    if "past_key_values" in kwargs:
-        kwargs["past_key_values"] = kv_cache
+    # The cache argument has been renamed twice: `past_key_value`, then
+    # `past_key_values` (transformers 4.55.2), then `cache` (5.24, where
+    # `past_key_value` is no longer accepted by the attention modules). If we
+    # guess the name wrong the cache simply never reaches attention, so the run
+    # is silently uncalibrated instead of failing. Inject under the name this
+    # module's `forward` actually declares.
+    params = _forward_parameter_names(module)
+    for cache_arg in _CACHE_ARGUMENT_NAMES:
+        if cache_arg in params:
+            kwargs[cache_arg] = kv_cache
+            break
     else:
-        kwargs["past_key_value"] = kv_cache
+        # `forward` may take **kwargs only; fall back to what the caller passed.
+        kwargs["past_key_values" if "past_key_values" in kwargs else "past_key_value"] = kv_cache
     kwargs["use_cache"] = False
     return args, kwargs
 
