@@ -120,6 +120,37 @@ def test_mla_fp8_uses_shared_scale_for_qdq_and_export():
     torch.testing.assert_close(qdq_value, value_states, rtol=0.03, atol=0.03)
 
 
+def test_output_hook_skips_layer_without_calibrated_scale():
+    """A layer can reach the post-hook without having been observed.
+
+    With `use_cache=False` the attention module never calls `kv_cache.update()`, so
+    nothing was appended for that layer index. The hook must skip it, the way the
+    nvfp4 branch already does, instead of raising IndexError on an empty list.
+    """
+    from auto_round.experimental.kv_cache import (
+        calibrate_kv_cache_output_hook,
+        initialize_quantized_kv_cache,
+    )
+
+    class FakeAttention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer_idx = 0
+            self.k_proj = torch.nn.Linear(4, 4, bias=False)
+            self.v_proj = torch.nn.Linear(4, 4, bias=False)
+            self.k_scale = torch.nn.Parameter(torch.zeros(1))
+            self.v_scale = torch.nn.Parameter(torch.zeros(1))
+
+    module = FakeAttention()
+    initialize_quantized_kv_cache(module)
+    assert module.kv_cache.k_scales == []
+
+    calibrate_kv_cache_output_hook(module, (), None)
+
+    torch.testing.assert_close(module.k_scale, torch.zeros(1))
+    torch.testing.assert_close(module.v_scale, torch.zeros(1))
+
+
 def test_mla_fp8_qdq_uses_unified_historical_scale():
     cache = QuantizedKVParameterCache(dtype=torch.float8_e4m3fn)
     cache.shared_scale_layers.add(0)

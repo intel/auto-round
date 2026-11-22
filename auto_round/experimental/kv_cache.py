@@ -391,12 +391,24 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
             if amax.item() > 0:
                 update_parameter_data(module, _nvfp4_global_scale(amax, amax.device), scale_name)
         return
-    k_scale = kv_cache.k_scales[module.layer_idx]
-    v_scale = kv_cache.v_scales[module.layer_idx]
-    if module.layer_idx in kv_cache.shared_scale_layers:
+    layer_idx = module.layer_idx
+    # A layer can reach this hook without having been observed: if the model is
+    # run with `use_cache=False` the attention module never calls
+    # `kv_cache.update()`, so nothing was appended for it. The nvfp4 branch above
+    # already skips in that case; do the same here instead of raising IndexError.
+    if (
+        layer_idx >= len(kv_cache.k_scales)
+        or kv_cache.k_scales[layer_idx] is None
+        or layer_idx >= len(kv_cache.v_scales)
+        or kv_cache.v_scales[layer_idx] is None
+    ):
+        return
+    k_scale = kv_cache.k_scales[layer_idx]
+    v_scale = kv_cache.v_scales[layer_idx]
+    if layer_idx in kv_cache.shared_scale_layers:
         shared_scale = torch.maximum(k_scale, v_scale)
-        kv_cache.k_scales[module.layer_idx] = shared_scale
-        kv_cache.v_scales[module.layer_idx] = shared_scale
+        kv_cache.k_scales[layer_idx] = shared_scale
+        kv_cache.v_scales[layer_idx] = shared_scale
         k_scale = shared_scale
         v_scale = shared_scale
     update_parameter_data(module, k_scale, KVCacheScaleType.KEY.value)
