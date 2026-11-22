@@ -70,6 +70,12 @@ class FakeActQuantLinear(QModuleBase):
         return
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        # Weight-only schemes leave the activations alone: an AWQ checkpoint, for
+        # instance, carries bits/group_size/zero_point but no activation dtype, and
+        # `get_quant_func(dtype=None)` used to fail on `None + "_..."` inside
+        # `pad_bits`. Returning the activation keeps the weight path untouched.
+        if self.config.act_data_type is None:
+            return activation
         quant_func, _ = get_quant_func(
             dtype=self.config.act_data_type,
             bits=self.config.act_bits,

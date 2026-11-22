@@ -331,3 +331,30 @@ class TestBackendLookup:
 
     def test_get_all_compatible_backend_ignores_requirements(self, infos):
         assert sorted(be.get_all_compatible_backend("cuda", "p", {"bits": 4}, 64, 64)) == ["c"]
+
+
+class TestFakeActQuantLinearWeightOnly:
+    def test_weight_only_scheme_skips_activation_quantization(self):
+        """A config without an activation dtype must not quantize activations.
+
+        AWQ checkpoints carry `bits`/`group_size`/`zero_point` and no activation dtype;
+        `qdq_input` passed that `None` into `get_quant_func`, which failed on
+        `None + "_..."` while padding the dtype name.
+        """
+        cfg = types.SimpleNamespace(
+            act_data_type=None,
+            act_bits=None,
+            act_sym=True,
+            act_group_size=None,
+            data_type="int",
+            bits=4,
+            sym=False,
+            group_size=128,
+        )
+        layer = torch.nn.Linear(4, 4, bias=False)
+        module = ar_qmodules.FakeActQuantLinear.from_original(cfg, layer)
+
+        activation = torch.randn(2, 4)
+        out = module.qdq_input(activation)
+
+        assert torch.equal(out, activation), "weight-only schemes must leave activations unchanged"
