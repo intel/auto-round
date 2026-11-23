@@ -431,6 +431,12 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
             // partial block (edge blocks, truncated prefixes), so mask every
             // column past the valid limit before softmax instead of letting the
             // zero-padded keys contribute to the denominator.
+            //
+            // A routed block with a zero length masks its whole tile. That is a
+            // caller error: if it is the row's only selection the softmax sum is
+            // zero and the epilogue's reciprocal turns the row into NaN. The
+            // Python entry documents that zero-length blocks must not be routed;
+            // the strict behavior is deliberate so the mistake surfaces.
             int valid_tokens = params.k_block_valid[route_block];
             if (valid_tokens < k_sparse_k_block_tokens) {
               int k_limit = route_block * k_sparse_k_block_tokens + valid_tokens;
