@@ -40,6 +40,16 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_DISABLE_DEFAULT_SHARED_LAYERS
+- **描述**：关闭 AutoScheme 的默认行为：为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、MLA 的 `q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。由于单个融合 kernel 只能使用一种量化方案，该共享默认开启。等价于 `AutoScheme(default_shared_layers=False)` 以及命令行参数 `--disable_default_shared_layers`。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示关闭默认共享；其他任何值均保持开启。
+- **用途**：仅当目标运行时不对这些投影层做融合，或确实希望各投影层使用不同方案时才需要关闭。
+
+```bash
+export AR_DISABLE_DEFAULT_SHARED_LAYERS=1
+```
+
 ### AR_USE_MODELSCOPE
 - **描述**：控制是否使用 ModelScope 下载模型
 - **默认值**：`False`
@@ -68,6 +78,25 @@ export AR_QUANTIZE_BAGEL_MOE_GEN=1
 
 ```bash
 export AR_WORK_SPACE=/path/to/custom/workspace
+```
+
+### AR_CACHE
+- **描述**：覆盖扩散模型标定数据集和已下载 GGUF 转换器的持久缓存根目录。
+- **默认值**：未设置（`None`）；数据集使用 `~/.cache/auto_round`，GGUF 转换器使用 `~/.cache/auto-round`。
+- **用途**：数据集缓存在 `$AR_CACHE/datasets` 下，GGUF 转换器缓存在 `$AR_CACHE/gguf_conversion` 下。此设置不影响 `AR_WORK_SPACE`。
+
+```bash
+export AR_CACHE=/path/to/cache
+```
+
+### AR_GGUF_AUTO_UPDATE
+- **描述**：当内置转换器不支持某个模型时，允许下载较新的 llama.cpp 转换器。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示启用；其他值表示禁用。
+- **用途**：启用后允许自动下载转换器；下载文件存放在 GGUF 转换器缓存目录中。
+
+```bash
+export AR_GGUF_AUTO_UPDATE=1
 ```
 
 ### AR_DISABLE_OFFLOAD
@@ -161,10 +190,10 @@ export AR_NEUQI_BACKEND=eager
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。
-- **默认值**：`16`
+- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。多设备运行时目标值会乘以参与设备数（逐层 shape 与逐设备 guard 钉住相乘地增加特化条目）；单设备运行直接使用该值。
+- **默认值**：`16`（多设备运行时按参与设备数相乘）
 - **有效值**：正整数
-- **用途**：当模型单个 block 内 linear 权重 shape 种类超过 16 时（较少见）可调大。
+- **用途**：当模型单个 block 内、每个参与设备的 linear 权重 shape 种类超过 16 时（较少见）可调大。
 
 ```bash
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
@@ -282,6 +311,56 @@ export AR_DISK_STREAM_MODEL=1
 AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
+### AR_DISABLE_BATCHED_SEARCH
+- **描述**：禁用批量量化搜索机制：SignRoundV2 的封装期 init-scale 搜索（iters>0）与 iters=0 的 optimized-RTN 搜索都将完全串行（GGUF DQ scale 搜索始终逐模块内联执行）、逐模块地在权重所在设备上执行。批量化将设备/形状/配置相同的模块堆叠为一次调用，逐模块结果比特级一致；设置该变量可回退到串行循环（例如用于调试，或二分定位疑似与批量化相关的差异）。堆叠也会改变瞬态显存占用（见 `AR_SEARCH_BATCH_GB`）。
+- **默认值**：`0`（启用批量化）
+- **有效取值**：`0` / `1`
+- **用法**：批量/并行搜索机制的总开关。
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。用于大型多设备量化运行的性能归因；开销可忽略。
+- **默认值**：`0`（关闭）
+- **有效取值**：`0` / `1`
+- **用法**：在基准测试运行中设置，用于将 block 时间归因到封装搜索或调优循环。
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **描述**：显式覆盖批量量化搜索的堆叠批次大小，单位为每次调用堆叠 fp32 权重的 GiB 数。适用于所有批量 lane：iters=0 的 optimized-RTN 搜索、iters>0 的封装期搜索以及 NeUQI 网格锚定。未设置时批次大小按容量驱动：每个批次的大小使搜索的瞬态占用（批次的 fp32 拷贝链，NeUQI 场景另加封顶的内部临时量）不超过探测到的空闲显存的一半，且每个执行设备在调用时复查余量（过大的批次会减半而不是出错）。仅当需要把批次压到容量规划以下时才设置。
+- **默认值**：未设置（容量驱动）
+- **有效取值**：正浮点数（GiB）
+- **用法**：在显存紧张的多设备运行中缩小批次。
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **描述**：MoE 调优阶段（模型已按专家拆分）使用的前向实现。`auto`（默认）会在第一个 MoE 块之前预测 grouped-GEMM 调优路径的每卡显存占用，当 grouped 调优放不下时（qdq 堆叠保留 + 调优状态与各卡剩余显存比较）整个运行改用 `linear_loop`；决策与各卡数值都会记录到日志。显式取值不会被 `auto` 覆盖。
+- **默认值**：`auto`
+- **可选值**：`auto`、`linear_grouped`、`linear_grouped_sliced`、`linear_loop`
+- **用法**：强制指定调优时的专家前向实现，或保持 `auto` 由显存模型自动选择。
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **描述**：将批量搜索批次限制在权重所在设备上。默认情况下，两条搜索 lane 会集中规划批次：每个批次先落在权重所在设备，再从过载设备向空闲的可用设备再平衡，使搜索尽量铺满所有有余量的可见设备（此类搜索只读取自身模块的权重与逐模块统计量，从不读取校准激活；每个执行设备由单个工作线程独占）。非 CUDA 设备族的批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
+- **默认值**：`0`（启用多 GPU 搜索，探针门控）
+- **有效取值**：`0` / `1`
+- **用法**：将搜索流量固定在权重所在设备。
+
+```bash
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
+```
+
 ### AR_RESUME_DIR
 - **描述**：设置为目录路径后，逐块调优循环会在每完成一个块后将进度写入该目录，并在针对同一目录的新一次运行中从第一个未完成的块继续——而不是在崩溃或被杀死后从第 0 块重新开始整个调优过程。
 - **默认值**：未设置(不支持断点续跑)
@@ -360,6 +439,16 @@ else:
 3. **中国用户**：建议设置 `AR_USE_MODELSCOPE=true` 以获得更好的模型下载速度
 4. **性能优化**：如有足够算力，可启用 `AR_ENABLE_COMPILE_PACKING=1`
 5. **自定义工作目录**：将 `AR_WORK_SPACE` 设置为磁盘空间充足的目录
+
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **描述**：限制携带 hook 的分片采集前向并发使用的设备数（hook 前向会使编译后的执行器在图分段之间退回 Python 绑定，可能在 GIL 上形成串行瓶颈）。仅在 hook 前向出现串行瓶颈的主机上才需要调低；在验证机台上至 world=8 未复现。大于已启用 world 的值等效于不限制。
+- **默认值**：`0`（不限制）
+- **取值**：非负整数
+- **用法**：在弱 CPU 主机上限制并发分片前向线程数。
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --data_parallel 8
+```
 
 ## 注意事项
 

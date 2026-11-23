@@ -176,21 +176,25 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // it here keeps every scratch allocation in the extension under one pool
 // instead of a second bespoke cache.
 //
-// Sharing one counter across calls is safe because every launcher call is
-// synchronous (`event.wait()` in `MoEGEMMLauncher`), so a dispatch never
-// returns with the counter still in use. The pool keys buffers by
-// (device UUID, SYCL context, queue identity), so concurrent queues in one
-// context keep independent slots while each queue still reuses its own slot.
-// The buffer lives until process exit,
-// matching the singleton lifetime already used by `EventManager`. The INT8 and
-// S4 headers re-export this helper rather than defining their own, so all
-// three paths share one slot per queue.
+// Counter reuse is ordered by the in-order execution queue. The pool keys
+// buffers by (device UUID, SYCL context, queue identity), so concurrent queues
+// keep independent slots while each queue reuses its own slot. The buffer
+// lives until process exit, allowing captured graphs to retain its address
+// without a host-side wait. The INT8 and S4 headers re-export this helper,
+// so all three paths share one slot per queue.
 //
 // Note that a reused slot enters the kernel holding the previous dispatch's
 // final count rather than fresh (uninitialised) USM, so correctness rests
 // entirely on the in-kernel `atm.store(0)` above. That was already true with
 // `sycl::malloc_device`, whose contents are equally undefined -- the reuse
 // changes what the pre-store garbage looks like, not whether it matters.
+//
+// The W4A8 launcher is the exception: it zeroes the slot on the host and makes
+// its kernel depend on that fill (see `MoEGEMMLauncher_w4a8`), because it
+// claims the next tile *before* computing the current one and so cannot rely on
+// group 0 winning a race it would otherwise have won by microseconds. The fill
+// and GEMM run on the same in-order queue, which orders counter reuse across
+// asynchronous dispatches, including the self-initialising paths.
 // ---------------------------------------------------------------------------
 
 // Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
@@ -972,7 +976,7 @@ void MoEGEMMLauncher(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
-  auto event = stream.submit([&](sycl::handler& cgh) {
+  stream.submit([&](sycl::handler& cgh) {
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmName<ElementA, ElementB, ElementS, ElementD,
                                   layoutA, layoutB, policy, Mode>>(
@@ -984,9 +988,6 @@ void MoEGEMMLauncher(sycl::queue& stream, const ElementA* activations,
                                       atomic_buffer, local_mem);
         });
   });
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
 // ---------------------------------------------------------------------------

@@ -51,9 +51,7 @@ def _get_coco_cache_dir() -> Path:
     """Return the persistent cache directory for COCO calibration data."""
     from auto_round import envs as _envs
 
-    cache_root = (
-        Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
-    )
+    cache_root = Path(_envs.AR_CACHE).expanduser() if _envs.AR_CACHE else Path.home() / ".cache" / "auto_round"
     return cache_root / "datasets" / "coco2014"
 
 
@@ -61,9 +59,7 @@ def _get_opens2v_cache_dir() -> Path:
     """Return the persistent cache directory for OpenS2V calibration data."""
     from auto_round import envs as _envs
 
-    cache_root = (
-        Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
-    )
+    cache_root = Path(_envs.AR_CACHE).expanduser() if _envs.AR_CACHE else Path.home() / ".cache" / "auto_round"
     return cache_root / "datasets" / "opens2v"
 
 

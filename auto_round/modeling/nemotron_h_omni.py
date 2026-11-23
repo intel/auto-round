@@ -20,9 +20,12 @@ Plain ``nemotron_h`` text checkpoints are not touched by anything in this module
 """
 
 import glob
+import importlib.machinery
 import json
 import os
 import re
+import sys
+import types
 from collections.abc import Iterable
 
 import torch
@@ -89,6 +92,58 @@ def nemotron_h_omni_load_kwargs(config) -> dict:
     return {"key_mapping": {r"^language_model\.backbone\.": _NESTED_TRUNK_TARGET}}
 
 
+def _rmsnorm_fn_fallback(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_gate=True):
+    """Pure-PyTorch ``mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn`` (same signature).
+
+    Mirrors the fused kernel and its reference ``rms_norm_ref``: (grouped) RMS norm in float32,
+    then ``* weight + bias``; the SiLU gate ``z`` applies before the norm, or after the bias when
+    ``norm_before_gate``. Returns ``x.dtype``.
+    """
+    out = x.float()
+    gate = nn.functional.silu(z.float()) if z is not None else None
+    if gate is not None and not norm_before_gate:
+        out = out * gate
+    groups = out.reshape(*out.shape[:-1], -1, group_size or out.shape[-1])
+    out = (groups * torch.rsqrt(groups.square().mean(-1, keepdim=True) + eps)).reshape(x.shape) * weight.float()
+    if bias is not None:
+        out = out + bias.float()
+    if gate is not None and norm_before_gate:
+        out = out * gate
+    return out.to(x.dtype)
+
+
+def install_mamba_ssm_stub() -> bool:
+    """Install a pure-PyTorch ``rmsnorm_fn`` stub when mamba_ssm cannot provide it.
+
+    Nemotron-H remote code (modeling_nemotron_h.py) unconditionally imports rmsnorm_fn
+    from mamba_ssm.ops.triton.layernorm_gated, even though it provides a pure-PyTorch
+    torch_forward fallback for non-CUDA platforms. Probe that exact import, so a partial or
+    CUDA-only install that cannot provide it also gets the stub. Returns whether it was installed.
+    """
+    try:
+        from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn  # noqa: F401
+
+        return False
+    except ImportError as exc:
+        logger.info("mamba_ssm rmsnorm_fn is unavailable (%s); installing a PyTorch fallback", exc)
+
+    mods = {}
+    for name in ("mamba_ssm", "mamba_ssm.ops", "mamba_ssm.ops.triton"):
+        m = types.ModuleType(name)
+        m.__path__ = []
+        mods[name] = m
+    ln = types.ModuleType("mamba_ssm.ops.triton.layernorm_gated")
+    ln.rmsnorm_fn = _rmsnorm_fn_fallback
+    mods["mamba_ssm.ops.triton.layernorm_gated"] = ln
+    for name, m in mods.items():
+        m.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=hasattr(m, "__path__"))
+        sys.modules[name] = m
+    mods["mamba_ssm"].ops = mods["mamba_ssm.ops"]
+    mods["mamba_ssm.ops"].triton = mods["mamba_ssm.ops.triton"]
+    mods["mamba_ssm.ops"].triton.layernorm_gated = ln
+    return True
+
+
 def register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code: bool = False) -> bool:
     """Register the conversion rules an Omni wrapper needs; idempotent, no-op for other models.
 
@@ -102,6 +157,7 @@ def register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code: bool 
     """
     if not is_nemotron_h_omni_config(config):
         return False
+    install_mamba_ssm_stub()
     try:
         from transformers.conversion_mapping import (
             get_checkpoint_conversion_mapping,
@@ -187,6 +243,15 @@ def _resolve_source_dir(name_or_path) -> str | None:
         return name_or_path
     try:
         from huggingface_hub import snapshot_download
+
+        try:
+            return snapshot_download(
+                name_or_path,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json"],
+                local_files_only=True,
+            )
+        except Exception:
+            pass
 
         return snapshot_download(name_or_path, allow_patterns=["*.safetensors", "*.safetensors.index.json"])
     except Exception as exc:  # noqa: BLE001 - offline / gated: keep the loaded dtype

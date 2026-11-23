@@ -79,7 +79,7 @@ def _quantize_and_save(
     sym: bool = True,
     group_size: int = 128,
     layer_config: dict | None = None,
-):
+) -> str:
     """Run AutoRound RTN quantization on Qwen3-0.6B and export to ``fmt``."""
     ar = AutoRound(
         model=qwen_name_or_path,
@@ -93,7 +93,8 @@ def _quantize_and_save(
         disable_opt_rtn=True,
         layer_config=layer_config,
     )
-    ar.quantize_and_save(output_dir=output_dir, format=fmt)
+    _, output_dir = ar.quantize_and_save(output_dir=output_dir, format=fmt)
+    return output_dir
 
 
 def _read_quant_config(output_dir: str) -> dict:
@@ -176,7 +177,7 @@ class TestMLXFormat:
     )
     def test_mlx_native_export_bits(self, bits, scheme):
         """Export Qwen3-0.6B as a native MLX checkpoint at 2/3/4/8 bits."""
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme=scheme,
             bits=bits,
@@ -184,8 +185,8 @@ class TestMLXFormat:
             sym=True,
             group_size=128,
         )
-        assert os.path.exists(os.path.join(self.save_dir, "config.json"))
-        qcfg = _read_quant_config(self.save_dir)
+        assert os.path.exists(os.path.join(save_dir, "config.json"))
+        qcfg = _read_quant_config(save_dir)
         assert qcfg, f"No quantization_config found for scheme={scheme}"
         assert qcfg.get("bits") == bits, f"expected bits={bits}, got {qcfg.get('bits')}"
 
@@ -203,7 +204,7 @@ class TestMLXFormat:
     )
     def test_mlx_native_inference_with_mlx_lm(self, bits, scheme):
         """Native MLX checkpoint loads and runs end-to-end through mlx_lm."""
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme=scheme,
             bits=bits,
@@ -211,7 +212,7 @@ class TestMLXFormat:
             sym=True,
             group_size=128,
         )
-        text = _mlx_lm_generate(self.save_dir)
+        text = _mlx_lm_generate(save_dir)
         assert isinstance(text, str) and len(text) > 0, f"mlx_lm generated empty output for bits={bits}"
 
     # ---- 2) auto_round export: sweep bits + sym/asym -------------------- #
@@ -227,7 +228,7 @@ class TestMLXFormat:
     )
     def test_auto_round_export_bits(self, bits, scheme, sym):
         """Export Qwen3-0.6B as auto_round (GPTQ-style) across bits/sym."""
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme=scheme,
             bits=bits,
@@ -235,8 +236,8 @@ class TestMLXFormat:
             sym=sym,
             group_size=128,
         )
-        assert os.path.exists(os.path.join(self.save_dir, "config.json"))
-        qcfg = _read_quant_config(self.save_dir)
+        assert os.path.exists(os.path.join(save_dir, "config.json"))
+        qcfg = _read_quant_config(save_dir)
         assert qcfg.get("bits") == bits
         assert qcfg.get("sym") == sym
 
@@ -251,7 +252,7 @@ class TestMLXFormat:
     )
     def test_auto_round_post_init_to_mlx(self, bits, scheme, sym):
         """On Darwin, auto_round layers must be post-init converted to QuantLinearMLX."""
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme=scheme,
             bits=bits,
@@ -259,7 +260,7 @@ class TestMLXFormat:
             sym=sym,
             group_size=128,
         )
-        model, text = _hf_generate(self.save_dir)
+        model, text = _hf_generate(save_dir)
         assert _count_mlx_layers(model) > 0, (
             f"Expected auto_round->MLX post-init conversion to produce QuantLinearMLX "
             f"layers on Darwin, but found none (bits={bits}, sym={sym})."
@@ -281,7 +282,7 @@ class TestMLXFormat:
             "model.layers.0.self_attn.k_proj": {"bits": 8, "group_size": 128, "sym": True},
             "model.layers.0.mlp.down_proj": {"bits": 2, "group_size": 128, "sym": True},
         }
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme="W4A16",
             bits=4,
@@ -290,9 +291,9 @@ class TestMLXFormat:
             group_size=128,
             layer_config=layer_config,
         )
-        assert os.path.exists(os.path.join(self.save_dir, "config.json"))
+        assert os.path.exists(os.path.join(save_dir, "config.json"))
 
-        with open(os.path.join(self.save_dir, "config.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(save_dir, "config.json"), "r", encoding="utf-8") as f:
             cfg = json.load(f)
         quant = cfg.get("quantization", {})
         # global defaults
@@ -312,7 +313,7 @@ class TestMLXFormat:
             "model.layers.0.self_attn.v_proj": {"bits": 8, "group_size": 128, "sym": True},
             "model.layers.0.mlp.gate_proj": {"bits": 2, "group_size": 128, "sym": True},
         }
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme="W4A16",
             bits=4,
@@ -321,7 +322,7 @@ class TestMLXFormat:
             group_size=128,
             layer_config=layer_config,
         )
-        qcfg = _read_quant_config(self.save_dir)
+        qcfg = _read_quant_config(save_dir)
         assert qcfg.get("bits") == 4
 
     @requires_mlx_lm_runtime
@@ -332,7 +333,7 @@ class TestMLXFormat:
             "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 128, "sym": True},
             "model.layers.0.mlp.down_proj": {"bits": 2, "group_size": 128, "sym": True},
         }
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme="W4A16",
             bits=4,
@@ -341,7 +342,7 @@ class TestMLXFormat:
             group_size=128,
             layer_config=layer_config,
         )
-        text = _mlx_lm_generate(self.save_dir)
+        text = _mlx_lm_generate(save_dir)
         assert isinstance(text, str) and len(text) > 0
 
     @requires_mlx_runtime
@@ -351,7 +352,7 @@ class TestMLXFormat:
             "lm_head": {"bits": 16},
             "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 128, "sym": True},
         }
-        _quantize_and_save(
+        save_dir = _quantize_and_save(
             output_dir=self.save_dir,
             scheme="W4A16",
             bits=4,
@@ -360,7 +361,7 @@ class TestMLXFormat:
             group_size=128,
             layer_config=layer_config,
         )
-        model, text = _hf_generate(self.save_dir)
+        model, text = _hf_generate(save_dir)
         assert _count_mlx_layers(model) > 0
         assert isinstance(text, str) and len(text) > 0
 
@@ -393,7 +394,7 @@ class TestMLXFormat:
                 seqlen=32,
                 disable_opt_rtn=True,
             )
-            ar.quantize_and_save(output_dir=save_dir, format="mlx")
+            _, save_dir = ar.quantize_and_save(output_dir=save_dir, format="mlx")
 
             cfg_path = os.path.join(save_dir, "config.json")
             assert os.path.exists(cfg_path), "config.json missing after VLM mlx export"
@@ -482,7 +483,7 @@ class TestMLXFormat:
                 seqlen=32,
                 disable_opt_rtn=True,
             )
-            ar.quantize_and_save(output_dir=save_dir, format="mlx")
+            _, save_dir = ar.quantize_and_save(output_dir=save_dir, format="mlx")
 
             model, processor = load(save_dir)
             mlx_cfg = load_config(save_dir)

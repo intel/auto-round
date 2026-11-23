@@ -17,12 +17,12 @@ import json
 import pytest
 import torch
 
-from auto_round.export.svdquant_adapters import (
+from auto_round.export.formats.svdquant.adapters import (
     SDXL_SVDQUANT_TARGET_MODULES,
     detect_svdquant_model_adapter,
 )
-from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
-from auto_round.export.svdquant_nunchaku import (
+from auto_round.export.formats.svdquant.adapters.sdxl import SDXLSVDQuantNunchakuAdapter
+from auto_round.export.formats.svdquant.nunchaku import (
     SourceLinearRecord,
     SVDQuantExportConfig,
     SVDQuantLinearScheme,

@@ -1,0 +1,185 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import pytest
+import torch
+
+from auto_round.algorithms.transforms.smoothing.calibration import SmoothGroupCalibration, move_to_device
+from auto_round.algorithms.transforms.smoothing.replay import (
+    normalize_tensors,
+    output_squared_error,
+    temporary_modules,
+)
+from auto_round.algorithms.transforms.smoothing.search import (
+    InvalidSmoothCandidateError,
+    NoFiniteCandidateError,
+    search_candidates,
+    select_best_layer_candidate,
+)
+
+
+def test_calibration_reservoir_keeps_paired_calls_and_detached_copies():
+    capture = SmoothGroupCalibration(group="custom", limit=3)
+    for index in range(10):
+        inputs = torch.full((1, 2), float(index), requires_grad=True)
+        capture.begin_call(inputs)
+        capture.finish_call((inputs,), {"nested": [inputs]}, {"output": inputs * 2})
+        with torch.no_grad():
+            inputs.fill_(-1)
+    assert capture.seen_calls == 10
+    assert len(capture.projection_inputs) == len(capture.evaluation_calls) == 3
+    assert capture.pending_input is None
+    assert capture.pending_slot is None
+    for inputs, call in zip(capture.projection_inputs, capture.evaluation_calls):
+        assert inputs.grad_fn is None and not inputs.requires_grad
+        assert inputs.min() >= 0
+        torch.testing.assert_close(inputs, call.args[0])
+        torch.testing.assert_close(inputs, call.kwargs["nested"][0])
+        torch.testing.assert_close(inputs * 2, call.output["output"])
+
+
+def test_replay_preserves_integer_masks_and_nested_outputs():
+    values = {"hidden": [torch.ones(2)], "mask": torch.ones(2, dtype=torch.int64)}
+    moved = move_to_device(values, torch.device("cpu"), torch.bfloat16)
+    assert moved["hidden"][0].dtype == torch.bfloat16
+    assert moved["mask"].dtype == torch.int64
+    assert normalize_tensors(moved) == (moved["hidden"][0],)
+
+
+def test_search_keeps_order_invalid_candidates_and_first_ties():
+    invalid = []
+
+    def score(candidate):
+        if candidate == "invalid":
+            raise InvalidSmoothCandidateError("trial failed")
+        return {"nan": float("nan"), "first": 1, "later": 1}[candidate]
+
+    selected, error = search_candidates(
+        ["first", "invalid", "nan", "later"],
+        score,
+        module_name="proj",
+        on_invalid=lambda candidate, exc: invalid.append(candidate),
+    )
+    assert (selected, error) == ("first", 1)
+    assert invalid == ["invalid", "nan"]
+
+
+@pytest.mark.parametrize("candidate", [None, object()])
+def test_search_keeps_the_winning_score_for_repeated_candidates(candidate):
+    errors = iter([1.0, 2.0])
+    assert search_candidates([candidate, candidate], lambda _: next(errors), module_name="proj") == (candidate, 1.0)
+    assert select_best_layer_candidate([(candidate, 1.0)], module_name="proj") is candidate
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_temporary_modules_restore_originals(fail):
+    root = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    originals = list(root)
+    trial = torch.nn.Identity()
+    try:
+        with temporary_modules(root, [("0", trial), ("1", trial)]):
+            assert root[0] is trial and root[1] is trial
+            if fail:
+                raise RuntimeError("evaluation failed")
+    except RuntimeError:
+        assert fail
+    assert list(root) == originals
+
+
+def test_temporary_modules_restore_after_partial_install_failure():
+    class FailOnce(torch.nn.Sequential):
+        def set_submodule(self, name, module):
+            if name == "1" and isinstance(module, torch.nn.Identity):
+                raise RuntimeError("installation failed")
+            return super().set_submodule(name, module)
+
+    root = FailOnce(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    originals = list(root)
+    with (
+        pytest.raises(RuntimeError, match="installation failed"),
+        temporary_modules(root, [("0", torch.nn.Identity()), ("1", torch.nn.Identity())]),
+    ):
+        pytest.fail("partial installation must not reach evaluation")
+    assert list(root) == originals
+
+
+def test_error_reduction_matches_original_svdquant_accumulation():
+    torch.manual_seed(7)
+    actual = (torch.randn(2, 3), torch.randn(1, 4))
+    reference = tuple(torch.randn_like(tensor) for tensor in actual)
+    expected = torch.zeros((), dtype=torch.float64)
+    for value, target in zip(actual, reference):
+        expected += torch.sum((value.float() - target.float()).square()).double().cpu()
+    torch.testing.assert_close(output_squared_error(actual, reference), expected, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="count changed"):
+        output_squared_error(actual, reference[:1])
+    with pytest.raises(ValueError, match="shape changed"):
+        output_squared_error(actual[:1], (torch.zeros(1),))
+
+
+@pytest.mark.parametrize("errors", [[], [float("nan"), float("inf")]])
+def test_no_finite_candidate_has_distinct_algorithm_fallback(errors):
+    with pytest.raises(NoFiniteCandidateError):
+        search_candidates(errors, lambda error: error, module_name="proj")
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, torch.OutOfMemoryError])
+def test_execution_errors_are_never_skipped(error_type):
+    def fail(_):
+        raise error_type("execution failure")
+
+    with pytest.raises(error_type, match="execution failure"):
+        search_candidates([0, 1], fail, module_name="proj")
+
+
+def test_calibration_clear_releases_pending_and_retained_calls():
+    capture = SmoothGroupCalibration("group", 2)
+    inputs = torch.ones(1, 2)
+    capture.begin_call(inputs)
+    capture.finish_call((inputs,), {}, inputs)
+    capture.begin_call(inputs)
+    capture.clear()
+    assert not capture.projection_inputs and not capture.evaluation_calls
+    assert capture.pending_input is None and capture.pending_slot is None
+    assert capture.seen_calls == 0
+
+
+@pytest.mark.parametrize("require_finite, expected", [(True, 1.0), (False, -float("inf"))])
+def test_search_preserves_algorithm_specific_loss_validity(require_finite, expected):
+    candidate, error = search_candidates(
+        [float("nan"), float("inf"), -float("inf"), 1.0],
+        lambda value: value,
+        module_name="proj",
+        require_finite=require_finite,
+    )
+    assert candidate == expected and error == expected
+
+
+def test_search_releases_losing_candidates():
+    import weakref
+
+    references = []
+
+    def candidates():
+        for index in range(10):
+            candidate = torch.tensor(float(index))
+            references.append(weakref.ref(candidate))
+            yield candidate
+
+    def score(candidate):
+        assert sum(reference() is not None for reference in references) <= 3
+        return candidate.item()
+
+    candidate, error = search_candidates(candidates(), score, module_name="proj")
+    assert candidate.item() == error == 0.0

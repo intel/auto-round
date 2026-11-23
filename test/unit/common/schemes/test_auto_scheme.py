@@ -16,7 +16,7 @@ from auto_round.auto_scheme.delta_loss import (
     _vram_inventory_text,
 )
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
-from auto_round.export.export_to_gguf.export import _clear_gguf_model_instances
+from auto_round.export.formats.gguf.writer import _clear_gguf_model_instances
 
 
 def _make_local_calibration_dataset(tmp_path):
@@ -292,6 +292,234 @@ def test_build_expert_groups_skips_fixed_layers():
 
     groups = build_expert_groups(model, quant_layer_names, fixed_layer_scheme)
     assert len(groups) == 0
+
+
+def _fake_transformer(num_blocks=2, mlp_names=("gate_proj", "up_proj", "down_proj")):
+    """Build a minimal transformer-like model for shared-layer grouping tests."""
+    from torch import nn
+
+    class FakeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            for _ in range(num_blocks):
+                block = nn.Module()
+                block.self_attn = nn.Module()
+                for proj in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    setattr(block.self_attn, proj, nn.Linear(8, 8, bias=False))
+                block.mlp = nn.Module()
+                for proj in mlp_names:
+                    setattr(block.mlp, proj, nn.Linear(8, 8, bias=False))
+                self.model.layers.append(block)
+
+    return FakeModel()
+
+
+def test_build_default_shared_layers_groups_vllm_fused_projections():
+    """Default groups mirror vLLM fusion: q/k/v per attention, gate/up per MLP."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    model = _fake_transformer(num_blocks=2)
+    groups = build_default_shared_layers(model)
+
+    assert len(groups) == 4  # 2 blocks x (qkv + gate/up)
+    qkv_groups = [g for g in groups if any(n.endswith(".q_proj") for n in g)]
+    gate_up_groups = [g for g in groups if any(n.endswith(".gate_proj") for n in g)]
+    assert len(qkv_groups) == 2 and len(gate_up_groups) == 2
+    for group in qkv_groups:
+        assert [n.rsplit(".", 1)[-1] for n in group] == ["k_proj", "q_proj", "v_proj"]
+        # o_proj is not fused into qkv_proj and must stay independent.
+        assert all(not n.endswith(".o_proj") for n in group)
+    for group in gate_up_groups:
+        assert [n.rsplit(".", 1)[-1] for n in group] == ["gate_proj", "up_proj"]
+        assert all(not n.endswith(".down_proj") for n in group)
+
+
+def test_build_default_shared_layers_uses_exact_leaf_names():
+    """A layer merely containing 'q_proj' as a substring must not join the qkv group."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Module()
+            self.block.self_attn = torch.nn.Module()
+            for proj in ("q_proj", "k_proj", "v_proj"):
+                setattr(self.block.self_attn, proj, torch.nn.Linear(8, 8, bias=False))
+            self.block.self_attn.q_proj_moe_gen = torch.nn.Linear(8, 8, bias=False)
+
+    groups = build_default_shared_layers(FakeModel())
+    assert len(groups) == 1
+    assert "block.self_attn.q_proj_moe_gen" not in groups[0]
+    assert len(groups[0]) == 3
+
+
+def test_build_default_shared_layers_groups_mla_qkv_a():
+    """DeepSeek-style MLA fuses q_a_proj + kv_a_proj_with_mqa into fused_qkv_a_proj."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Module()
+            self.block.self_attn = torch.nn.Module()
+            self.block.self_attn.q_a_proj = torch.nn.Linear(8, 8, bias=False)
+            self.block.self_attn.kv_a_proj_with_mqa = torch.nn.Linear(8, 8, bias=False)
+            self.block.self_attn.q_b_proj = torch.nn.Linear(8, 8, bias=False)
+
+    groups = build_default_shared_layers(FakeModel())
+    assert groups == [["block.self_attn.kv_a_proj_with_mqa", "block.self_attn.q_a_proj"]]
+
+
+def test_build_default_shared_layers_leaves_fused_kv_proj_alone():
+    """A checkpoint storing a fused `kv_proj` gets no default qkv group.
+
+    vLLM fuses k/v into `kv_proj` for some MQA models, but this leaf is not part
+    of the default groups; callers must add it via `shared_layers` explicitly.
+    """
+    from torch import nn
+
+    from auto_round.auto_scheme.utils import build_default_shared_layers, resolve_shared_layers
+
+    class FakeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            block = nn.Module()
+            block.self_attn = nn.Module()
+            block.self_attn.q_proj = nn.Linear(8, 8, bias=False)
+            block.self_attn.kv_proj = nn.Linear(8, 16, bias=False)
+            self.model.layers.append(block)
+
+    model = FakeModel()
+    assert build_default_shared_layers(model) == []
+    # ... and the escape hatch for aligning them is an explicit user group.
+    user_groups = [["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.kv_proj"]]
+    assert [sorted(g) for g in resolve_shared_layers(model, user_groups)] == [
+        ["model.layers.0.self_attn.kv_proj", "model.layers.0.self_attn.q_proj"]
+    ]
+
+
+def test_resolve_shared_layers_default_on_unions_user_groups():
+    """User groups are unioned with the default vLLM groups (merged if interleaved)."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=1)
+    user_groups = [["model.layers.0.self_attn.q_proj", "model.layers.0.mlp.down_proj"]]
+    groups = resolve_shared_layers(model, user_groups)
+
+    # The user group links q_proj to down_proj, so union-find merges the qkv
+    # group and the down_proj into one 4-member group.
+    merged = [g for g in groups if "model.layers.0.mlp.down_proj" in g]
+    assert len(merged) == 1
+    assert set(merged[0]) >= {
+        "model.layers.0.self_attn.q_proj",
+        "model.layers.0.self_attn.k_proj",
+        "model.layers.0.self_attn.v_proj",
+        "model.layers.0.mlp.down_proj",
+    }
+    # gate/up stays its own group, unrelated to the user request.
+    assert ["model.layers.0.mlp.gate_proj", "model.layers.0.mlp.up_proj"] in groups
+
+
+def test_resolve_shared_layers_can_disable_defaults():
+    """default_shared_layers=False restores the pre-feature behavior (user groups only)."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=2)
+    assert resolve_shared_layers(model, None, default_shared_layers=False) == []
+    # User patterns still apply.
+    groups = resolve_shared_layers(
+        model, [["model.layers.0.mlp.gate_proj", "model.layers.0.mlp.down_proj"]], default_shared_layers=False
+    )
+    assert len(groups) == 1
+    assert set(groups[0]) == {"model.layers.0.mlp.gate_proj", "model.layers.0.mlp.down_proj"}
+
+
+def test_resolve_shared_layers_env_escape_hatch(monkeypatch):
+    """AR_DISABLE_DEFAULT_SHARED_LAYERS=1 disables the vLLM defaults globally."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=1)
+    monkeypatch.setenv("AR_DISABLE_DEFAULT_SHARED_LAYERS", "1")
+    assert resolve_shared_layers(model, None) == []
+
+
+def test_default_shared_layers_composes_with_expert_grouping():
+    """Default fused groups and auto MoE expert groups must not clobber each other.
+
+    ``_gen_layer_config`` unions the default/user shared groups with the
+    per-block expert groups, so expert projections land in one group per block
+    while q/k/v and gate/up keep their own fused groups.
+    """
+    from torch import nn
+
+    from auto_round.auto_scheme.utils import build_expert_groups, merge_lists_unionfind, resolve_shared_layers
+
+    class FakeMoeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            for _ in range(1):
+                block = nn.Module()
+                block.self_attn = nn.Module()
+                for proj in ("q_proj", "k_proj", "v_proj"):
+                    setattr(block.self_attn, proj, nn.Linear(8, 8, bias=False))
+                block.mlp = nn.Module()
+                block.mlp.experts = nn.ModuleList()
+                for _ in range(2):
+                    expert = nn.Module()
+                    for proj in ("gate_proj", "up_proj", "down_proj"):
+                        setattr(expert, proj, nn.Linear(8, 8, bias=False))
+                    block.mlp.experts.append(expert)
+                self.model.layers.append(block)
+
+    model = FakeMoeModel()
+    quant_layer_names = [n for n, m in model.named_modules() if isinstance(m, nn.Linear)]
+
+    shared = resolve_shared_layers(model, None)
+    expert_groups = build_expert_groups(model, quant_layer_names, {})
+    merged = merge_lists_unionfind(shared + expert_groups)
+
+    # Every expert projection in the block ends up in exactly one combined group.
+    expert_members = {n for n in quant_layer_names if "experts" in n}
+    covering = [g for g in merged if expert_members & set(g)]
+    assert len(covering) == 1
+    assert expert_members <= set(covering[0])
+    # q/k/v stays in its own fused group, outside the expert group.
+    qkv = [g for g in merged if any(n.endswith(".q_proj") for n in g)]
+    assert len(qkv) == 1 and not (set(qkv[0]) & expert_members)
+
+
+def test_autoscheme_default_shared_layers_field_defaults_true():
+    """AutoScheme shares vLLM-fused projections unless explicitly opted out."""
+    assert AutoScheme(avg_bits=4.5, options=("W4A16", "W8A16")).default_shared_layers is True
+    assert (
+        AutoScheme(avg_bits=4.5, options=("W4A16", "W8A16"), default_shared_layers=False).default_shared_layers is False
+    )
+
+
+def test_entry_threads_default_shared_layers_into_auto_scheme():
+    """AutoRound(scheme=(...), default_shared_layers=False) reaches the AutoScheme object."""
+    from auto_round.scheme_entry import resolve_entry_scheme
+
+    scheme, kwargs = resolve_entry_scheme(("W4A16", "W8A16"), {"bits": 4.5, "default_shared_layers": False})
+    assert scheme.default_shared_layers is False
+    assert "default_shared_layers" not in kwargs
+
+
+def test_entry_warns_and_drops_shared_layers_without_schemes():
+    """shared_layers/default_shared_layers are AutoScheme-only and must not leak into configs."""
+    from auto_round.scheme_entry import resolve_entry_scheme
+
+    scheme, kwargs = resolve_entry_scheme(
+        "W4A16", {"shared_layers": [["q_proj", "k_proj"]], "default_shared_layers": False}
+    )
+    assert scheme == "W4A16"
+    assert "shared_layers" not in kwargs and "default_shared_layers" not in kwargs
 
 
 class TestAutoScheme:
@@ -590,6 +818,70 @@ class TestAutoScheme:
                 f"Block {prefix!r}: q/k/v should all have the same bits with shared_layers, "
                 f"got {dict(zip(present, bits_values))}"
             )
+
+    def test_default_shared_layers_aligns_vllm_fused_projections(self, micro_opt_model_path, tmp_path):
+        """With no explicit shared_layers, q/k/v and gate/up must share bits per block.
+
+        vLLM fuses these projections at serving time, so a mixed-bit assignment
+        there is not servable. This is the default behavior (issue #2183).
+        """
+        scheme = AutoScheme(avg_bits=5, options=("MXFP4", "MXFP8"), nsamples=1, ignore_scale_zp_bits=True)
+        assert scheme.shared_layers is None  # relies on the built-in defaults
+        ar = AutoRound(
+            model=micro_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
+        _, layer_config = ar.quantize()
+
+        fused_proj_groups = {
+            "qkv": ("q_proj", "k_proj", "v_proj"),
+            "gate_up": ("gate_proj", "up_proj"),
+        }
+        seen_any = False
+        for group_name, projs in fused_proj_groups.items():
+            block_proj_bits: dict[str, dict[str, int]] = {}
+            for name, cfg in layer_config.items():
+                if "bits" not in cfg:
+                    continue
+                for proj in projs:
+                    if name.endswith("." + proj):
+                        prefix = name[: -len(proj) - 1]
+                        block_proj_bits.setdefault(prefix, {})[proj] = cfg["bits"]
+            for prefix, proj_bits in block_proj_bits.items():
+                if len(proj_bits) < 2:
+                    continue
+                seen_any = True
+                assert (
+                    len(set(proj_bits.values())) == 1
+                ), f"Block {prefix!r} ({group_name}): fused projections must share bits, got {proj_bits}"
+        assert seen_any, "expected at least one fused projection group in layer_config"
+
+    def test_disable_default_shared_layers_allows_independent_bits(self, micro_opt_model_path, tmp_path):
+        """default_shared_layers=False must not force q/k/v onto one scheme."""
+        from auto_round.auto_scheme.utils import resolve_shared_layers
+
+        scheme = AutoScheme(
+            avg_bits=5,
+            options=("MXFP4", "MXFP8"),
+            nsamples=1,
+            ignore_scale_zp_bits=True,
+            default_shared_layers=False,
+        )
+        ar = AutoRound(
+            model=micro_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
+        # The opt-out reaches resolve_shared_layers via the AutoScheme object.
+        assert resolve_shared_layers(ar.model, scheme.shared_layers, scheme.default_shared_layers) == []
+        ar.quantize()
 
 
 def test_autoscheme_cache_key_different_for_different_schemes():
@@ -1005,6 +1297,7 @@ def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
         "use_auto_mapping": False,
         "use_model_replacements": True,
         "low_cpu_mem_usage": True,
+        "trust_remote_code": False,
     }
 
 
@@ -1021,7 +1314,7 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
 
     model, tokenizer, disk_index = FakeMetaModel(), object(), object()
     expected = (model, tokenizer, disk_index)
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name, trust_remote_code=False: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
 
@@ -1042,9 +1335,13 @@ def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
     disk_index = object()
     calls = []
 
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: (model, tokenizer, disk_index))
+    monkeypatch.setattr(
+        disk_stream_util,
+        "build_meta_model",
+        lambda model_name, trust_remote_code=False: (model, tokenizer, disk_index),
+    )
 
-    def fake_update_module(input_model, formats, cleanup_original):
+    def fake_update_module(input_model, formats, cleanup_original, trust_remote_code=False):
         calls.append(("update", input_model, formats, cleanup_original))
         return updated_model
 
@@ -1616,3 +1913,47 @@ def test_w8_asym_allowance_derived_at_generation_time():
         __import__("auto_round.auto_scheme.delta_loss", fromlist=["gen_layer_config"]).gen_layer_config
     )
     assert "export_format" in gen_sig.parameters
+
+
+def test_autoscheme_no_warning_on_bf16_plus_int(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """BF16 + integer schemes should not emit the mixed data_type warning."""
+    import logging
+
+    from auto_round.logger import logger
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    scheme = AutoScheme(avg_bits=5, options=("W4A16", "BF16"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        ar.quantize()
+    assert not any("mixed data_types" in record.message for record in caplog.records)
+
+
+def test_autoscheme_warning_on_mixed_non_fp(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """Multiple non-fp quantized data types should still warn."""
+    import logging
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    # Use options that map to different non-fp data types if possible; fallback to known mixed
+    scheme = AutoScheme(avg_bits=4, options=("W4A16", "MXFP4"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        try:
+            ar.quantize()
+        except Exception:
+            pass  # Some combos may not be fully supported in tiny model; we care about the warning
+    assert any("mixed data_types" in record.message for record in caplog.records)

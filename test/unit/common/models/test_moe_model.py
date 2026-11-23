@@ -51,7 +51,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
 
     # Ensure the quantized model is not None
     assert quantized_model is not None, "Quantized model should not be None."
-    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+    from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
     from auto_round.modeling.fused_moe.gpt_oss import GPTOssSingleExpert
 
     single_expert_cnt = count_modules_by_type(quantized_model, GPTOssSingleExpert)
@@ -87,7 +87,8 @@ def test_llama4(tiny_llama4_model_path):
 
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
-        loaded_out = loaded_model(inp)
+        # transformers 5.24 Llama4ForConditionalGeneration.forward reads a missing `image_outputs`.
+        loaded_out = loaded_model.language_model(inp)
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
 

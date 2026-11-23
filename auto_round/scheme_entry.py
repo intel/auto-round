@@ -17,7 +17,7 @@
 This module sits between the public entry points (``auto_round.AutoRound``,
 the CLI) and the core scheme parser (:func:`auto_round.schemes.parse_scheme`).
 It owns everything needed to turn user-facing scheme input — a single
-``scheme``, multiple ``schemes``, or the legacy ``options``/``avg_bits``
+``scheme``, a candidate sequence, or the legacy ``options``/``avg_bits``
 kwargs — into the canonical scheme object the compressor pipeline consumes
 (``str`` / ``dict`` / ``QuantizationScheme`` / ``AutoScheme``), plus the
 routing preview/validation helpers the entry uses before a compressor exists.
@@ -34,88 +34,40 @@ if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 
-def collect_config_scheme_overrides(config) -> dict:
-    """Return the config's explicitly-set scheme fields as a ``{field: value}`` dict.
-
-    These are exactly the per-field overrides layered on top of ``scheme=`` — the
-    single mechanism through which ``bits`` / ``act_bits`` / ``data_type`` etc.
-    reach the resolved scheme. Fields left as ``None`` are omitted so the scheme's
-    own value wins.
-    """
-    return {k: getattr(config, k) for k in config._scheme_fields if getattr(config, k, None) is not None}
-
-
-def preview_resolved_attrs(config, scheme=None, format=None) -> dict:
-    """Resolve scheme attributes without mutating config, for routing decisions.
-
-    Called in ``AutoRound.__new__`` before the concrete compressor class is
-    chosen.  ``SchemeMixin.resolve_scheme()`` will do the authoritative
-    resolution later; this is just a lightweight preview so routing logic
-    (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
-    even when the user specified only ``scheme=`` without explicit bit/dtype args.
-
-    This is the single source of resolved scheme fields for entry-level routing:
-    callers read from the returned dict and never re-read raw ``config`` attrs.
-    When the scheme cannot be previewed (``AutoScheme``, or a deferred parse
-    error), the config's own explicitly-set scheme overrides are returned so the
-    values still reflect what the user passed. ``format`` must match the
-    authoritative parse so format-scoped policies (e.g. the 8-bit asym rule)
-    resolve identically here and never turn a refusal into fabricated defaults.
-
-    Returns:
-        dict: resolved scheme attributes (config overrides when preview is skipped).
-    """
+def preview_resolved_attrs(scheme_overrides=None, scheme=None, format=None) -> dict:
+    """Resolve scheme attributes for routing without mutating algorithm configs."""
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-    config_overrides = collect_config_scheme_overrides(config)
+    overrides = {key: value for key, value in (scheme_overrides or {}).items() if value is not None}
     if isinstance(scheme, AutoScheme):
-        # AutoScheme needs model info — cannot preview; fall back to raw config attrs.
-        return config_overrides
+        return overrides
     try:
-        _, _, final_attrs = parse_scheme(scheme, config_overrides, format=format)
+        _, _, final_attrs = parse_scheme(scheme, overrides, format=format)
         return final_attrs
-    except Exception as e:
+    except Exception as error:
         logger.warning_once(
-            "Scheme preview failed (%s: %s); routing falls back to the config's explicit overrides.",
-            type(e).__name__,
-            e,
+            "Scheme preview failed (%s: %s); routing falls back to explicit overrides.",
+            type(error).__name__,
+            error,
         )
-        return config_overrides
+        return overrides
 
 
-def eager_validate_scheme(config, scheme=None, format=None) -> None:
-    """Eagerly validate scheme/config constraints at construction time.
-
-    Mirrors the old-arch ``_check_configs()`` call in ``BaseCompressor.__init__``.
-    Raises ``ValueError`` or ``NotImplementedError`` immediately if the scheme
-    contains config-only invalid combinations (e.g. tuple group_size with non-fp8
-    weight dtype) so that callers get a fast failure rather than a deferred error
-    buried inside ``post_init()``.
-
-    ``AutoScheme`` is skipped because it requires model information.
-    """
+def eager_validate_scheme(scheme_overrides=None, scheme=None, format=None) -> None:
+    """Validate fixed scheme constraints before loading a model."""
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(scheme, AutoScheme):
         return
-
-    user_overrides = collect_config_scheme_overrides(config)
+    overrides = {key: value for key, value in (scheme_overrides or {}).items() if value is not None}
     try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides, format=format)
+        _, _, final_attrs = parse_scheme(scheme, overrides, format=format)
     except (ValueError, NotImplementedError):
         raise
     except Exception:
-        return  # Other parse errors are deferred to post_init
-
-    import copy
-
-    temp_config = copy.copy(config)
-    if hasattr(config, "scheme"):
-        temp_config.scheme = config.scheme.copy()
-        temp_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
-    for key, value in final_attrs.items():
-        setattr(temp_config, key, value)
-    temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
+        return
+    QuantizationScheme.from_dict(final_attrs).validate()
 
 
 def is_weight_scheme(scheme: str | dict | object) -> bool:
@@ -149,52 +101,64 @@ def is_gguf_k_target(value: str | AutoScheme | object) -> bool:
     return False
 
 
-def resolve_entry_scheme(scheme, schemes, direct_kwargs):
-    """Resolve the unified ``schemes``/``bits`` entry into an ``AutoScheme``.
+def resolve_entry_scheme(scheme, direct_kwargs):
+    """Resolve a fixed scheme, candidate list/tuple, or AutoScheme instance.
 
-    ``AutoRound(model, schemes=("W4A16", "W8A16"), bits=4.2)`` is the
-    recommended AutoScheme entry: multiple schemes select the candidate
-    options and ``bits`` is the average target bits. The legacy ``options``
-    and ``avg_bits`` kwargs are still accepted for backward compatibility.
+    With candidates, ``bits`` is the required average target. With an
+    AutoScheme instance, supplied AutoScheme fields override a copy, leaving
+    the caller's instance untouched. Fixed schemes keep integer weight bits.
 
-    Returns ``(scheme, direct_kwargs)``; when ``schemes`` is given, ``scheme``
-    is replaced by an :class:`AutoScheme` and the consumed ``bits``/
-    ``shared_layers``/``ignore_scale_zp_bits`` are removed from
-    ``direct_kwargs`` so they no longer flow into the algorithm config.
+    Returns ``(scheme, direct_kwargs)``; for AutoScheme the consumed ``bits``/
+    ``shared_layers``/``default_shared_layers``/``ignore_scale_zp_bits`` are
+    removed from ``direct_kwargs`` so they no longer flow into the algorithm
+    config.
     """
+    from dataclasses import replace
+
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+    if "schemes" in direct_kwargs:
+        raise TypeError("`schemes` is not supported; pass candidate schemes through `scheme` instead.")
     legacy_options = direct_kwargs.pop("options", None)
     legacy_avg_bits = direct_kwargs.pop("avg_bits", None)
 
     if legacy_options is not None:
-        logger.warning_once("`options` is deprecated, please use `schemes` instead")
-        if schemes is not None:
-            raise ValueError("`schemes` and `options` cannot be used together, please use `schemes`")
-        schemes = legacy_options
+        if scheme is not None and (not isinstance(scheme, str) or scheme.upper() != "W4A16"):
+            raise ValueError("`scheme` and `options` cannot be used together.")
+        scheme = legacy_options.split(",") if isinstance(legacy_options, str) else legacy_options
     if legacy_avg_bits is not None:
-        logger.warning_once("`avg_bits` is deprecated, please use `bits` instead")
         if "bits" in direct_kwargs and direct_kwargs["bits"] is not None and direct_kwargs["bits"] != legacy_avg_bits:
             raise ValueError("`bits` and `avg_bits` disagree, please use only `bits`")
         direct_kwargs["bits"] = legacy_avg_bits
 
-    if schemes is None:
-        # Without schemes, `bits` is a plain weight bit width and must be an integer.
+    if not isinstance(scheme, (list, tuple, AutoScheme)):
         bits = direct_kwargs.get("bits")
         if bits is not None and not float(bits).is_integer():
-            raise ValueError("`bits` must be an integer unless `schemes` is provided (AutoScheme average target bits)")
+            raise ValueError("`bits` must be an integer unless `scheme` is a list, tuple, or AutoScheme")
         if bits is not None:
             direct_kwargs["bits"] = int(bits)
+        # shared_layers/default_shared_layers only make sense for AutoScheme.
+        for key in ("shared_layers", "default_shared_layers"):
+            if direct_kwargs.get(key) is not None:
+                logger.warning_once(
+                    "`%s` only takes effect with candidate schemes (AutoScheme); ignoring it for this run.", key
+                )
+                direct_kwargs.pop(key)
         return scheme, direct_kwargs
-
-    normalized_scheme = scheme.upper() if isinstance(scheme, str) else scheme
-    if normalized_scheme not in (None, "W4A16"):
-        raise ValueError("`scheme` and `schemes` are mutually exclusive, please pass only `schemes` for AutoScheme")
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     auto_scheme_kwargs = {}
     bits = direct_kwargs.pop("bits", None)
     if bits is not None:
         auto_scheme_kwargs["avg_bits"] = bits
-    for key in ("shared_layers", "ignore_scale_zp_bits"):
+    for key in ("shared_layers", "ignore_scale_zp_bits", "default_shared_layers"):
         if direct_kwargs.get(key) is not None:
             auto_scheme_kwargs[key] = direct_kwargs.pop(key)
-    return AutoScheme(options=schemes, **auto_scheme_kwargs), direct_kwargs
+    if isinstance(scheme, AutoScheme):
+        resolved = replace(scheme, **auto_scheme_kwargs) if auto_scheme_kwargs else scheme
+    else:
+        if not scheme:
+            raise ValueError("`scheme` candidates must not be empty.")
+        if bits is None:
+            raise ValueError("`bits` is required when `scheme` is a list or tuple (AutoScheme average target bits).")
+        resolved = AutoScheme(options=scheme, **auto_scheme_kwargs)
+    return resolved, direct_kwargs

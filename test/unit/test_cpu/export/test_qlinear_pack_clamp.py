@@ -26,7 +26,7 @@ import pytest
 import torch
 from torch import nn
 
-from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.export.formats.awq.utils import WQLinear_GEMM
 from auto_round_extension.torch.qlinear_torch import QuantLinear as QuantLinearDirect
 from auto_round_extension.torch.qlinear_torch_zp import QuantLinear as QuantLinearMinusOne
 

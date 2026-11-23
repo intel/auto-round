@@ -14,12 +14,36 @@
 
 from __future__ import annotations
 
-import math
-from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import TYPE_CHECKING
 
 import torch
+
+# Compatibility exports for existing callers.
+from auto_round.algorithms.transforms.smoothing.scale import (
+    SmoothScaleStats,
+    absmax_channel_span,
+    summarize_smooth_scale,
+    validate_smooth_scale_for_deployment,
+)
+from auto_round.algorithms.transforms.smoothing.search import select_best_layer_candidate
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.transforms.smoothing.calibration import SmoothGroupCalibration
+    from auto_round.algorithms.transforms.smoothing.groups import SmoothGroup
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+
+__all__ = [
+    "SVDQuantSmoothStrategy",
+    "SmoothCandidate",
+    "SmoothScaleStats",
+    "absmax_channel_span",
+    "build_alpha_beta_candidates",
+    "build_smooth_scale",
+    "select_best_layer_candidate",
+    "summarize_smooth_scale",
+    "validate_smooth_scale_for_deployment",
+]
 
 
 @dataclass(frozen=True)
@@ -29,30 +53,12 @@ class SmoothCandidate:
     scale: torch.Tensor
 
 
-@dataclass(frozen=True)
-class SmoothScaleStats:
-    minimum: float
-    maximum: float
-    ratio: float
-    below_min_count: int
-    above_max_count: int
-
-
 def build_alpha_beta_candidates(num_grids: int) -> list[tuple[float, float]]:
     """Build identity, activation-only, and activation/weight balanced candidates."""
     if type(num_grids) is not int or num_grids < 2:
         raise ValueError(f"`num_grids` must be an integer greater than or equal to 2, got {num_grids!r}")
     choices = [index / num_grids for index in range(1, num_grids)]
     return [(0.0, 0.0), *[(alpha, 0.0) for alpha in choices], *[(alpha, 1.0 - alpha) for alpha in choices]]
-
-
-def absmax_channel_span(tensor: torch.Tensor, channels_dim: int) -> torch.Tensor:
-    """Return per-channel absolute maxima over every non-channel dimension."""
-    if tensor.ndim == 0:
-        raise ValueError("Cannot calculate a channel span for a scalar tensor.")
-    channels_dim %= tensor.ndim
-    moved = tensor.detach().movedim(channels_dim, -1)
-    return moved.abs().reshape(-1, moved.shape[-1]).amax(dim=0).to(torch.float32)
 
 
 def build_smooth_scale(
@@ -98,60 +104,59 @@ def build_smooth_scale(
     return scale
 
 
-def validate_smooth_scale_for_deployment(
-    scale: torch.Tensor,
-    *,
-    dtype: torch.dtype,
-    module_name: str,
-) -> torch.Tensor:
-    """Validate a smooth scale after materialization in its deployment dtype."""
-    deployed = scale.to(dtype=dtype)
-    reciprocal = deployed.reciprocal()
-    if (
-        not bool(torch.isfinite(deployed).all())
-        or not bool((deployed > 0).all())
-        or not bool(torch.isfinite(reciprocal).all())
-        or not bool((reciprocal > 0).all())
-    ):
-        raise ValueError(f"SVDQuant smooth scale is not deployable for {module_name!r} in dtype {dtype}.")
-    return deployed
+class SVDQuantSmoothStrategy:
+    """Absmax candidates and low-rank-aware reconstruction scoring policy."""
 
+    def __init__(self, owner: SVDQuantTransform, block: torch.nn.Module, local_names: dict[int, str]) -> None:
+        self.owner = owner
+        self.block = block
+        self.local_names = local_names
+        self._candidates = None
+        self._score = None
+        self.calibration = None
 
-def summarize_smooth_scale(
-    scale: torch.Tensor,
-    *,
-    low_threshold: float = 1e-3,
-    high_threshold: float = 20.0,
-) -> SmoothScaleStats:
-    """Summarize factor range and deployment-risk threshold counts."""
-    values = scale.detach().to(device="cpu", dtype=torch.float32)
-    minimum = values.amin().item()
-    maximum = values.amax().item()
-    return SmoothScaleStats(
-        minimum=minimum,
-        maximum=maximum,
-        ratio=maximum / minimum,
-        below_min_count=int((values < low_threshold).sum().item()),
-        above_max_count=int((values > high_threshold).sum().item()),
-    )
+    def prepare(self, group: SmoothGroup, calibration: SmoothGroupCalibration) -> None:
+        self.calibration = calibration
+        owner = self.owner
+        block = self.block
+        local_names = self.local_names
+        group = calibration.group
+        device = group.projections[0].weight.device
+        x_span = torch.stack([absmax_channel_span(inputs, -1) for inputs in calibration.projection_inputs], dim=0).amax(
+            dim=0
+        )
+        weights = [
+            projection.weight.detach().to(device=device, dtype=torch.float32) for projection in group.projections
+        ]
+        w_span = absmax_channel_span(torch.cat(weights, dim=0), 1).cpu()
+        candidates = (
+            SmoothCandidate(alpha, beta, build_smooth_scale(x_span, w_span, alpha, beta, eps=owner.config.smooth_eps))
+            for alpha, beta in build_alpha_beta_candidates(owner.config.smooth_num_grids)
+        )
 
+        def score(candidate):
+            scale = validate_smooth_scale_for_deployment(
+                candidate.scale, dtype=group.projections[0].weight.dtype, module_name=group.key
+            ).to(torch.float32)
+            # Keep the deployed precision in the selected candidate.
+            candidate.scale.copy_(scale)
+            return owner._score_group_wrappers(
+                calibration, owner._candidate_group_wrappers(group, scale), block, local_names
+            )
 
-_CandidateT = TypeVar("_CandidateT")
+        self._candidates = candidates
+        self._score = score
 
+    def candidates(self):
+        return self._candidates
 
-def select_best_layer_candidate(
-    candidates: Iterable[tuple[_CandidateT, float | torch.Tensor]],
-    *,
-    module_name: str,
-) -> _CandidateT:
-    """Select the lowest finite-error candidate, preferring the later exact tie."""
-    best_candidate = None
-    best_error = float("inf")
-    for candidate, error in candidates:
-        error_value = error.item() if torch.is_tensor(error) else float(error)
-        if math.isfinite(error_value) and error_value <= best_error:
-            best_candidate = candidate
-            best_error = error_value
-    if best_candidate is None:
-        raise ValueError(f"SVDQuant smooth search produced no finite candidate for {module_name!r}.")
-    return best_candidate
+    def score(self, candidate: SmoothCandidate) -> float:
+        return self._score(candidate)
+
+    def apply(self, candidate: SmoothCandidate):
+        return self.owner._decompose_smoothed_group(self.calibration, candidate.scale, self.block, self.local_names)
+
+    def clear(self) -> None:
+        self._candidates = None
+        self._score = None
+        self.calibration = None

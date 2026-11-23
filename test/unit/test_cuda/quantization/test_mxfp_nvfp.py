@@ -11,8 +11,8 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.export.formats import BackendDataType
+from auto_round.export.formats.autoround import qlinear_fp as ar_qlinear_fp
 
 from ...envs import has_module, require_awq, require_optimum
 

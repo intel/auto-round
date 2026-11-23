@@ -202,6 +202,10 @@ def _resolve_model_dir(model_dir: str, revision: str | None = None) -> str:
             "model.safetensors",
             "pytorch_model.bin.index.json",
             "pytorch_model.bin",
+            "diffusion_pytorch_model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.bin.index.json",
+            "diffusion_pytorch_model.bin",
         ):
             cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
             if isinstance(cached_file, str):
@@ -231,12 +235,16 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             # before any caller joins one onto model_dir.
             return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=index_path)
 
-    single_path = os.path.join(model_dir, "model.safetensors")
-    if os.path.exists(single_path):
-        from safetensors import safe_open
+    # Diffusers components (UNet, VAE, transformer) use a different basename.
+    # Use explicit names rather than globbing: a directory can also contain
+    # precision variants or non-PyTorch artifacts such as openvino_model.bin.
+    for filename in ("model.safetensors", "diffusion_pytorch_model.safetensors"):
+        single_path = os.path.join(model_dir, filename)
+        if os.path.exists(single_path):
+            from safetensors import safe_open
 
-        with safe_open(single_path, framework="pt") as f:
-            return {k: "model.safetensors" for k in f.keys()}
+            with safe_open(single_path, framework="pt") as f:
+                return {k: filename for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
     if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
@@ -247,11 +255,12 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
         with open(bin_index_path) as f:
             return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=bin_index_path)
 
-    single_bin = os.path.join(model_dir, "pytorch_model.bin")
-    if os.path.exists(single_bin):
-        # No unrestricted fallback: this pickle comes from an untrusted artifact.
-        state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
-        return {k: "pytorch_model.bin" for k in state_dict.keys()}
+    for filename in ("pytorch_model.bin", "diffusion_pytorch_model.bin"):
+        single_bin = os.path.join(model_dir, filename)
+        if os.path.exists(single_bin):
+            # No unrestricted fallback: this pickle comes from an untrusted artifact.
+            state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
+            return {k: filename for k in state_dict.keys()}
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
@@ -602,11 +611,8 @@ class OffloadManager:
         for name in names:
             self._reload(model, name)
 
-    def _reload(self, model: torch.nn.Module, name: str) -> None:
-        """Reload a single named module (internal helper)."""
-        module = get_module(model, name)
-        if module is None:
-            return
+    def _get_checkpoint_dir(self, model: torch.nn.Module | None) -> str | None:
+        """Resolve the active component directory for both clearing and reloading."""
         model_dir = self.model_dir
         component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
         if model_dir is not None and component_subfolder:
@@ -614,6 +620,14 @@ class OffloadManager:
             component_dir = os.path.join(resolved_dir, component_subfolder)
             if os.path.isdir(component_dir):
                 model_dir = component_dir
+        return model_dir
+
+    def _reload(self, model: torch.nn.Module, name: str) -> None:
+        """Reload a single named module (internal helper)."""
+        module = get_module(model, name)
+        if module is None:
+            return
+        model_dir = self._get_checkpoint_dir(model)
         if self.mode == "offload":
             if name not in self._saved:
                 # Before falling back to the
@@ -911,6 +925,12 @@ class OffloadManager:
             from safetensors.torch import load_file as safe_load_file
 
             state_dict = safe_load_file(save_path, device="cpu")
+            # Replace every tensor with a private copy so the mapping is
+            # released as soon as this method returns.
+            for key in list(state_dict.keys()):
+                tensor = state_dict[key]
+                state_dict[key] = tensor.clone()
+                del tensor
             _load_state_dict_into_module(state_dict, module)
         except Exception as e:
             logger.warning(f"OffloadManager: failed to load {name}: {e}")
@@ -963,7 +983,7 @@ class OffloadManager:
             return None
         try:
             if self._weight_map is None:
-                model_dir = _resolve_model_dir(self.model_dir)
+                model_dir = _resolve_model_dir(self._get_checkpoint_dir(self._model_ref))
                 self._weight_map = _build_weight_map(model_dir)
             weight_map = self._weight_map
         except Exception as e:

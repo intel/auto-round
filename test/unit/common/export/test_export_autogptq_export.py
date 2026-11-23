@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for ``auto_round/export/export_to_autogptq/export.py``."""
+"""Tests for ``auto_round/export/formats/gptq/export.py``."""
 
 import pytest
 import torch
 
-from auto_round.export.export_to_autogptq import export as autogptq_export
-from auto_round.export.export_to_autogptq.export import (
+from auto_round.export.formats.gptq import packing as autogptq_export
+from auto_round.export.formats.gptq.config import (
     BLOCK_PATTERNS,
     GPTQ_REQUIRED_CONFIG_KEYS,
     convert_from_autogptq_dynamic,

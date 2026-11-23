@@ -133,3 +133,25 @@ def test_residual_iteration_early_stops_after_candidate_worsens(monkeypatch):
 
     assert calls == 2
     assert result.selected_iteration == 1
+
+
+def test_residual_ties_keep_first_without_early_stopping(monkeypatch):
+    calls = 0
+
+    def exact_qdq(residual, scheme):
+        nonlocal calls
+        calls += 1
+        return residual
+
+    monkeypatch.setattr(residual_module, "rtn_qdq_residual", exact_qdq)
+    result = iterate_residual_decomposition(
+        torch.ones(4, 32),
+        rank=0,
+        scheme=ResidualQuantScheme(data_type="mx_fp4e2m1", bits=4, group_size=32, sym=True),
+        iterations=3,
+        early_stop=True,
+        residual_dtype=torch.float32,
+        low_rank_dtype=torch.float32,
+    )
+    assert result.selected_iteration == 1
+    assert calls == 3
