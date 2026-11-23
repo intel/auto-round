@@ -59,6 +59,32 @@ ARK 算子已集成到以下项目：
 
 其他调用（包括 B70 上的调用）保留原有分流。BF16 转换和权重打包格式不变。
 
+### M=1 W4A16 基准测试
+
+[bench_woq_s4.py](test/bench_woq_s4.py) 复用 [test_woq_s4.py](test/test_woq_s4.py) 的测试夹具，在包括 `4096x16384` 的十种 K/N 形状上对照 GEMV 和 K64 split-K4，覆盖 group32/128、有无 bias 以及 FP16/BF16 输入。只有 group128 无 bias 的 S4 使用已集成的 ARK 路由，其余使用独立探针。BF16 使用 FP16 内核及 dtype 转换。基准测试不改变原测试扫描范围或默认分流。
+
+在 ARK 目录下运行，使用可导入 ARK XPU 运行时的 Python 3.11 或更新版本。将 `SYCL_TLA_SRC`、`PYBIND11_SRC` 指向编译 ARK 时使用的依赖源码根目录。为 CRI 编译独立探针，并选择一张空闲 CRI 卡的编号：
+
+```bash
+source /opt/intel/oneapi/setvars.sh --force
+icpx --version
+kernel="$PWD/auto_round_kernel"
+probe_dir=$(mktemp -d)
+icpx -std=c++17 -O3 -DNDEBUG -shared -fPIC -fsycl -fno-sycl-instrument-device-code \
+    -fsycl-targets=spir64 -Xs "-device cri" \
+    -Xspirv-translator "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate" \
+    -DARK_XPU=1 -DARK_SYCL_TLA=1 -DBTLA_SYCL -DCUTLASS_ENABLE_SYCL=1 -DSYCL_INTEL_TARGET=1 \
+    -I"$kernel/wrapper/include" -I"$kernel" -I"$kernel/bestla" \
+    -isystem "$SYCL_TLA_SRC/include" -isystem "$SYCL_TLA_SRC/tools/util/include" \
+    -isystem "$SYCL_TLA_SRC/examples/common" -isystem "$PYBIND11_SRC/include" \
+    -isystem "$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+    test/ark_2673_dpas_probe.cpp -o "$probe_dir/ark_2673_dpas_probe.so"
+ZE_AFFINITY_MASK=1 ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+    python -P test/bench_woq_s4.py
+```
+
+可重复指定 `--shape KxN` 缩小范围，使用 `--routes-only` 只检查数值和实际内核而不计时，或用 `--io-buffer-ab=split --shape 4096x8192` 复跑 BF16 输入/输出缓冲区实验。脚本会打印加载库的哈希并验证设备，也可用 `--expect-sha256`、`--expect-probe-sha256` 和 `--device-uuid` 固定复跑环境。计时要求空闲显存大于 90%，且包含分配/清零、dtype 转换与归约，除非 A/B 明确改变该环节。
+
 ### 支持的数据类型
 
 #### CPU

@@ -59,6 +59,32 @@ Tune the split-K table separately using whole-call latency and correctness for b
 
 All other calls, including calls on B70, retain the existing dispatch. BF16 conversion and packed weights are unchanged.
 
+### M=1 W4A16 Benchmark
+
+[bench_woq_s4.py](test/bench_woq_s4.py) reuses the [test_woq_s4.py](test/test_woq_s4.py) fixture and compares the existing GEMV route against K64 split-K4 at ten K/N shapes, including `4096x16384`. It measures group32/128 with and without bias, with FP16 and BF16 inputs. Only the group128 no-bias S4 case uses the integrated ARK route; the rest use a standalone probe. BF16 uses FP16 kernel I/O and casts. This benchmark does not change the default test sweep or dispatch.
+
+Run from the ARK directory with the ARK XPU runtime importable in Python 3.11 or newer. Set `SYCL_TLA_SRC` and `PYBIND11_SRC` to the same dependency source roots used for the ARK build. Build the standalone probe for CRI and select the ordinal of one idle CRI card:
+
+```bash
+source /opt/intel/oneapi/setvars.sh --force
+icpx --version
+kernel="$PWD/auto_round_kernel"
+probe_dir=$(mktemp -d)
+icpx -std=c++17 -O3 -DNDEBUG -shared -fPIC -fsycl -fno-sycl-instrument-device-code \
+  -fsycl-targets=spir64 -Xs "-device cri" \
+  -Xspirv-translator "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate" \
+  -DARK_XPU=1 -DARK_SYCL_TLA=1 -DBTLA_SYCL -DCUTLASS_ENABLE_SYCL=1 -DSYCL_INTEL_TARGET=1 \
+  -I"$kernel/wrapper/include" -I"$kernel" -I"$kernel/bestla" \
+  -isystem "$SYCL_TLA_SRC/include" -isystem "$SYCL_TLA_SRC/tools/util/include" \
+  -isystem "$SYCL_TLA_SRC/examples/common" -isystem "$PYBIND11_SRC/include" \
+  -isystem "$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+  test/ark_2673_dpas_probe.cpp -o "$probe_dir/ark_2673_dpas_probe.so"
+ZE_AFFINITY_MASK=1 ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+  python -P test/bench_woq_s4.py
+```
+
+Use repeated `--shape KxN` arguments for a subset, `--routes-only` for correctness and kernel checks without timing, or `--io-buffer-ab=split --shape 4096x8192` for the BF16 input/output buffer experiment. The script prints loaded library hashes and verifies the device; `--expect-sha256`, `--expect-probe-sha256` and `--device-uuid` can pin a replay. Timings require more than 90% free device memory and include allocation/zeroing, dtype casts and reduction unless explicitly varied in an A/B.
+
 ### Supported Data Types
 
 #### CPU
