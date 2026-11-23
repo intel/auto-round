@@ -310,6 +310,29 @@ class TestSplitFusedExpertTensors:
         for k, v in result.items():
             assert v.is_contiguous(), f"{k} is not contiguous"
 
+    @pytest.mark.parametrize("scale_suffix", ["_scale_inv", "_weight_scale_inv"])
+    def test_block_fp8_fused_scale_inv_split(self, scale_suffix):
+        """Hy4-flash style: experts.gate_up_proj + experts.gate_up_proj_scale_inv (128x128 blocks)."""
+        N, I, H, B = 2, 256, 128, 128
+        weight = torch.randn(N, 2 * I, H).to(torch.float8_e4m3fn)
+        scale = torch.rand(N, 2 * I // B, H // B)
+        down_scale = torch.rand(N, H // B, I // B)
+        result = split_fused_expert_tensors(
+            {
+                "mlp.experts.gate_up_proj": weight,
+                f"mlp.experts.gate_up_proj{scale_suffix}": scale,
+                f"mlp.experts.down_proj{scale_suffix}": down_scale,
+            }
+        )
+        assert not any("proj_scale_inv" in k or "_weight_scale_inv" in k for k in result)
+        for i in range(N):
+            gs = result[f"mlp.experts.{i}.gate_proj.weight_scale_inv"]
+            us = result[f"mlp.experts.{i}.up_proj.weight_scale_inv"]
+            assert torch.equal(gs, scale[i, : I // B])
+            assert torch.equal(us, scale[i, I // B :])
+            assert result[f"mlp.experts.{i}.gate_proj.weight"].shape == (I, H)
+            assert torch.equal(result[f"mlp.experts.{i}.down_proj.weight_scale_inv"], down_scale[i])
+
 
 # ===========================================================================
 #  quantize_weight_rtn
@@ -401,6 +424,18 @@ class TestQuantizeWeightRtn:
         )
         z = (qz[:, :, None].to(torch.int64) >> (torch.arange(8, dtype=torch.int32) * 4)[None, None, :]) & 0xF
         assert (z == 7).all()
+
+    @pytest.mark.parametrize("packing,stored_zp", [("auto_round:auto_gptq", 7), ("auto_round", 8)])
+    def test_sym_opt_rtn_matches_qdq_scale(self, packing, stored_zp):
+        from auto_round.data_type.int import quant_tensor_opt_rtn_sym
+
+        torch.manual_seed(5)
+        w = torch.randn(16, 64)
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=32, sym=True, disable_opt_rtn=False, packing=packing)
+        _, ref_scale, _ = quant_tensor_opt_rtn_sym(w, bits=4, group_size=32)
+        assert torch.equal(sc, ref_scale.reshape(16, 2).t().to(torch.float16))
+        _, z, _ = self._unpack_4bit(qw, qz, sc)
+        assert (z == stored_zp).all()
 
     def test_output_shapes_8bit(self):
         out_f, in_f, bits, gs = 16, 128, 8, 128
@@ -1454,3 +1489,20 @@ class TestKeepSpecialFp32Params:
 
         assert keep_special_fp32_params(model, str(tmp_path)) == []
         assert model.norm.weight.dtype == torch.bfloat16
+
+
+def test_model_free_index_total_size_matches_payload(tmp_path):
+    """_write_index_file must record the real referenced payload, not 0."""
+    from safetensors.torch import save_file
+
+    from auto_round.utils.model_free_utils import _write_index_file
+
+    save_file({"a": torch.zeros(4, 8, dtype=torch.bfloat16)}, str(tmp_path / "s1.safetensors"))
+    save_file(
+        {"b": torch.zeros(3, dtype=torch.float32), "c": torch.zeros(5, dtype=torch.uint8)},
+        str(tmp_path / "s2.safetensors"),
+    )
+    _write_index_file(str(tmp_path), {"a": "s1.safetensors", "b": "s2.safetensors", "c": "s2.safetensors"})
+    with open(tmp_path / "model.safetensors.index.json") as f:
+        index = json.load(f)
+    assert index["metadata"]["total_size"] == 4 * 8 * 2 + 3 * 4 + 5
