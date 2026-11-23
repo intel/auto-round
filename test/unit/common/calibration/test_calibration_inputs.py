@@ -14,13 +14,42 @@
 
 """Tests for calibration/inputs.py."""
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import torch
 
 from auto_round.calibration.inputs import split_inputs
+from auto_round.calibration.utils import _update_inputs
 
 
 class TestSplitInputs:
     """Tests for split_inputs."""
+
+    def test_non_v4_keeps_original_token_normalization(self):
+        hidden = [torch.randn(1, 4, 8)]
+        model = SimpleNamespace(config=SimpleNamespace(model_type="llama"))
+        with patch(
+            "auto_round.context.model.ModelContext", return_value=SimpleNamespace(is_diffusion=False, model=model)
+        ):
+            normalized, _ = _update_inputs({"hidden_states": hidden, "input_ids": [torch.ones(1, 4)]}, None)
+        assert normalized == {"input_ids": hidden}
+        _, others = split_inputs(normalized, "input_ids", is_diffusion=False, model_type="llama")
+        assert others == {}
+
+    def test_real_token_ids_survive_hidden_state_normalization(self):
+        hidden = [torch.randn(1, 4, 8), torch.randn(1, 4, 8)]
+        tokens = [torch.tensor([[2, 3, 4, 5]]), torch.tensor([[6, 7, 8, 9]])]
+        cache = {"hidden_states": hidden, "input_ids": tokens}
+        model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
+        with patch(
+            "auto_round.context.model.ModelContext", return_value=SimpleNamespace(is_diffusion=False, model=model)
+        ):
+            normalized, _ = _update_inputs(cache, None)
+        actual_hidden, others = split_inputs(normalized, "input_ids", is_diffusion=False, model_type="deepseek_v4")
+        assert actual_hidden is hidden
+        assert others["input_ids"] is tokens
+        assert "_ar_block_token_ids" not in others
 
     def test_diffusion_extracts_hidden_state(self):
         """Diffusion mode extracts the primary hidden_states; aux tensors stay for replay."""

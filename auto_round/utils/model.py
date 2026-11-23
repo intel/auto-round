@@ -294,7 +294,9 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
-_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
+# DeepSeek V4 uses this same FP8 checkpoint loader for dense FP8 and packed
+# FP4 experts. Dequantize both before generic fused-MoE replacements run.
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32", "deepseek_v4"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=False):

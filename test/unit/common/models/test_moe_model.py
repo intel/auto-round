@@ -87,7 +87,8 @@ def test_llama4(tiny_llama4_model_path):
 
     inp = torch.randint(0, 100, (1, 32))
     with torch.inference_mode():
-        loaded_out = loaded_model(inp)
+        # transformers 5.24 Llama4ForConditionalGeneration.forward reads a missing `image_outputs`.
+        loaded_out = loaded_model.language_model(inp)
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
 
