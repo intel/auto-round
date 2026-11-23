@@ -624,7 +624,9 @@ class XpuWrapper {
   static bool woq_try_s4_dpas_split4(sycl::queue* queue, int rows, QuantParam* params, const void* matA, const void* blobB,
                                     void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
     const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES");
-    if (!setting || !*setting) return false;
+    const bool large_m1_selected = rows == 1 && params->k == 4096 && params->n >= 8192 &&
+      woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_SPLIT_K4_M1", "1");
+    if (!large_m1_selected && (!setting || !*setting)) return false;
     using namespace dense_woq_s4_dpas;
     if (rows < 1 || rows > kWoqS4SplitK4MaxM || params->n <= 0 || params->n > kWoqS4SplitK4MaxN ||
       params->n % woq_s4_dpas_tile_n(rows, params) != 0 || params->k <= 0 ||
@@ -632,9 +634,11 @@ class XpuWrapper {
       params->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || params->asym) {
       return false;
     }
-    static const auto shapes = parse_woq_s4_dpas_shapes(setting);
-    if (std::find(shapes.begin(), shapes.end(), std::make_pair(params->k, params->n)) == shapes.end() ||
-      !queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording ||
+    if (!large_m1_selected) {
+      static const auto shapes = parse_woq_s4_dpas_shapes(setting);
+      if (std::find(shapes.begin(), shapes.end(), std::make_pair(params->k, params->n)) == shapes.end()) return false;
+    }
+    if (!queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording ||
       !woq_s4_dpas_tuning_supported(queue, params, bias, has_dpas_scale_layout(params, blob_count))) {
       return false;
     }

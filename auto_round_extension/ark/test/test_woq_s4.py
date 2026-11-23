@@ -460,6 +460,46 @@ def test_dense_s4_dpas_split4_opt_in(monkeypatch):
             assert torch.equal(bits[1], bits[2][:1])
 
 
+@pytest.mark.parametrize(
+    "in_features,out_features,selected",
+    [(4096, 8064, False), (4096, 8192, True), (4096, 8320, True), (4608, 8192, False)],
+)
+def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_features, selected):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    threshold_switch = "ARK_WOQ_S4_DPAS_SPLIT_K4_M1"
+    for switch in (threshold_switch, "ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES", "ARK_WOQ_S4_DPAS_M1"):
+        monkeypatch.delenv(switch, raising=False)
+    eligible = selected and getattr(torch.xpu.get_device_properties(0), "device_id", None) == 0x674F
+    at_threshold = (in_features, out_features) == (4096, 8192)
+    group_size = 128
+    activation, packw, bias, reference = _ark_case(
+        2 if at_threshold else 1, n=out_features, k=in_features, blocksize=group_size, with_bias=False
+    )
+    options = (out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+    rows = activation[:1]
+    default = ark.woqgemm(rows, packw, bias, *options).cpu()
+    if at_threshold:
+        two_row_default = ark.woqgemm(activation, packw, bias, *options).cpu()
+        bf16_rows = rows.bfloat16()
+        bf16_default = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
+
+    monkeypatch.setenv(threshold_switch, "1")
+    actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
+    assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not eligible)
+    torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
+
+    if at_threshold:
+        two_row_actual = ark.woqgemm(activation, packw, bias, *options).cpu()
+        assert torch.equal(two_row_actual.view(torch.int16), two_row_default.view(torch.int16))
+        bf16_actual = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
+        bf16_expected = ark.woqgemm(bf16_rows.half(), packw, bias, *options).cpu().bfloat16()
+        assert bf16_actual.dtype == torch.bfloat16
+        assert torch.equal(bf16_actual.view(torch.int16), bf16_expected.view(torch.int16))
+        assert torch.equal(bf16_actual.view(torch.int16), bf16_default.view(torch.int16)) == (not eligible)
+
+
 if __name__ == "__main__":
     _print_config_types()
     run_ark_woqgemm()
