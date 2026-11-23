@@ -563,6 +563,9 @@ class XpuWrapper {
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   static constexpr size_t kWoqS4DpasMaxM = 128;
+  static constexpr int kWoqS4SplitK4MaxM = 2;
+  static constexpr int kWoqS4SplitK4MaxN = 16384;
+  static constexpr size_t kWoqS4SplitK4ScratchLoc = 15;
 
   static inline bool woq_s4_dpas_group_size_ok(int group_size) {
     return dense_woq_s4_dpas::is_supported_group_size(group_size);
@@ -594,28 +597,60 @@ class XpuWrapper {
            device.get_info<sycl::ext::intel::info::device::device_id>() == 0x674f;
   }
 
+  static std::vector<std::pair<int, int>> parse_woq_s4_dpas_shapes(const char* begin) {
+    std::vector<std::pair<int, int>> entries;
+    if (!begin) return entries;
+    const char* end = begin + std::strlen(begin);
+    while (begin != end) {
+      int in_features = 0;
+      int out_features = 0;
+      const auto k_field = std::from_chars(begin, end, in_features);
+      if (k_field.ec != std::errc{} || in_features <= 0 || k_field.ptr == end || *k_field.ptr != 'x') return {};
+      const auto n_field = std::from_chars(k_field.ptr + 1, end, out_features);
+      if (n_field.ec != std::errc{} || out_features <= 0 ||
+          (n_field.ptr != end && (*n_field.ptr != ',' || n_field.ptr + 1 == end))) return {};
+      entries.emplace_back(in_features, out_features);
+      begin = n_field.ptr == end ? end : n_field.ptr + 1;
+    }
+    return entries;
+  }
+
   static bool woq_s4_dpas_m1_selected(int k, int n) {
     if (!woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_M1", "1")) return false;
-    static const auto shapes = [] {
-      using Shapes = std::vector<std::pair<int, int>>;
-      const char* begin = std::getenv("ARK_WOQ_S4_DPAS_M1_SHAPES");
-      if (!begin) return Shapes{};
-      const char* end = begin + std::strlen(begin);
-      Shapes entries;
-      while (begin != end) {
-        int in_features = 0;
-        int out_features = 0;
-        const auto k_field = std::from_chars(begin, end, in_features);
-        if (k_field.ec != std::errc{} || in_features <= 0 || k_field.ptr == end || *k_field.ptr != 'x') return Shapes{};
-        const auto n_field = std::from_chars(k_field.ptr + 1, end, out_features);
-        if (n_field.ec != std::errc{} || out_features <= 0 ||
-            (n_field.ptr != end && (*n_field.ptr != ',' || n_field.ptr + 1 == end))) return Shapes{};
-        entries.emplace_back(in_features, out_features);
-        begin = n_field.ptr == end ? end : n_field.ptr + 1;
-      }
-      return entries;
-    }();
+    static const auto shapes = parse_woq_s4_dpas_shapes(std::getenv("ARK_WOQ_S4_DPAS_M1_SHAPES"));
     return std::find(shapes.begin(), shapes.end(), std::make_pair(k, n)) != shapes.end();
+  }
+
+  static bool woq_try_s4_dpas_split4(sycl::queue* queue, int rows, QuantParam* params, const void* matA, const void* blobB,
+                                    void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
+    const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES");
+    if (!setting || !*setting) return false;
+    using namespace dense_woq_s4_dpas;
+    if (rows < 1 || rows > kWoqS4SplitK4MaxM || params->n <= 0 || params->n > kWoqS4SplitK4MaxN ||
+      params->n % woq_s4_dpas_tile_n(rows, params) != 0 || params->k <= 0 ||
+      params->k % (kSplitK4Parts * kSplitK4GroupSize) != 0 || params->weight_type != BTLA_DTYPE::S4 ||
+      params->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || params->asym) {
+      return false;
+    }
+    static const auto shapes = parse_woq_s4_dpas_shapes(setting);
+    if (std::find(shapes.begin(), shapes.end(), std::make_pair(params->k, params->n)) == shapes.end() ||
+      !queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording ||
+      !woq_s4_dpas_tuning_supported(queue, params, bias, has_dpas_scale_layout(params, blob_count))) {
+      return false;
+    }
+    constexpr size_t scratch_bytes = kSplitK4Parts * kWoqS4SplitK4MaxM * kWoqS4SplitK4MaxN * sizeof(float);
+    auto* partials = static_cast<float*>(
+      DeviceMemoryPool::Instance()->get_scratch_mem(scratch_bytes, kWoqS4SplitK4ScratchLoc, queue));
+    if (!partials) return false;
+    const auto* scales = reinterpret_cast<const int8_t*>(blobB) + get_dpas_scale_offset(params);
+    if (env_params::Instance()->verbose <= 1) {
+      std::fprintf(stdout, "[ARK_WOQ_S4_DPAS] launch:dpas_w4a16_dense_policy_m_4_n128_k64_split4 "
+                           "m=%d n=%d k=%d blocksize=%d scale_layout=group_n\n",
+                   rows, params->n, params->k, params->blocksize);
+    }
+    dense_woq_s4_dpas::detail::run_m4_n128_k64_split4(queue, matA, blobB, scales, matC, partials, rows, params->n,
+                            params->k);
+    return true;
   }
 
   static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
@@ -871,6 +906,9 @@ class XpuWrapper {
                                  ") less than expected (" + std::to_string(expected) + ")");
       }
     }
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+    if (m <= kWoqS4SplitK4MaxM && woq_try_s4_dpas_split4(q, m, p, a, b, c, bias, acdt, blob_count)) return;
+#endif
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {
 

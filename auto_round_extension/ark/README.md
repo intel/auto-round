@@ -46,14 +46,17 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-These opt-ins apply only to device ID `0x674f` with symmetric INT4 weights, INT8 compute configuration, FP16 activation and scale at the kernel boundary, group size 128, group-major packed scales, and no bias. Neither changes the default dispatch:
+These opt-ins apply only to device ID `0x674f` with symmetric INT4 weights, INT8 compute configuration, FP16 activation and scale at the kernel boundary, group size 128, group-major packed scales, and no bias. All are disabled by default:
 
 - `ARK_WOQ_S4_DPAS_M1=1` allows unpadded single-row DPAS for shapes listed in `ARK_WOQ_S4_DPAS_M1_SHAPES` as comma-separated `KxN` pairs. The shape table is read once, on the first enabled single-row call. An unset, empty, or invalid table keeps GEMV.
 - `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects K64 for `M=2, K=14336, N=4096`.
+- `ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES=KxN,...` selects four-way K64 split-K for listed shapes at both `M=1` and `M=2`, taking precedence over the other opt-ins. It requires `K` divisible by 512, `N` divisible by 128 and at most 16384, and an in-order queue outside graph recording. It reuses a 512 KiB FP32 scratch buffer per participating queue. The shape table is parsed once on the first call that checks it; an unset, empty, malformed, or unmatched table keeps the existing dispatch.
 
 Populate the single-row table only with shapes measured on the target device against GEMV at the same batch size. Require a lower median latency, no tail-latency regression, and acceptable numerical results for each input dtype the process uses. The native selector sees FP16 for both FP16 input and converted BF16 input, so the table cannot distinguish them.
 
-All other calls, including calls on B70, retain the original dispatch even when both settings are enabled. BF16 conversion and packed weights are unchanged.
+Tune the split-K table separately using whole-call latency and correctness for both row counts and all input dtypes in use. On the tested CRI device, `14336x4096` improved median latency for FP16 and BF16 inputs at both row counts. The same improvement did not hold across dtypes for `4096x4096` or `4096x14336`. There are no default entries. Split-K changes FP32 accumulation order, so its outputs need not match unsplit DPAS bitwise.
+
+All other calls, including calls on B70, retain the existing dispatch. BF16 conversion and packed weights are unchanged.
 
 ### Supported Data Types
 

@@ -419,6 +419,47 @@ def test_dense_s4_dpas_small_m_k64(monkeypatch, in_features, out_features, group
         torch.testing.assert_close(actual, reference[:row_count], rtol=0.01, atol=0.01)
 
 
+def test_dense_s4_dpas_split4_opt_in(monkeypatch):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    table = "ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES"
+    monkeypatch.delenv("ARK_WOQ_S4_DPAS_M1", raising=False)
+    monkeypatch.delenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", raising=False)
+    device_id = getattr(torch.xpu.get_device_properties(0), "device_id", None)
+    group_size = 128
+    cases = ((1024, 256, True), (2048, 384, True), (1024, 384, False), (768, 256, False))
+    for in_features, out_features, can_select in cases:
+        eligible = can_select and device_id == 0x674F
+        activation, packw, bias, reference = _ark_case(
+            3, n=out_features, k=in_features, blocksize=group_size, with_bias=False
+        )
+        args = (packw, bias, out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+        monkeypatch.delenv(table, raising=False)
+        defaults = {rows: ark.woqgemm(activation[:rows], *args).cpu().view(torch.int16) for rows in (1, 2, 3)}
+
+        monkeypatch.setenv(table, "1024x256,2048x384,768x256")
+        pending = {}
+        for rows in (2, 1, 3):
+            output, guard = _guarded_output(rows, out_features)
+            assert ark.woqgemm(activation[:rows], *args, out=output).data_ptr() == output.data_ptr()
+            pending[rows] = (output, guard)
+        _sync_xpu()
+
+        bits = {}
+        for rows, (output, guard) in pending.items():
+            assert torch.all(guard.cpu() == OUTPUT_GUARD_VALUE)
+            actual = output.cpu()
+            bits[rows] = actual.view(torch.int16)
+            if not eligible or rows == 3:
+                assert torch.equal(bits[rows], defaults[rows])
+            else:
+                torch.testing.assert_close(actual, reference[:rows], rtol=0.01, atol=0.01)
+        if eligible:
+            assert not torch.equal(bits[1], defaults[1])
+            assert torch.equal(bits[1], bits[2][:1])
+
+
 if __name__ == "__main__":
     _print_config_types()
     run_ark_woqgemm()
