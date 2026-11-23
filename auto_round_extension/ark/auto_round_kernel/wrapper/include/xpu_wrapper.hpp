@@ -12,11 +12,13 @@
 
 #pragma once
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <vector>
 #include "utils.hpp"
 #if ARK_DNNL
@@ -580,14 +582,40 @@ class XpuWrapper {
     return woq_s4_dpas_group_size_ok(p->blocksize);
   }
 
-  static bool woq_s4_dpas_tuning_enabled(sycl::queue* q, const QuantParam* p, const void* bias, bool group_n,
-                                        const char* setting, const char* value) {
-    if (p->blocksize != 128 || p->compute_type != BTLA_DTYPE::S8 || bias || !group_n) return false;
+  static bool woq_s4_dpas_env_matches(const char* setting, const char* value) {
     const char* option = std::getenv(setting);
-    if (!option || std::strcmp(option, value) != 0) return false;
+    return option && std::strcmp(option, value) == 0;
+  }
+
+  static bool woq_s4_dpas_tuning_supported(sycl::queue* q, const QuantParam* p, const void* bias, bool group_n) {
+    if (p->blocksize != 128 || p->compute_type != BTLA_DTYPE::S8 || bias || !group_n) return false;
     const auto device = q->get_device();
     return device.has(sycl::aspect::ext_intel_device_id) &&
            device.get_info<sycl::ext::intel::info::device::device_id>() == 0x674f;
+  }
+
+  static bool woq_s4_dpas_m1_selected(int k, int n) {
+    if (!woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_M1", "1")) return false;
+    static const auto shapes = [] {
+      using Shapes = std::vector<std::pair<int, int>>;
+      const char* begin = std::getenv("ARK_WOQ_S4_DPAS_M1_SHAPES");
+      if (!begin) return Shapes{};
+      const char* end = begin + std::strlen(begin);
+      Shapes entries;
+      while (begin != end) {
+        int in_features = 0;
+        int out_features = 0;
+        const auto k_field = std::from_chars(begin, end, in_features);
+        if (k_field.ec != std::errc{} || in_features <= 0 || k_field.ptr == end || *k_field.ptr != 'x') return Shapes{};
+        const auto n_field = std::from_chars(k_field.ptr + 1, end, out_features);
+        if (n_field.ec != std::errc{} || out_features <= 0 ||
+            (n_field.ptr != end && (*n_field.ptr != ',' || n_field.ptr + 1 == end))) return Shapes{};
+        entries.emplace_back(in_features, out_features);
+        begin = n_field.ptr == end ? end : n_field.ptr + 1;
+      }
+      return entries;
+    }();
+    return std::find(shapes.begin(), shapes.end(), std::make_pair(k, n)) != shapes.end();
   }
 
   static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
@@ -623,7 +651,8 @@ class XpuWrapper {
 
     if (m <= 4) {
       if (m == 2 && p->k == 14336 && p->n == 4096 &&
-          woq_s4_dpas_tuning_enabled(q, p, bias, use_dpas_scales, "ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", "64")) {
+          woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", "64") &&
+          woq_s4_dpas_tuning_supported(q, p, bias, use_dpas_scales)) {
         ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128_k64, "dpas_w4a16_dense_policy_m_4_n128_k64")
       } else {
         ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
@@ -654,8 +683,8 @@ class XpuWrapper {
                       const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
     if (m > 1) return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
-    if (m == 1 && p->k == 4096 && p->n == 14336 && outt == BTLA_DTYPE::F16 &&
-        woq_s4_dpas_tuning_enabled(q, p, bias, has_dpas_scale_layout(p, blob_count), "ARK_WOQ_S4_DPAS_M1", "1") &&
+  if (m == 1 && outt == BTLA_DTYPE::F16 && woq_s4_dpas_m1_selected(p->k, p->n) &&
+    woq_s4_dpas_tuning_supported(q, p, bias, has_dpas_scale_layout(p, blob_count)) &&
         woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count)) {
       return 0;
     }

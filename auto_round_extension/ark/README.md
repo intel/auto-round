@@ -48,8 +48,10 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 These opt-ins apply only to device ID `0x674f` with symmetric INT4 weights, INT8 compute configuration, FP16 activation and scale at the kernel boundary, group size 128, group-major packed scales, and no bias. Neither changes the default dispatch:
 
-- `ARK_WOQ_S4_DPAS_M1=1` allows DPAS for `M=1, K=4096, N=14336`, without padding.
+- `ARK_WOQ_S4_DPAS_M1=1` allows unpadded single-row DPAS for shapes listed in `ARK_WOQ_S4_DPAS_M1_SHAPES` as comma-separated `KxN` pairs. The shape table is read once, on the first enabled single-row call. An unset, empty, or invalid table keeps GEMV.
 - `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects K64 for `M=2, K=14336, N=4096`.
+
+Populate the single-row table only with shapes measured on the target device against GEMV at the same batch size. Require a lower median latency, no tail-latency regression, and acceptable numerical results for each input dtype the process uses. The native selector sees FP16 for both FP16 input and converted BF16 input, so the table cannot distinguish them.
 
 All other calls, including calls on B70, retain the original dispatch even when both settings are enabled. BF16 conversion and packed weights are unchanged.
 

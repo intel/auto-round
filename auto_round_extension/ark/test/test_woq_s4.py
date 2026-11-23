@@ -368,11 +368,11 @@ def test_dense_s4_dpas_single_row_opt_in(monkeypatch):
 
     m1_switch = "ARK_WOQ_S4_DPAS_M1"
     monkeypatch.delenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", raising=False)
+    monkeypatch.setenv("ARK_WOQ_S4_DPAS_M1_SHAPES", "256x256,512x384,256x192")
     device_id = getattr(torch.xpu.get_device_properties(0), "device_id", None)
-    in_features = 4096
     group_size = 128
-    for n in (ACCURACY_N, 14336):
-        eligible = n == 14336 and device_id == 0x674F
+    for in_features, n, can_select in ((256, 256, True), (512, 384, True), (512, 256, False), (256, 192, False)):
+        eligible = can_select and device_id == 0x674F
         activation, packw, bias, reference = _ark_case(8, n=n, k=in_features, blocksize=group_size, with_bias=False)
         single = activation[:1].clone()
         args = (packw, bias, n, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
