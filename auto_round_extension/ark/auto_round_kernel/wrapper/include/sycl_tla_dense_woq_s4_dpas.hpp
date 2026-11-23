@@ -101,6 +101,11 @@ class dpas_w4a16_dense_policy_m_4_n128 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
 };
 
+class dpas_w4a16_dense_policy_m_4_n128_k64 : public dpas_w4a16_dense_policy_m_4_n128 {
+ public:
+  using WGTile = Shape<_4, _128, _64>;
+};
+
 class dpas_w4a16_dense_policy_m_8_n128 : public dpas_policy_base {
  public:
   using WGTile = Shape<_8, _128, _32>;
@@ -724,9 +729,10 @@ void DenseWoqS4GEMMLauncherUpTo(sycl::queue& stream,
                                 const int gemm_n,
                                 const int gemm_k,
                                 const int group_size) {
+  constexpr int min_group_size = get<2>(typename policy::WGTile{});
   if (!is_supported_group_size(group_size) ||
-      group_size > MaxGroupSize ||
-      !DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, kMinGroupSize,
+      group_size < min_group_size || group_size > MaxGroupSize ||
+      !DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, min_group_size,
                                           layoutA, layoutB, policy, ScaleGroupMajor>(
           stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
           gemm_k, group_size)) {

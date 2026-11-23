@@ -25,6 +25,7 @@ namespace detail {
                         const void* bias, void* outputs, int gemm_m, int gemm_n, int gemm_k, int group_size)
 
 ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m4_n128);
+ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m4_n128_k64);
 ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m8_n128);
 ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m16);
 ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m32);

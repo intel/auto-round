@@ -44,6 +44,15 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 > **W4A8 / W2A8 Rescale (QQQ-style)** — On XPU, ARK supports \~[QQQ](https://github.com/HandH1998/QQQ)-style compute: low-bit weights (INT2/INT4) are re-scaled to INT8 and computed via INT8 GEMM, avoiding FP16 dequantization for better throughput. Enabled automatically via environment variable `ARK_AUTO_S8`; see [xpu_wrapper.hpp](auto_round_kernel/wrapper/include/xpu_wrapper.hpp).
 
+**Dense W4A16 on XPU (SYCL TLA)**
+
+The following settings apply to symmetric INT4 weights with FP16 activation and scale at the kernel boundary. Neither changes the default dispatch:
+
+- `ARK_WOQ_S4_DPAS_M1=1` lets an eligible single input row use the same DPAS kernel as two rows, without padding. Shapes that do not qualify still use GEMV.
+- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects a K tile of 64 for eligible DPAS calls with up to four rows and group size at least 64. Smaller groups keep the original K tile. This setting alone does not switch single-row calls from GEMV.
+
+These settings apply to all qualifying calls in the process. Measure the input shapes on your device before enabling them: either setting can increase latency for some shapes. BF16 conversion and packed weights are unchanged.
+
 ### Supported Data Types
 
 #### CPU

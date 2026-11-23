@@ -44,6 +44,15 @@ ARK 算子已集成到以下项目：
 
 > **W4A8 / W2A8 重缩放（QQQ 风格）**：XPU 上支持将低比特权重（INT2/INT4）重缩放为 INT8，并通过 INT8 GEMM 计算，避免 FP16 反量化。该功能通过环境变量 `ARK_AUTO_S8` 自动启用，详见 [xpu_wrapper.hpp](auto_round_kernel/wrapper/include/xpu_wrapper.hpp)。
 
+**XPU 上的稠密 W4A16（SYCL TLA）**
+
+以下设置适用于内核输入激活和 scale 为 FP16 的对称 INT4 权重。两项设置默认均不改变原有分流：
+
+- `ARK_WOQ_S4_DPAS_M1=1` 让符合条件的单行输入使用与双行相同的 DPAS 内核，不需要补行。不符合条件的形状仍使用 GEMV。
+- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` 将符合条件、不超过四行且 group size 至少为 64 的 DPAS 调用的 K tile 设为 64。较小的 group size 仍使用原有 K tile。单独开启此项不会让单行调用切换出 GEMV。
+
+设置会影响进程内所有符合条件的调用。由于部分形状可能变慢，启用前请在目标设备上测量实际输入形状。BF16 转换和权重打包格式不变。
+
 ### 支持的数据类型
 
 #### CPU

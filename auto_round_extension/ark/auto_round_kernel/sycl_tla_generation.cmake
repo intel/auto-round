@@ -143,6 +143,7 @@ function(generate_dense_woq_s4_policy policy_suffix policy_name)
 endfunction()
 
 generate_dense_woq_s4_policy(m4_n128 dpas_w4a16_dense_policy_m_4_n128)
+generate_dense_woq_s4_policy(m4_n128_k64 dpas_w4a16_dense_policy_m_4_n128_k64)
 generate_dense_woq_s4_policy(m8_n128 dpas_w4a16_dense_policy_m_8_n128)
 generate_dense_woq_s4_policy(m16 dpas_w4a16_dense_policy_m_16)
 generate_dense_woq_s4_policy(m32 dpas_w4a16_dense_policy_m_32)

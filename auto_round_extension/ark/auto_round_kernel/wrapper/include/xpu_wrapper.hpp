@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <vector>
 #include "utils.hpp"
@@ -571,7 +573,7 @@ class XpuWrapper {
   }
 
   static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
-    if (m <= 1 || m > kWoqS4DpasMaxM) return false;
+    if (m == 0 || m > kWoqS4DpasMaxM) return false;
     if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
     if (p->blocksize <= 0 || p->n % woq_s4_dpas_tile_n(m, p) != 0 || (p->k & 1) != 0) return false;
     if (p->k % p->blocksize != 0) return false;
@@ -610,8 +612,13 @@ class XpuWrapper {
     } while (false);
 
     if (m <= 4) {
-      ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
-    }  else if (m <= 8) {
+      const char* tile_k = std::getenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K");
+      if (p->blocksize >= 64 && tile_k && std::strcmp(tile_k, "64") == 0) {
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128_k64, "dpas_w4a16_dense_policy_m_4_n128_k64")
+      } else {
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
+      }
+    } else if (m <= 8) {
       ARK_WOQ_S4_DPAS_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
     } else if (m <= 16) {
       ARK_WOQ_S4_DPAS_LAUNCH(run_m16, "dpas_w4a16_dense_policy_m_16")
@@ -635,13 +642,14 @@ class XpuWrapper {
 
   static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
                       const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
-    if (m > 1) {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-      return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
-#else
-      return -1;
-#endif
+    const char* dpas_m1 = m == 1 ? std::getenv("ARK_WOQ_S4_DPAS_M1") : nullptr;
+    if ((m > 1 || (dpas_m1 && std::strcmp(dpas_m1, "1") == 0)) &&
+      woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count)) {
+      return 0;
     }
+  #endif
+    if (m > 1) return -1;
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blobB;

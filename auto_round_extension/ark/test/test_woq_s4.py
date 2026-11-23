@@ -9,6 +9,7 @@ from importlib import metadata
 from pathlib import Path
 
 import auto_round_kernel as ark
+import pytest
 import torch
 from ut_utils import gen_weis8
 
@@ -156,20 +157,22 @@ def _torch_int4_case(n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
 
 def _ark_case(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
     torch.manual_seed(0)
-    raw_s8_wei = gen_weis8(WEIGHT_TYPE, device, k, n)
-    scales = torch.rand(k // blocksize, n, dtype=dtype, device=device) / 300 + 0.002
-    bias = torch.randn(1, n, dtype=dtype, device=device)
+    raw_s8_wei = gen_weis8(WEIGHT_TYPE, "cpu", k, n)
+    scales = torch.rand(k // blocksize, n, dtype=dtype) / 300 + 0.002
+    bias = torch.randn(1, n, dtype=dtype)
     zp = torch.Tensor()
 
-    packw = ark.repack_quantized_weight(raw_s8_wei, scales, zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+    packw = ark.repack_quantized_weight(
+        raw_s8_wei.to(device), scales.to(device), zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM
+    )
     revert_wei_t = ark.unpack_weight(packw, dtype, n, k, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
-    revert_wei = revert_wei_t.t()
+    revert_wei = revert_wei_t.cpu().t()
     ref_weight = raw_s8_wei.to(dtype) * scales.repeat_interleave(repeats=blocksize, dim=0)
     assert torch.allclose(revert_wei, ref_weight)
 
-    activation = torch.randn(m, k, dtype=dtype, device=device) - 0.5
+    activation = torch.randn(m, k, dtype=dtype) - 0.5
     ref_c = torch.matmul(activation, revert_wei) + bias
-    return activation, packw, bias, ref_c
+    return activation.to(device), packw, bias.to(device), ref_c
 
 
 def _runs_for_m(m):
@@ -203,9 +206,8 @@ def _guarded_output(m, n, dtype=DTYPE, device=DEVICE):
     return storage[:m], storage[m:]
 
 
-def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE):
-    activation, packw, bias, ref_c = _ark_case(m, n=n, k=k, blocksize=blocksize)
-    output, guard = _guarded_output(m, n)
+def _ark_woqgemm_with_output_guard(activation, packw, bias, n, k, blocksize):
+    output, guard = _guarded_output(activation.shape[0], n)
 
     actual = ark.woqgemm(
         activation,
@@ -223,8 +225,14 @@ def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=
     _sync_xpu()
 
     assert actual.data_ptr() == output.data_ptr()
+    assert torch.all(guard.cpu() == OUTPUT_GUARD_VALUE)
+    return actual.cpu()
+
+
+def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE):
+    activation, packw, bias, ref_c = _ark_case(m, n=n, k=k, blocksize=blocksize)
+    actual = _ark_woqgemm_with_output_guard(activation, packw, bias, n, k, blocksize)
     assert torch.allclose(actual, ref_c, rtol=0.1, atol=2.0)
-    assert torch.all(guard == OUTPUT_GUARD_VALUE)
 
 
 def _memory_bytes(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE):
@@ -288,6 +296,7 @@ def run_ark_woqgemm():
             )
 
         output, dur = _benchmark_loop(call, runs, warmup)
+        output = output.cpu()
         diff = abs(ref_c - output)
         print(
             f"  Max Diff: {diff.max().item():.6f}, Mean Diff: {diff.mean().item():.6f}, "
@@ -349,6 +358,57 @@ def test_dense_s4_dpas_non_tile_aligned_m_accuracy_and_output_bounds():
     for m in DENSE_S4_DPAS_PARTIAL_M_VALUES:
         assert _ark_expected_route(m, ACCURACY_N, ACCURACY_K, BLOCKSIZE) == "woq_s4_dpas"
         _assert_ark_woqgemm_matches_reference_with_output_bounds(m)
+
+
+def test_dense_s4_dpas_single_row_opt_in(monkeypatch):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    m1_switch = "ARK_WOQ_S4_DPAS_M1"
+    monkeypatch.delenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", raising=False)
+    group_size = 128
+    for n in (ACCURACY_N, 192):
+        aligned = n == ACCURACY_N
+        activation, packw, bias, reference = _ark_case(
+            max(M_VALUES) if aligned else 1, n=n, k=ACCURACY_K, blocksize=group_size
+        )
+        single = activation[:1].clone()
+        args = (packw, bias, n, ACCURACY_K, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+        monkeypatch.delenv(m1_switch, raising=False)
+        default = ark.woqgemm(single, *args).cpu().view(torch.int16)
+        monkeypatch.setenv(m1_switch, "0")
+        assert torch.equal(ark.woqgemm(single, *args).cpu().view(torch.int16), default)
+
+        monkeypatch.setenv(m1_switch, "1")
+        actual = _ark_woqgemm_with_output_guard(single, packw, bias, n, ACCURACY_K, group_size)
+        if not aligned:
+            assert torch.equal(actual.view(torch.int16), default)
+            continue
+
+        torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
+        for row_count in M_VALUES[1:]:
+            first = ark.woqgemm(activation[:row_count], *args)[:1].cpu().view(torch.int16)
+            assert torch.equal(actual.view(torch.int16), first), f"M={row_count}"
+
+
+@pytest.mark.parametrize("in_features,group_size", [(256, 32), (64, 64), (256, 128), (512, 256)])
+def test_dense_s4_dpas_small_m_k64(monkeypatch, in_features, group_size):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    tile_switch = "ARK_WOQ_S4_DPAS_SMALL_M_TILE_K"
+    monkeypatch.setenv("ARK_WOQ_S4_DPAS_M1", "1")
+    activation, packw, bias, reference = _ark_case(8, n=ACCURACY_N, k=in_features, blocksize=group_size)
+    args = (packw, bias, ACCURACY_N, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+    for row_count in (1, 2, 3, 4, 8):
+        rows = activation[:row_count].clone()
+        monkeypatch.delenv(tile_switch, raising=False)
+        expected = ark.woqgemm(rows, *args).cpu()
+
+        monkeypatch.setenv(tile_switch, "64")
+        actual = _ark_woqgemm_with_output_guard(rows, packw, bias, ACCURACY_N, in_features, group_size)
+        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16)), f"M={row_count}"
+        torch.testing.assert_close(actual, reference[:row_count], rtol=0.01, atol=0.01)
 
 
 if __name__ == "__main__":
