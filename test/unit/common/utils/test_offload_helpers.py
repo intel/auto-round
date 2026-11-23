@@ -22,6 +22,7 @@ elsewhere.
 
 import json
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -405,3 +406,222 @@ class TestBuildWeightMap:
         index_path.write_text(json.dumps({"weight_map": weight_map}))
 
         assert _build_weight_map(str(tmp_path)) == weight_map
+
+
+# ---------------------------------------------------------------------------
+# OffloadManager stale-dir sweep
+# ---------------------------------------------------------------------------
+class TestOffloadStaleDirSweep:
+    """Startup reclaim of offload temp dirs left behind by dead processes."""
+
+    def _offload_base(self, tmp_path, monkeypatch) -> str:
+        """Point ``AR_WORK_SPACE`` at a *relative* path under ``tmp_path``.
+
+        A relative workspace keeps the test independent of path casing (and of
+        whether the filesystem is case-sensitive), unlike lowercasing an
+        absolute ``tmp_path``.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("AR_WORK_SPACE", "ar_work_space")
+        monkeypatch.delenv("AR_RESUME_DIR", raising=False)
+        base = os.path.join("ar_work_space", "offload")
+        os.makedirs(base, exist_ok=True)
+        return base
+
+    @staticmethod
+    def _make_stale_dir(base: str, name: str, pid: int, host: str | None = None) -> str:
+        """Create a temp dir laid out the way a crashed run leaves it."""
+        from auto_round.utils.offload import _OWNER_MARKER, _hostname_tag
+
+        path = os.path.join(base, name)
+        os.makedirs(path)
+        with open(os.path.join(path, _OWNER_MARKER), "w") as f:
+            json.dump({"pid": pid, "host": host if host is not None else _hostname_tag()}, f)
+        return path
+
+    def test_ensure_dir_is_pid_tagged_and_sweeps_stale(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        stale = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        # Only our own pid counts as alive.
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        tempdir = mgr._ensure_dir()
+        try:
+            assert not os.path.exists(stale), "stale dir from a dead pid should have been swept"
+            assert os.path.basename(tempdir).startswith(f"compressor_{os.getpid()}_")
+        finally:
+            mgr._cleanup_tempdir()
+        assert not os.path.exists(tempdir)
+
+    def test_sweep_keeps_live_resume_and_legacy_dirs(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        dead = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
+        live = self._make_stale_dir(base, f"compressor_{os.getpid()}_cafebabe", os.getpid())
+        # Directories without an owner marker cannot be proven stale: the
+        # resume dir is shared across runs by design, and pre-marker dirs left
+        # by an older AutoRound are indistinguishable from a live run.
+        unmarked = [os.path.join(base, "compressor_resume"), os.path.join(base, "compressor_0gbcamv0")]
+        for d in unmarked:
+            os.makedirs(d)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        mgr._sweep_stale_dirs(base)
+        assert not os.path.exists(dead)
+        assert os.path.isdir(live)
+        for d in unmarked:
+            assert os.path.isdir(d)
+
+    def test_sweep_is_cross_prefix(self, tmp_path, monkeypatch):
+        """A crash in AutoScheme must not leak a dir the compressor never handles."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        foreign = self._make_stale_dir(base, "autoscheme_424242_deadbeef", 424242)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        mgr._sweep_stale_dirs(base)
+        assert not os.path.exists(foreign), "every prefix shares offload/, so all dead dirs go"
+
+    def test_sweep_skips_dirs_owned_by_another_host(self, tmp_path, monkeypatch):
+        """A pid from another machine says nothing about our process table."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        remote = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242, host="some-other-host")
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: False))
+        mgr._sweep_stale_dirs(base)
+        assert os.path.isdir(remote), "shared-storage leftovers from another host must be left alone"
+
+    def test_sweep_tolerates_vanishing_base_dir(self, tmp_path, monkeypatch):
+        """A concurrent cleaner removing offload/ must not break _ensure_dir()."""
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr("os.listdir", lambda _: (_ for _ in ()).throw(FileNotFoundError("gone")))
+        mgr._sweep_stale_dirs(base)  # must not raise
+
+    def test_resume_mode_keeps_resume_dir_but_reclaims_dead_dirs(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        monkeypatch.setenv("AR_RESUME_DIR", str(tmp_path / "resume"))
+        stale = self._make_stale_dir(base, "compressor_424242_deadbeef", 424242)
+        # The resume dir itself is shared across runs by design, so it carries
+        # no owner marker and can never be swept.
+        os.makedirs(os.path.join(base, "compressor_resume"))
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: False))
+        tempdir = mgr._ensure_dir()
+        try:
+            assert tempdir == os.path.join(base, "compressor_resume")
+            # Resume mode is exactly the crash-recovery path, so stale dirs
+            # from the dead run are reclaimed while the resume dir survives.
+            assert not os.path.exists(stale)
+            assert os.path.isdir(tempdir)
+        finally:
+            mgr._cleanup_tempdir()
+
+    def test_pid_alive_handles_out_of_range_pid(self):
+        """An untrustworthy pid tag must read as alive, never as dead."""
+        from auto_round.utils.offload import OffloadManager
+
+        if sys.platform == "win32":  # pragma: no cover - POSIX-only overflow
+            pytest.skip("OverflowError from os.kill is POSIX-specific")
+        assert OffloadManager._pid_alive(2**64) is True
+        assert OffloadManager._pid_alive(0) is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform liveness probe
+# ---------------------------------------------------------------------------
+class TestPidAlivePerPlatform:
+    """The Windows branch must never reach ``os.kill``.
+
+    Windows CI (``.azure-pipelines/compatibility-test.yml``) only runs an import
+    smoke test, so these cases are simulated on any platform: ``sys.platform``
+    is patched and ``os.kill`` is replaced by a spy that both records the call
+    and raises if it is ever reached.
+    """
+
+    @staticmethod
+    def _spy_kill(monkeypatch) -> list:
+        calls = []
+
+        def fake_kill(pid, sig):
+            calls.append((pid, sig))
+            raise AssertionError(f"os.kill({pid}, {sig}) must not be called on Windows")
+
+        monkeypatch.setattr("auto_round.utils.offload.os.kill", fake_kill)
+        return calls
+
+    def test_windows_uses_psutil_instead_of_kill(self, monkeypatch):
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setattr(offload_mod.sys, "platform", "win32")
+        calls = self._spy_kill(monkeypatch)
+        seen = []
+
+        def fake_pid_exists(pid):
+            seen.append(pid)
+            return pid == 4321
+
+        monkeypatch.setattr(offload_mod, "_windows_pid_alive", fake_pid_exists)
+
+        assert offload_mod.OffloadManager._pid_alive(4321) is True
+        assert offload_mod.OffloadManager._pid_alive(1234) is False
+        assert seen == [4321, 1234]
+        assert calls == [], "os.kill is a TerminateProcess on Windows, not a probe"
+
+    def test_windows_pid_alive_calls_psutil_pid_exists(self, monkeypatch):
+        """The real helper delegates to psutil rather than shelling out.
+
+        ``psutil`` arrives transitively rather than from ``requirements.txt``,
+        so a stub module is injected instead of importing it for real.
+        """
+        import types
+
+        from auto_round.utils import offload as offload_mod
+
+        seen = []
+
+        def pid_exists(pid):
+            seen.append(pid)
+            return pid == 4321
+
+        stub = types.ModuleType("psutil")
+        stub.pid_exists = pid_exists
+        monkeypatch.setitem(sys.modules, "psutil", stub)
+        calls = self._spy_kill(monkeypatch)
+
+        assert offload_mod._windows_pid_alive(4321) is True
+        assert offload_mod._windows_pid_alive(1234) is False
+        assert seen == [4321, 1234]
+        assert calls == []
+
+    def test_windows_without_psutil_assumes_alive(self, monkeypatch):
+        """No psutil => "assume alive"; never fall back to os.kill."""
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setitem(sys.modules, "psutil", None)
+        calls = self._spy_kill(monkeypatch)
+
+        assert offload_mod._windows_pid_alive(1234) is True
+        assert calls == [], "falling back to os.kill here would kill pid 1234"
+
+    def test_posix_still_probes_with_signal_zero(self, monkeypatch):
+        """The POSIX path keeps using the cheap kill(pid, 0) probe."""
+        from auto_round.utils import offload as offload_mod
+
+        monkeypatch.setattr(offload_mod.sys, "platform", "linux")
+        calls = []
+        monkeypatch.setattr(offload_mod.os, "kill", lambda pid, sig: calls.append((pid, sig)))
+        monkeypatch.setattr(offload_mod, "_is_zombie", lambda pid: False)
+
+        assert offload_mod.OffloadManager._pid_alive(4321) is True
+        assert calls == [(4321, 0)]

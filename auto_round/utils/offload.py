@@ -47,6 +47,7 @@ import gc
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 from collections import defaultdict
@@ -61,9 +62,58 @@ from auto_round.utils.path_safety import resolve_within_directory, validate_weig
 
 __all__ = ["OffloadManager"]
 
+#: Name of the file each offload temp dir drops to prove which process (and
+#: which machine) created it. Only directories carrying one are ever swept.
+_OWNER_MARKER = ".ar_offload_owner.json"
+
 # =====================================================================
 # Low-level helpers
 # =====================================================================
+
+
+def _hostname_tag() -> str:
+    """Return a stable tag identifying this machine.
+
+    Pids are only meaningful on the host that allocated them, and
+    ``AR_WORK_SPACE`` may sit on shared storage, so a leftover directory from
+    another machine must never be judged by *our* pid table.
+    """
+    try:
+        return socket.gethostname() or ""
+    except OSError:
+        return ""
+
+
+def _windows_pid_alive(pid: int) -> bool:
+    """Windows liveness probe that cannot terminate the process it probes."""
+    try:
+        import psutil  # pylint: disable=C0415
+    except ImportError:
+        # Without psutil the only safe answer is "assume alive": falling back
+        # to os.kill() here would terminate an unrelated live process.
+        return True
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:  # pragma: no cover - defensive
+        return True
+
+
+def _is_zombie(pid: int) -> bool:
+    """Return *True* when *pid* exists only as an unreaped zombie.
+
+    A zombie holds no file descriptors and owns no temp dir, but
+    ``os.kill(pid, 0)`` still succeeds for it. On Linux ``/proc`` is the only
+    portable-enough way to tell; elsewhere we simply report "not a zombie".
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            # The comm field is parenthesised and may contain spaces, so read
+            # the state from after the last ')'.
+            data = f.read()
+        state = data[data.rindex(b")") + 2 : data.rindex(b")") + 3]
+    except (OSError, ValueError):
+        return False
+    return state == b"Z"
 
 
 def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) -> dict:
@@ -860,6 +910,12 @@ class OffloadManager:
 
             base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
             os.makedirs(base_dir, exist_ok=True)
+            # Reclaim disk from runs that were killed before cleanup() could
+            # run (SIGKILL, OOM-killer, host reboot). Safe regardless of mode:
+            # a directory is only removed when its owning process is provably
+            # gone, and the persistent ``{prefix}_resume`` dir carries no owner
+            # marker, so it is never a sweep candidate.
+            self._sweep_stale_dirs(base_dir)
             if envs.AR_RESUME_DIR:
                 # A fresh tempfile.mkdtemp()
                 # directory is unique to this process and can never be found
@@ -876,7 +932,12 @@ class OffloadManager:
                 self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
                 os.makedirs(self._tempdir, exist_ok=True)
             else:
-                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
+                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_{os.getpid()}_", dir=base_dir)
+            # Claim the directory so a later run can prove it is stale. The
+            # resume dir is shared across runs by design, so it is never
+            # claimed -- that is what keeps it out of the sweep.
+            if not envs.AR_RESUME_DIR:
+                self._write_owner_marker(self._tempdir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
@@ -963,6 +1024,104 @@ class OffloadManager:
                 except OSError:
                     pass  # not empty or already removed
         self._tempdir = None
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """Return *True* if a process with *pid* is, or may be, still running.
+
+        Deliberately biased towards *True*: treating a live owner as dead would
+        delete data another process is still using, while the reverse merely
+        leaves a directory behind for a later run to collect.
+        """
+        if pid <= 0:
+            return False
+        if sys.platform == "win32":
+            # ``os.kill`` is not a liveness probe on Windows -- every signal
+            # except CTRL_C_EVENT/CTRL_BREAK_EVENT is routed to
+            # ``TerminateProcess``, so probing a live pid would kill it.
+            return _windows_pid_alive(pid)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False  # no such process
+        except (OverflowError, ValueError):
+            # pid outside this platform's range -- the tag is not trustworthy.
+            return True
+        except OSError:
+            return True  # e.g. PermissionError -> exists, owned by another user
+        # A killed-but-unreaped child still answers kill(pid, 0). It owns
+        # nothing any more, so treat it as dead where we can tell.
+        return not _is_zombie(pid)
+
+    def _write_owner_marker(self, tempdir: str) -> None:
+        """Record who owns *tempdir* so a later run can prove it is stale."""
+        try:
+            with open(os.path.join(tempdir, _OWNER_MARKER), "w") as f:
+                json.dump({"pid": os.getpid(), "host": _hostname_tag()}, f)
+        except OSError as e:
+            # Without a marker the directory is simply never auto-reclaimed;
+            # never fail the run over it.
+            logger.debug(f"OffloadManager ({self._prefix}): could not write owner marker in {tempdir}: {e}")
+
+    @staticmethod
+    def _read_owner_marker(path: str) -> dict | None:
+        """Return the owner record of *path*, or *None* when it is unknown."""
+        if not os.path.isdir(path):
+            return None
+        try:
+            with open(os.path.join(path, _OWNER_MARKER)) as f:
+                owner = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return owner if isinstance(owner, dict) else None
+
+    def _sweep_stale_dirs(self, base_dir: str) -> None:
+        """Remove leftover offload temp dirs whose owning process is dead.
+
+        A run that is killed or crashes mid-tuning (SIGKILL, OOM-killer, host
+        reboot) never reaches :meth:`cleanup`, so its temp dir stays on disk
+        forever; nothing ever reads it again. Sweeping here reclaims that space.
+
+        Only directories carrying an owner marker written by this module are
+        candidates:
+
+        * a directory without one (the persistent ``{prefix}_resume`` dir, or
+          leftovers from an older AutoRound) cannot be *proven* stale;
+        * a directory owned by another host is skipped as well, because a pid
+          only means something on the machine that allocated it and
+          ``AR_WORK_SPACE`` may live on shared storage.
+
+        Every manager sweeps every prefix, not just its own: ``offload/`` is
+        shared by the ``compressor`` and ``autoscheme`` offloaders, so a crash
+        in one would otherwise leak a directory the other never touches.
+
+        Known limitation: if the dead owner's pid is later reused by an
+        unrelated process, its directory reads as alive and is kept. That is
+        the safe direction to fail in (see :meth:`_pid_alive`); the space is
+        reclaimed by hand, or by whichever run eventually observes the pid
+        gone.
+        """
+        try:
+            entries = os.listdir(base_dir)
+        except OSError:
+            return  # base dir vanished between makedirs() and here
+        host = _hostname_tag()
+        for entry in sorted(entries):
+            full = os.path.join(base_dir, entry)
+            owner = self._read_owner_marker(full)
+            if owner is None or owner.get("host") != host:
+                continue
+            pid = owner.get("pid")
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            if self._pid_alive(pid):
+                continue
+            try:
+                shutil.rmtree(full)
+            except Exception as e:
+                logger.warning(f"OffloadManager ({self._prefix}): could not remove stale dir {full}: {e}")
+                continue
+            logger.info(f"OffloadManager ({self._prefix}): removed stale temp dir {full} (dead pid {pid})")
 
     # ------------------------------------------------------------------
     # Internal: clearing
