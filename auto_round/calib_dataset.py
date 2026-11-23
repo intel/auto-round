@@ -1964,7 +1964,6 @@ def select_dataset(dataset, indices):
     if not indices:
         if hasattr(dataset, "select"):
             return dataset.select([])
-        from datasets import Dataset
 
         return Dataset.from_list([])
     try:
@@ -2073,7 +2072,7 @@ def _get_dataset_impl(
         dataset_new = datasets.Dataset.from_list(data)
         return dataset_new
 
-    datasets, data_lens = [], {}
+    datasets = []
     spec_target_nums = []
     system_prompt = "You are a helpful assistant."
     for name in dataset_names:
@@ -2110,7 +2109,6 @@ def _get_dataset_impl(
                     config_name = value
                 elif key == "num":
                     num_target = int(value)
-                    data_lens[name] = int(value)
                 elif key == "concat":
                     do_concat = value.lower() != "false"
                 elif key == "apply_chat_template":
@@ -2251,8 +2249,6 @@ def _get_dataset_impl(
             dataset = dataset.filter(filter_func)
             if num_target is not None:
                 dataset = select_dataset(dataset, range(num_target))
-            elif name in data_lens:
-                dataset = select_dataset(dataset, range(data_lens[name]))
             # select_dataset may have already materialized the requested rows.
             if isinstance(dataset, IterableDataset):
                 dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
@@ -2265,8 +2261,6 @@ def _get_dataset_impl(
             d_len = get_dataset_len(dataset)
             if num_target is not None:
                 dataset = select_dataset(dataset, range(min(num_target, d_len)))
-            elif name in data_lens:
-                dataset = select_dataset(dataset, range(min(data_lens[name], d_len)))
         # Format last: tensorizing whole batches during filter/select would run torch ops that
         # are not fork-safe (libgomp) in the preprocessing subprocess.
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
@@ -2276,65 +2270,50 @@ def _get_dataset_impl(
     if len(datasets) == 1:
         dataset_final = datasets[0]
     else:
-        indices = range(len(datasets))
-        lens = []
+        lens = [get_dataset_len(d) for d in datasets]
+        target_cnt = [0] * len(datasets)
+
+        # Pass 1: Allocate explicit quotas requested via 'num='
+        configured_allocated = 0
         for i in range(len(datasets)):
-            cnt = get_dataset_len(datasets[i])
-            lens.append(cnt)
-        res = sorted(zip(indices, lens), key=lambda x: x[1])
-
-        # res = sorted(zip(indices, datasets), key=lambda x: len(x[1]))
-        indices = [item[0] for item in res]
-        datasets = [datasets[item[0]] for item in res]
-        dataset_names = [dataset_names[item[0]] for item in res]
-        spec_target_nums = [spec_target_nums[item[0]] for item in res]
-        # Keep the lengths aligned with the reordered datasets.
-        lens = [item[1] for item in res]
-
-        configured_sum = sum(n for n in spec_target_nums if n is not None)
-        cnt = (
-            configured_sum
-            if (configured_sum > 0 and configured_sum <= nsamples)
-            else (0 if not data_lens else sum(data_lens.values()))
-        )
-        dataset_cnt_info = {}
-        if cnt > nsamples:
-            cnt = 0
-
-        # Datasets are visited from smallest to largest, so dividing the remaining
-        # budget by the number of datasets still to fill lets later (larger) datasets
-        # take up what earlier (smaller) ones could not provide.
-        remaining = sum(1 for n in spec_target_nums if n is None)
-        if remaining == 0 and not any(spec_target_nums):
-            remaining = sum(1 for dataset_name in dataset_names if dataset_name.split(":")[0] not in data_lens)
-
-        for i in range(len(datasets)):
-            name = dataset_names[i].split(":")[0]
             if spec_target_nums[i] is not None:
-                target_cnt = min(spec_target_nums[i], lens[i])
-                if target_cnt < spec_target_nums[i]:
-                    cnt -= spec_target_nums[i] - target_cnt
-            elif name not in data_lens:
-                target_cnt = (nsamples - cnt) // remaining if remaining > 0 else 0
-                remaining -= 1
-                target_cnt = min(target_cnt, lens[i])
-                cnt += target_cnt
-            else:
-                target_cnt = min(data_lens[name], lens[i])
-            datasets[i] = select_dataset(datasets[i], range(target_cnt))
-            label = dataset_names[i] if name in dataset_cnt_info else name
-            dataset_cnt_info[label] = target_cnt
-        if len(datasets) > 1:
-            from datasets import concatenate_datasets
+                alloc = min(spec_target_nums[i], lens[i])
+                target_cnt[i] = alloc
+                configured_allocated += alloc
 
-            # Source metadata is not part of the calibration input and can have
-            # incompatible schemas. Restrict columns only for the merge operation.
-            datasets = [dataset.select_columns(["input_ids", "attention_mask"]) for dataset in datasets]
-            dataset_final = concatenate_datasets(datasets)
-            dataset_final = dataset_final.shuffle(seed=seed)
-            logger.info(dataset_cnt_info)
+        # Pass 2: Distribute remaining budget across unconfigured datasets.
+        # Unconfigured datasets are visited from smallest to largest so smaller ones
+        # that cap out leave their remaining quota to larger datasets.
+        remaining_budget = max(0, nsamples - configured_allocated)
+        unconfigured_indices = [i for i in range(len(datasets)) if spec_target_nums[i] is None]
+        if unconfigured_indices:
+            unconfigured_sorted = sorted(unconfigured_indices, key=lambda idx: lens[idx])
+            remaining_count = len(unconfigured_sorted)
+            for idx in unconfigured_sorted:
+                quota = remaining_budget // remaining_count if remaining_count > 0 else 0
+                alloc = min(quota, lens[idx])
+                target_cnt[idx] = alloc
+                remaining_budget -= alloc
+                remaining_count -= 1
+
+        repo_names = [dn.split(":")[0] for dn in dataset_names]
+        dataset_cnt_info = {}
+        for i in range(len(datasets)):
+            datasets[i] = select_dataset(datasets[i], range(target_cnt[i]))
+            name = repo_names[i]
+            label = dataset_names[i] if repo_names.count(name) > 1 else name
+            dataset_cnt_info[label] = target_cnt[i]
+
+        from datasets import concatenate_datasets
+
+        # Source metadata is not part of the calibration input and can have
+        # incompatible schemas. Restrict columns only for the merge operation.
+        non_empty_datasets = [d.select_columns(["input_ids", "attention_mask"]) for d in datasets if len(d) > 0]
+        if non_empty_datasets:
+            dataset_final = concatenate_datasets(non_empty_datasets).shuffle(seed=seed)
         else:
             dataset_final = datasets[0]
+        logger.info(dataset_cnt_info)
 
     if len(dataset_final) > nsamples:
         dataset_final = select_dataset(dataset_final, range(nsamples))

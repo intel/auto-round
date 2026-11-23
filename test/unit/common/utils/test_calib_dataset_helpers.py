@@ -651,6 +651,103 @@ class TestMixedDatasetSampleAllocation:
         assert len(dataset) == 20
         assert self._count_by_source(dataset) == {1: 4, 2: 8, 3: 8}
 
+    def test_multi_config_same_repo_quota_isolation(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        def _get(config=None, **kwargs):
+            base = 1000 if config == "cfg_a" else 2000
+            input_ids = [[base + i, base + i + 1, base + i + 2, base + i + 3] for i in range(50)]
+            return Dataset.from_dict({"input_ids": input_ids, "attention_mask": [[1] * 4] * 50})
+
+        monkeypatch.setitem(calib_dataset.CALIB_DATASETS, "_ar_multi_cfg_", _get)
+
+        dataset = calib_dataset._get_dataset_impl(
+            MagicMock(),
+            seqlen=4,
+            dataset_name="_ar_multi_cfg_:config=cfg_a:num=3,_ar_multi_cfg_:config=cfg_b",
+            nsamples=10,
+        )
+
+        assert len(dataset) == 10
+        assert self._count_by_source(dataset) == {1: 3, 2: 7}
+
+    def test_configured_dataset_under_delivery_frees_budget_for_unconfigured(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        self._register(monkeypatch, "_ar_under_delivering_", num_rows=5, base=1000)
+        self._register(monkeypatch, "_ar_unconfigured_", num_rows=50, base=2000)
+
+        dataset = calib_dataset._get_dataset_impl(
+            MagicMock(),
+            seqlen=4,
+            dataset_name="_ar_under_delivering_:num=10,_ar_unconfigured_",
+            nsamples=10,
+        )
+
+        assert len(dataset) == 10
+        assert self._count_by_source(dataset) == {1: 5, 2: 5}
+
+    def test_configured_dataset_under_delivery_with_smaller_unconfigured_dataset(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        self._register(monkeypatch, "_ar_under_delivering_", num_rows=5, base=1000)
+        self._register(monkeypatch, "_ar_unconfigured_small_", num_rows=3, base=2000)
+
+        dataset = calib_dataset._get_dataset_impl(
+            MagicMock(),
+            seqlen=4,
+            dataset_name="_ar_under_delivering_:num=10,_ar_unconfigured_small_",
+            nsamples=10,
+        )
+
+        assert len(dataset) == 8
+        assert self._count_by_source(dataset) == {1: 5, 2: 3}
+
+
+# ---------------------------------------------------------------------------
+# select_dataset helper and fallback handling
+# ---------------------------------------------------------------------------
+class TestSelectDataset:
+    def test_select_dataset_fallback_handles_custom_or_failed_select(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        class _CustomDataset:
+            def __iter__(self):
+                return iter(
+                    [
+                        {"input_ids": [101, 102], "attention_mask": [1, 1]},
+                        {"input_ids": [201, 202], "attention_mask": [1, 1]},
+                    ]
+                )
+
+            def __len__(self):
+                return 2
+
+        ds = _CustomDataset()
+        result = calib_dataset.select_dataset(ds, [1])
+        assert isinstance(result, Dataset)
+        assert len(result) == 1
+        assert result[0]["input_ids"] == [201, 202]
+
+    def test_select_dataset_empty_indices(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        class _CustomDataset:
+            def __iter__(self):
+                return iter([])
+
+        ds = _CustomDataset()
+        result = calib_dataset.select_dataset(ds, [])
+        assert isinstance(result, Dataset)
+        assert len(result) == 0
+
+    def test_select_dataset_empty_indices_on_hf_dataset(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        ds = Dataset.from_dict({"input_ids": [[1]], "attention_mask": [[1]]})
+        result = calib_dataset.select_dataset(ds, [])
+        assert len(result) == 0
+
 
 # ---------------------------------------------------------------------------
 # get_opencode_instruct_dataset packing
