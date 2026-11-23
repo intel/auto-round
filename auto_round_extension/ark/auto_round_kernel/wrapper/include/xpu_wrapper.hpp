@@ -580,6 +580,16 @@ class XpuWrapper {
     return woq_s4_dpas_group_size_ok(p->blocksize);
   }
 
+  static bool woq_s4_dpas_tuning_enabled(sycl::queue* q, const QuantParam* p, const void* bias, bool group_n,
+                                        const char* setting, const char* value) {
+    if (p->blocksize != 128 || p->compute_type != BTLA_DTYPE::S8 || bias || !group_n) return false;
+    const char* option = std::getenv(setting);
+    if (!option || std::strcmp(option, value) != 0) return false;
+    const auto device = q->get_device();
+    return device.has(sycl::aspect::ext_intel_device_id) &&
+           device.get_info<sycl::ext::intel::info::device::device_id>() == 0x674f;
+  }
+
   static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
                               void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
     if (p->weight_type != BTLA_DTYPE::S4 || p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
@@ -612,8 +622,8 @@ class XpuWrapper {
     } while (false);
 
     if (m <= 4) {
-      const char* tile_k = std::getenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K");
-      if (p->blocksize >= 64 && tile_k && std::strcmp(tile_k, "64") == 0) {
+      if (m == 2 && p->k == 14336 && p->n == 4096 &&
+          woq_s4_dpas_tuning_enabled(q, p, bias, use_dpas_scales, "ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", "64")) {
         ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128_k64, "dpas_w4a16_dense_policy_m_4_n128_k64")
       } else {
         ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
@@ -643,13 +653,15 @@ class XpuWrapper {
   static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
                       const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-    const char* dpas_m1 = m == 1 ? std::getenv("ARK_WOQ_S4_DPAS_M1") : nullptr;
-    if ((m > 1 || (dpas_m1 && std::strcmp(dpas_m1, "1") == 0)) &&
-      woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count)) {
+    if (m > 1) return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
+    if (m == 1 && p->k == 4096 && p->n == 14336 && outt == BTLA_DTYPE::F16 &&
+        woq_s4_dpas_tuning_enabled(q, p, bias, has_dpas_scale_layout(p, blob_count), "ARK_WOQ_S4_DPAS_M1", "1") &&
+        woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count)) {
       return 0;
     }
-  #endif
+#else
     if (m > 1) return -1;
+#endif
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blobB;

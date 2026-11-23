@@ -46,12 +46,12 @@ ARK 算子已集成到以下项目：
 
 **XPU 上的稠密 W4A16（SYCL TLA）**
 
-以下设置适用于内核输入激活和 scale 为 FP16 的对称 INT4 权重。两项设置默认均不改变原有分流：
+以下设置仅适用于设备 ID `0x674f`、对称 INT4 权重、INT8 compute 配置、内核激活和 scale 为 FP16、group size 为 128、group-major packed scale 且无 bias 的调用。两项设置默认均不改变原有分流：
 
-- `ARK_WOQ_S4_DPAS_M1=1` 让符合条件的单行输入使用与双行相同的 DPAS 内核，不需要补行。不符合条件的形状仍使用 GEMV。
-- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` 将符合条件、不超过四行且 group size 至少为 64 的 DPAS 调用的 K tile 设为 64。较小的 group size 仍使用原有 K tile。单独开启此项不会让单行调用切换出 GEMV。
+- `ARK_WOQ_S4_DPAS_M1=1` 让 `M=1, K=4096, N=14336` 走 DPAS，不需要补行。
+- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` 让 `M=2, K=14336, N=4096` 使用 K64。
 
-设置会影响进程内所有符合条件的调用。由于部分形状可能变慢，启用前请在目标设备上测量实际输入形状。BF16 转换和权重打包格式不变。
+即使同时开启两项设置，其他调用（包括 B70 上的调用）也会保留原有分流。BF16 转换和权重打包格式不变。
 
 ### 支持的数据类型
 

@@ -46,12 +46,12 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-The following settings apply to symmetric INT4 weights with FP16 activation and scale at the kernel boundary. Neither changes the default dispatch:
+These opt-ins apply only to device ID `0x674f` with symmetric INT4 weights, INT8 compute configuration, FP16 activation and scale at the kernel boundary, group size 128, group-major packed scales, and no bias. Neither changes the default dispatch:
 
-- `ARK_WOQ_S4_DPAS_M1=1` lets an eligible single input row use the same DPAS kernel as two rows, without padding. Shapes that do not qualify still use GEMV.
-- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects a K tile of 64 for eligible DPAS calls with up to four rows and group size at least 64. Smaller groups keep the original K tile. This setting alone does not switch single-row calls from GEMV.
+- `ARK_WOQ_S4_DPAS_M1=1` allows DPAS for `M=1, K=4096, N=14336`, without padding.
+- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects K64 for `M=2, K=14336, N=4096`.
 
-These settings apply to all qualifying calls in the process. Measure the input shapes on your device before enabling them: either setting can increase latency for some shapes. BF16 conversion and packed weights are unchanged.
+All other calls, including calls on B70, retain the original dispatch even when both settings are enabled. BF16 conversion and packed weights are unchanged.
 
 ### Supported Data Types
 
