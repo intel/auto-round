@@ -151,6 +151,8 @@ cannot provide enough samples within the timeout, a warning is logged and the co
 Multiple subsets can be combined with `+`, e.g. `config=subset1+subset2`, or declared as distinct specifications with independent quotas:
 `--dataset my-org/my-dataset:config=subset1:num=80,my-org/my-dataset:config=subset2:num=80`
 
+> **Note:** The built-in `mbpp` loader currently ignores `config`/`subset` options. To select the `sanitized` config, use the generic loader by explicitly specifying fields: `google-research-datasets/mbpp:config=sanitized:split=train:fields=prompt+code:concat=True`.
+
 **Recommended multi-dataset mixture** (compatible with modern `datasets>=4.0` and `5.x`):
 ```python
 calib_dataset = (
