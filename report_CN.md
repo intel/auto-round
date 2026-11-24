@@ -1,47 +1,166 @@
 # W4A4 量化方案评测报告
 
-**模型：** Llama-3.1-8B-Instruct
-**评测日期：** 2026-11-19
-**评测状态：** 12 种方案全部完成
+**模型：** Llama-3.1-8B-Instruct、Phi-4、Qwen2.5-7B-Instruct、Qwen3-32B
+**评测状态：** 4 个模型的 12 种方案全部完成（48/48）
 
 ## 摘要
 
-本实验评估了 12 种 group size 为 16 的 W4A4 量化方案，任务包括 GSM8K、MMLU、HellaSwag 和 PIQA。`EXP-UINT4-ZP-BF16` 的四项平均分最高，为 **75.14%**；同时在 GSM8K flexible/strict（75.97% / 75.44%）、MMLU（66.00%）以及 PIQA acc/acc_norm（79.60% / 80.58%）上领先。`EXP-UINT4-ZP-FP16` 的 HellaSwag acc 最高，为 59.16%；`EXP-UINT4-ZP-UE5M3` 的 HellaSwag acc_norm 最高，为 78.72%。
+本实验在 4 个模型上评估了 12 种 group size 为 16 的 W4A4 量化方案，任务包括 GSM8K、MMLU、HellaSwag 和 PIQA。按四模型平均，BF16 基线为 **80.44%**，各 W4A4 方案在 77.58% 至 79.72% 之间，比 BF16 低 0.72 至 2.86 个百分点。
 
-四项平均分适合作为综合参考，不能替代针对具体任务的方案选择。所有结果均来自单次评测，应视为点估计。
+`EXP-UINT4-ZP-BF16` 的四模型平均最高，为 **79.72%**（比 BF16 低 0.72），在 4 个模型上均排名第一，但存储开销也最高（5.25 BPW）。考虑 bit per weight 后，`EXP-UINT4-ZP-UE5M3` 的性价比最好：4.75 BPW 下达到 79.23%，高于所有 5.0 BPW 方案。在最低的 4.5 BPW 下，`EXP-FP4-UE5M3` 最好（78.44%）。INT4 中，在 BPW 和 scale 类型对应时，`[-8, 7]` 码值均优于对称 `[-7, 7]`；`[-7, 7]` 家族整体最弱（77.58%–78.07%），主要原因是 GSM8K 分数偏低。
+
+四项平均适合作为综合参考，不能替代针对具体任务的方案选择。所有结果均来自单次评测，应视为点估计。
 
 ## 实验方法
 
-- **模型：** Llama-3.1-8B-Instruct，模型快照 `0e9e39f249a16976918f6564b8830bc894c89659`。
-- **量化：** 权重 4 bit、激活 4 bit（W4A4），group size 16，round-to-nearest（RTN），以 fake quant 方式评测。
-- **校准：** RTN 路径不使用校准数据。命令保留了 128 个样本的数据集参数，但该 RTN 配置不会用它拟合量化参数。
+- **模型：** Llama-3.1-8B-Instruct、Phi-4、Qwen2.5-7B-Instruct、Qwen3-32B。
+- **量化：** 权重 4 bit、激活 4 bit（W4A4），激活与权重同格式量化，group size 16，round-to-nearest（RTN），以 fake quant 方式评测。
+- **校准：** RTN 路径不使用校准数据。
 - **随机种子：** 42。
-- **似然任务：** MMLU acc、HellaSwag acc 与 acc_norm、PIQA acc 与 acc_norm；评测 dtype 为 BF16。前 8 个方案的 batch size 为 32，后 4 个方案为 16。
+- **似然任务：** MMLU acc、HellaSwag acc 与 acc_norm、PIQA acc 与 acc_norm；评测 dtype 为 BF16。batch size 因模型和批次而异。
 - **生成任务：** GSM8K，5-shot greedy 解码，BF16 评测 dtype，batch size 8，生成长度上限 1024 tokens。
-- **结果口径：** 下表均为百分比。四项平均为 GSM8K strict-match、MMLU acc、HellaSwag acc_norm 和 PIQA acc_norm 的算术平均。
+- **结果口径：** 下表均为百分比。四项平均为 GSM8K strict-match、MMLU acc、HellaSwag acc_norm 和 PIQA acc_norm 的算术平均；四模型平均对各模型等权。BF16 为未量化基线。
 
 ## Scheme 定义
 
-下列方案均以 4 bit 量化权重和激活，group size 为 16；各方案通过码值表示和 scale 类型区分。
+下列方案均以 4 bit 量化权重和激活，group size 为 16；各方案通过码值表示和 scale 类型区分。表中按码值家族分组：FP4、INT4 `[-8, 7]`、INT4 `[-7, 7]`、带 zero-point 的 UINT4。
 
-| Scheme                 | 权重/激活码值表示                                          | 每组 scale 与偏移                                       |
-| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------- |
-| `EXP-FP4-UE5M3`      | 有符号 E2M1 FP4；可表示的幅值为 0、0.5、1、1.5、2、3、4、6 | 非负 UE5M3 scale；无 zero-point                         |
-| `EXP-FP4-BF16`       | 有符号 E2M1 FP4                                            | 非负 BF16 scale；无 zero-point                          |
-| `EXP-FP4-FP16`       | 有符号 E2M1 FP4                                            | 非负 FP16 scale；无 zero-point                          |
-| `EXP-INT4-E4M3`      | 有符号整数码 `[-8, 7]`                                   | 有符号 E4M3 scale；scale 符号决定哪一侧使用较大幅值端点 |
-| `EXP-INT4-UE5M3`     | 对称有符号整数码 `[-7, 7]`                               | 非负 UE5M3 scale                                        |
-| `EXP-INT4-UBF16`     | 对称有符号整数码 `[-7, 7]`                               | 非负 BF16 scale                                         |
-| `EXP-INT4-UFP16`     | 对称有符号整数码 `[-7, 7]`                               | 非负 FP16 scale                                         |
-| `EXP-INT4-BF16`      | 有符号整数码 `[-8, 7]`                                   | 有符号 BF16 scale；scale 符号决定哪一侧使用较大幅值端点 |
-| `EXP-INT4-FP16`      | 有符号整数码 `[-8, 7]`                                   | 有符号 FP16 scale；scale 符号决定哪一侧使用较大幅值端点 |
-| `EXP-UINT4-ZP-UE5M3` | 无符号整数码 `[0, 15]`                                   | 非负 UE5M3 scale 与每组 zero-point                      |
-| `EXP-UINT4-ZP-BF16`  | 无符号整数码 `[0, 15]`                                   | 非负 BF16 scale 与每组 zero-point                       |
-| `EXP-UINT4-ZP-FP16`  | 无符号整数码 `[0, 15]`                                   | 非负 FP16 scale 与每组 zero-point                       |
+| Scheme | 权重/激活码值表示 | 每组 scale 与偏移 | 权重 BPW |
+| --- | --- | --- | ---: |
+| `EXP-FP4-UE5M3` | 有符号 E2M1 FP4；可表示的幅值为 0、0.5、1、1.5、2、3、4、6 | 非负 UE5M3 scale；无 zero-point | 4.5 |
+| `EXP-FP4-BF16` | 有符号 E2M1 FP4 | 非负 BF16 scale；无 zero-point | 5.0 |
+| `EXP-FP4-FP16` | 有符号 E2M1 FP4 | 非负 FP16 scale；无 zero-point | 5.0 |
+| `EXP-INT4-E4M3` | 有符号整数码 `[-8, 7]` | 有符号 E4M3 scale；scale 符号决定哪一侧使用较大幅值端点 | 4.5 |
+| `EXP-INT4-BF16` | 有符号整数码 `[-8, 7]` | 有符号 BF16 scale；scale 符号决定哪一侧使用较大幅值端点 | 5.0 |
+| `EXP-INT4-FP16` | 有符号整数码 `[-8, 7]` | 有符号 FP16 scale；scale 符号决定哪一侧使用较大幅值端点 | 5.0 |
+| `EXP-INT4-UE5M3` | 对称有符号整数码 `[-7, 7]` | 非负 UE5M3 scale | 4.5 |
+| `EXP-INT4-UBF16` | 对称有符号整数码 `[-7, 7]` | 非负 BF16 scale | 5.0 |
+| `EXP-INT4-UFP16` | 对称有符号整数码 `[-7, 7]` | 非负 FP16 scale | 5.0 |
+| `EXP-UINT4-ZP-UE5M3` | 无符号整数码 `[0, 15]` | 非负 UE5M3 scale 与每组 zero-point | 4.75* |
+| `EXP-UINT4-ZP-BF16` | 无符号整数码 `[0, 15]` | 非负 BF16 scale 与每组 zero-point | 5.25* |
+| `EXP-UINT4-ZP-FP16` | 无符号整数码 `[0, 15]` | 非负 FP16 scale 与每组 zero-point | 5.25* |
 
 带 zero-point 的方案以无符号存储码围绕每组 zero-point 表示数值，反量化后的值仍可为负数。`UE5M3`、`UBF16`、`UFP16` 中的 `U` 表示 scale 非负，不表示浮点编码为无符号格式。
 
+权重 BPW（bits per weight）为 group size 16 下的理论存储开销：`BPW = 4 + scale_bits / 16 + zero_point_bits / 16`，E4M3/UE5M3 scale 按 8 bit、BF16/FP16 scale 按 16 bit 计算。带 `*` 的方案假设 zero-point 以 4 bit 紧凑存储。未计入对齐、填充等容器开销。
+
 ## 精度结果
+
+### 按方案的四项平均
+
+各模型列为该模型的四项平均。按四模型平均排序；加粗为每列中最好的量化方案。
+
+| Scheme | BPW | Llama-3.1-8B-Instruct | Phi-4 | Qwen2.5-7B-Instruct | Qwen3-32B | 四模型平均 | 相对 BF16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 16 | 76.24 | 82.67 | 78.53 | 84.32 | 80.44 | — |
+| `EXP-UINT4-ZP-BF16` | 5.25* | **75.14** | **82.17** | **77.94** | **83.65** | **79.72** | -0.72 |
+| `EXP-UINT4-ZP-FP16` | 5.25* | 74.49 | 81.98 | 77.35 | 83.28 | 79.27 | -1.17 |
+| `EXP-UINT4-ZP-UE5M3` | 4.75* | 73.99 | 81.94 | 77.54 | 83.43 | 79.23 | -1.21 |
+| `EXP-INT4-BF16` | 5.0 | 73.25 | 81.81 | 77.86 | 82.66 | 78.89 | -1.55 |
+| `EXP-INT4-FP16` | 5.0 | 72.91 | 81.81 | 77.86 | 82.66 | 78.81 | -1.63 |
+| `EXP-FP4-UE5M3` | 4.5 | 71.00 | 81.51 | 77.73 | 83.51 | 78.44 | -2.00 |
+| `EXP-FP4-BF16` | 5.0 | 71.14 | 81.61 | 77.75 | 83.17 | 78.42 | -2.02 |
+| `EXP-FP4-FP16` | 5.0 | 70.98 | 81.50 | 77.53 | 83.56 | 78.39 | -2.05 |
+| `EXP-INT4-UFP16` | 5.0 | 72.62 | 81.70 | 76.05 | 81.93 | 78.07 | -2.37 |
+| `EXP-INT4-E4M3` | 4.5 | 70.61 | 81.48 | 76.93 | 83.01 | 78.01 | -2.43 |
+| `EXP-INT4-UBF16` | 5.0 | 72.40 | 81.38 | 75.86 | 81.65 | 77.82 | -2.62 |
+| `EXP-INT4-UE5M3` | 4.5 | 71.74 | 81.03 | 75.77 | 81.78 | 77.58 | -2.86 |
+
+### 各任务的四模型平均
+
+| Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
+| --- | ---: | ---: | ---: | ---: |
+| BF16 | 85.22 | 74.34 | 81.07 | 81.14 |
+| `EXP-UINT4-ZP-BF16` | **84.72** | **73.30** | 80.32 | **80.55** |
+| `EXP-UINT4-ZP-FP16` | 83.53 | 73.16 | **80.40** | 80.01 |
+| `EXP-UINT4-ZP-UE5M3` | 83.26 | 72.94 | 80.32 | 80.39 |
+| `EXP-INT4-BF16` | 82.90 | 72.89 | 80.11 | 79.67 |
+| `EXP-INT4-FP16` | 82.41 | 72.98 | 80.12 | 79.73 |
+| `EXP-FP4-UE5M3` | 81.98 | 72.37 | 79.72 | 79.69 |
+| `EXP-FP4-BF16` | 81.50 | 72.46 | 80.01 | 79.69 |
+| `EXP-FP4-FP16` | 81.39 | 72.40 | 79.96 | 79.82 |
+| `EXP-INT4-UFP16` | 80.54 | 72.38 | 79.73 | 79.65 |
+| `EXP-INT4-E4M3` | 81.58 | 71.66 | 79.51 | 79.28 |
+| `EXP-INT4-UBF16` | 79.72 | 72.57 | 79.63 | 79.37 |
+| `EXP-INT4-UE5M3` | 78.39 | 72.47 | 79.59 | 79.86 |
+
+## 结果分析与结论
+
+1. 12 种 W4A4 方案在 4.5–5.25 BPW 下，四模型平均与 BF16 相差均不超过 2.86 个百分点（77.58%–79.72%，BF16 为 80.44%）。
+2. 精度与 BPW 的帕累托前沿上只有三个方案：`EXP-FP4-UE5M3`（4.5 BPW，78.44%）、`EXP-UINT4-ZP-UE5M3`（4.75 BPW，79.23%）和 `EXP-UINT4-ZP-BF16`（5.25 BPW，79.72%）。其余方案都能被其中之一以相同或更低的 BPW 追平或超过。
+3. `EXP-UINT4-ZP-BF16` 精度最高：四模型平均最高，在 4 个模型上均排名第一，且 GSM8K（84.72%）、MMLU（73.30%）、PIQA（80.55%）的四模型平均最高。它比 `EXP-UINT4-ZP-UE5M3` 高 0.49 个百分点，代价是多 0.5 BPW。
+4. `EXP-UINT4-ZP-UE5M3` 是精度/位宽比最好的选择：4.75 BPW 下比最好的 5.0 BPW 方案（`EXP-INT4-BF16`，78.89%）高 0.34 个百分点，与 BF16 仅差 1.21 个百分点。
+5. INT4 中，同 BPW 下 `[-8, 7]` 码值范围一致优于对称 `[-7, 7]`：E4M3 对 UE5M3（4.5 BPW）高 0.43，BF16 对 UBF16 高 1.07，FP16 对 UFP16 高 0.74 个百分点，主要来自 GSM8K（高 1.9–3.2 个百分点）。多出的负端码值和有符号 scale 不增加存储开销。
+6. 8 bit scale 的代价取决于码值家族。从 16 bit scale 换成 8 bit scale（节省 0.5 BPW）时，FP4 几乎无损（78.44% 对 78.39%–78.42%），带 zero-point 的 INT4 损失 0.04–0.49，`[-7, 7]` INT4 损失 0.24–0.49，`[-8, 7]` INT4（E4M3）损失 0.80–0.88 个百分点。BF16 与 FP16 scale 相差不超过 0.45 个百分点，且没有一致的优劣顺序。
+7. 不同模型的敏感度不同。Llama-3.1-8B-Instruct 下降最多（相对 BF16 的 76.24% 下降 1.10–5.63 个百分点），Phi-4 下降最少（相对 82.67% 下降 0.50–1.64 个百分点）。
+8. 方案选择应结合存储预算和目标工作负载。四项平均和 BPW 可用于整体比较；若部署目标明确，应优先参考对应任务指标。
+
+以上结论仅适用于这 4 个模型、本实验配置和单次评测结果，不构成统计显著性结论，也不能保证其他模型或推理后端上的排序一致。
+
+## Details
+
+### 完整结果
+
+分数为百分比。
+
+| 模型 | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Llama-3.1-8B-Instruct | BF16 | 76.72 | 68.07 | 79.17 | 81.01 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-UE5M3` | 63.84 | 63.67 | 77.49 | 79.00 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3` | 65.13 | 62.04 | 76.71 | 78.56 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3` | 64.97 | 64.39 | 78.32 | 79.27 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3` | 71.57 | 65.48 | 78.72 | 80.20 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-BF16` | 63.46 | 64.00 | 78.22 | 78.89 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-FP16` | 62.32 | 63.78 | 78.05 | 79.76 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16` | 67.10 | 64.76 | 78.34 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16` | 68.16 | 64.29 | 78.47 | 79.54 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16` | 75.44 | 66.00 | 78.52 | 80.58 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16` | 73.54 | 65.95 | 78.54 | 79.92 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-BF16` | 70.05 | 65.04 | 78.52 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-FP16` | 68.08 | 65.38 | 78.54 | 79.65 |
+| Phi-4 | BF16 | 90.67 | 76.86 | 81.98 | 81.18 |
+| Phi-4 | `EXP-FP4-UE5M3` | 88.86 | 75.67 | 81.00 | 80.52 |
+| Phi-4 | `EXP-INT4-E4M3` | 88.55 | 75.42 | 81.14 | 80.79 |
+| Phi-4 | `EXP-INT4-UE5M3` | 85.82 | 76.11 | 81.00 | 81.18 |
+| Phi-4 | `EXP-UINT4-ZP-UE5M3` | 89.23 | 75.99 | 81.26 | 81.28 |
+| Phi-4 | `EXP-FP4-BF16` | 88.48 | 75.92 | 81.02 | 81.01 |
+| Phi-4 | `EXP-FP4-FP16` | 88.63 | 76.06 | 80.96 | 80.36 |
+| Phi-4 | `EXP-INT4-UBF16` | 88.02 | 75.77 | 81.03 | 80.69 |
+| Phi-4 | `EXP-INT4-UFP16` | 89.08 | 76.09 | 81.06 | 80.58 |
+| Phi-4 | `EXP-UINT4-ZP-BF16` | 90.22 | 75.92 | 81.36 | 81.18 |
+| Phi-4 | `EXP-UINT4-ZP-FP16` | 89.76 | 75.78 | 81.30 | 81.07 |
+| Phi-4 | `EXP-INT4-BF16` | 88.78 | 76.47 | 81.20 | 80.79 |
+| Phi-4 | `EXP-INT4-FP16` | 88.78 | 76.47 | 81.20 | 80.79 |
+| Qwen2.5-7B-Instruct | BF16 | 81.58 | 71.64 | 80.52 | 80.36 |
+| Qwen2.5-7B-Instruct | `EXP-FP4-UE5M3` | 83.24 | 70.57 | 79.04 | 78.07 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-E4M3` | 81.96 | 69.69 | 78.44 | 77.64 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3` | 75.59 | 70.11 | 78.55 | 78.84 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-UE5M3` | 81.20 | 70.67 | 79.24 | 79.05 |
+| Qwen2.5-7B-Instruct | `EXP-FP4-BF16` | 83.17 | 70.25 | 79.07 | 78.51 |
+| Qwen2.5-7B-Instruct | `EXP-FP4-FP16` | 82.64 | 70.35 | 79.20 | 77.91 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UBF16` | 76.88 | 70.05 | 78.86 | 77.64 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UFP16` | 77.03 | 70.11 | 78.76 | 78.29 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-BF16` | 81.27 | 71.41 | 79.57 | 79.49 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16` | 80.44 | 71.14 | 79.70 | 78.13 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-BF16` | 83.55 | 70.36 | 79.11 | 78.40 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-FP16` | 83.55 | 70.36 | 79.11 | 78.40 |
+| Qwen3-32B | BF16 | 91.89 | 80.79 | 82.60 | 82.00 |
+| Qwen3-32B | `EXP-FP4-UE5M3` | 91.96 | 79.57 | 81.34 | 81.18 |
+| Qwen3-32B | `EXP-INT4-E4M3` | 90.67 | 79.48 | 81.76 | 80.14 |
+| Qwen3-32B | `EXP-INT4-UE5M3` | 87.19 | 79.28 | 80.50 | 80.14 |
+| Qwen3-32B | `EXP-UINT4-ZP-UE5M3` | 91.05 | 79.60 | 82.05 | 81.01 |
+| Qwen3-32B | `EXP-FP4-BF16` | 90.90 | 79.66 | 81.74 | 80.36 |
+| Qwen3-32B | `EXP-FP4-FP16` | 91.96 | 79.42 | 81.63 | 81.23 |
+| Qwen3-32B | `EXP-INT4-UBF16` | 86.88 | 79.69 | 80.27 | 79.76 |
+| Qwen3-32B | `EXP-INT4-UFP16` | 87.87 | 79.01 | 80.64 | 80.20 |
+| Qwen3-32B | `EXP-UINT4-ZP-BF16` | 91.96 | 79.86 | 81.83 | 80.96 |
+| Qwen3-32B | `EXP-UINT4-ZP-FP16` | 90.37 | 79.78 | 82.06 | 80.90 |
+| Qwen3-32B | `EXP-INT4-BF16` | 89.23 | 79.70 | 81.60 | 80.09 |
+| Qwen3-32B | `EXP-INT4-FP16` | 89.23 | 79.69 | 81.62 | 80.09 |
+
+### Llama-3.1-8B-Instruct 扩展指标
+
+Llama-3.1-8B-Instruct 额外报告了 GSM8K flexible-extract 以及 HellaSwag/PIQA 的未归一化 acc。加粗为该指标最好的方案。
 
 | Scheme                 | GSM8K flexible / strict | MMLU acc | HellaSwag acc / acc_norm | PIQA acc / acc_norm |        四项平均 |
 | ---------------------- | ----------------------: | -------: | -----------------------: | ------------------: | --------------: |
@@ -57,12 +176,3 @@
 | `EXP-UINT4-ZP-FP16`  |           74.75 / 73.54 |    65.95 |  **59.16** / 78.54 |       78.89 / 79.92 |           74.49 |
 | `EXP-INT4-BF16`      |           72.25 / 70.05 |    65.04 |            58.78 / 78.52 |       78.78 / 79.38 |           73.25 |
 | `EXP-INT4-FP16`      |           70.96 / 68.08 |    65.38 |            58.74 / 78.54 |       78.73 / 79.65 |           72.91 |
-
-## 结果分析与结论
-
-1. `EXP-UINT4-ZP-BF16` 按本报告定义的四项平均排名第一（75.14%），并在 GSM8K flexible/strict、MMLU acc、PIQA acc/acc_norm 上取得最高分。
-2. 带 zero-point 的三种方案整体表现较强，四项平均在 73.99% 至 75.14% 之间，高于本表中不带 zero-point 的 FP4 和 INT4 方案。
-3. scale dtype 的效果依任务而异，BF16 与 FP16 不存在对所有任务都占优的统一排序。例如，`EXP-UINT4-ZP-FP16` 的 HellaSwag acc 最高，而 `EXP-UINT4-ZP-UE5M3` 的 HellaSwag acc_norm 最高。
-4. 方案选择应结合目标工作负载。四项平均可用于整体比较；若部署目标明确，应优先参考对应任务指标。
-
-以上结论仅适用于本模型、本实验配置和单次评测结果，不构成统计显著性结论，也不能保证其他模型或推理后端上的排序一致。

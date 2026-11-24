@@ -22,13 +22,13 @@
 | `EXP-FP4-BF16`†       | W4 / A4     |        78.35 |
 | `EXP-FP4-FP16`†       | W4 / A4     |        78.35 |
 
-注意：上表为历史结果。当时 FP4 方案是 W4A4，INT4 方案只量化权重（W4A16），两类分数不是同等条件下的对比。带 `†` 的结果与当前 preset 的激活配置不同，带 `‡` 的结果还使用了已修复的 `[-8, 7]` 截断逻辑，详见「受影响的历史结果」；修复后的 W4A4 复测见「W4A4 快速复测」。
+注意：上表为历史结果。当时 FP4 方案是 W4A4，INT4 方案只量化权重（W4A16），两类分数不是同等条件下的对比。带 `†` 的结果与当前 preset 的激活配置不同，带 `‡` 的结果还使用了已修复的 `[-8, 7]` 截断逻辑，详见「受影响的历史结果」；修复后的当前定义结果见「完整结果 · W4A4」。
 
 BF16 与 FP16 scale 的平均结果几乎相同，没有显示出某一种 dtype 的全面优势。所有结果均来自单次评测，小幅差异不应解读为统计显著。
 
 ### 受影响的历史结果
 
-2026-11-19 修复了两个问题：INT4 方案此前只量化权重（`act_bits=16`），FP4 的 BF16/FP16 scale 变体的激活使用 `nvfp4_v2` 而非与权重相同的格式；`EXP-INT4-UE5M3` 此前使用 `[-8, 7]` 并把正侧最大值截到 7。现在所有 EXP 方案的激活都与权重同格式量化（W4A4），`EXP-INT4-UE5M3` 恢复对称 `[-7, 7]`。本文历史表格中的标记含义如下：
+已修复两个问题：INT4 方案此前只量化权重（`act_bits=16`），FP4 的 BF16/FP16 scale 变体的激活使用 `nvfp4_v2` 而非与权重相同的格式；`EXP-INT4-UE5M3` 此前使用 `[-8, 7]` 并把正侧最大值截到 7。现在所有 EXP 方案的激活都与权重同格式量化（W4A4），`EXP-INT4-UE5M3` 恢复对称 `[-7, 7]`。本文历史表格中的标记含义如下：
 
 | 方案                                                                                                                    | 历史结果的实际配置                        | 当前定义                                    | 标记 |
 | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------- | ---- |
@@ -37,26 +37,7 @@ BF16 与 FP16 scale 的平均结果几乎相同，没有显示出某一种 dtype
 | `EXP-FP4-BF16/FP16`                                                                                                   | W4A4；激活为 `nvfp4_v2`（UE5M3 scale）  | W4A4；激活与权重同为 BF16/FP16 scale 的 FP4 | †   |
 | `EXP-FP4-UE5M3`                                                                                                       | W4A4；激活为 `nvfp4_v2`                 | 不变                                        | 无   |
 
-带标记的历史分数不代表当前 preset 的精度，仅保留用于追溯；如需按当前定义比较，请使用下方复测结果或重新评测。
-
-### W4A4 快速复测（2026-11-19）
-
-以下为 Llama-3.1-8B-Instruct 在修复后当前 preset 下的完整复测结果。12 个 scheme 均以 W4A4、group size 16、RTN 运行；GSM8K 为 5-shot greedy、生成上限 1024 tokens。分数为百分比。平均分按 GSM8K strict-match、MMLU acc、HellaSwag acc_norm、PIQA acc_norm 四项等权算术平均。此表是单模型复测，不与上方历史四模型平均直接混比。
-
-| Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm | 四项平均 |
-| --- | --- | --- | --- | --- | --- |
-| `EXP-FP4-UE5M3` | 63.84 | 63.67 | 77.49 | 79.00 | 71.00 |
-| `EXP-INT4-E4M3` | 65.13 | 62.04 | 76.71 | 78.56 | 70.61 |
-| `EXP-INT4-UE5M3` | 64.97 | 64.39 | 78.32 | 79.27 | 71.74 |
-| `EXP-UINT4-ZP-UE5M3` | 71.57 | 65.48 | 78.72 | 80.20 | 73.99 |
-| `EXP-FP4-BF16` | 63.46 | 64.00 | 78.22 | 78.89 | 71.14 |
-| `EXP-FP4-FP16` | 62.32 | 63.78 | 78.05 | 79.76 | 70.98 |
-| `EXP-INT4-UBF16` | 67.10 | 64.76 | 78.34 | 79.38 | 72.40 |
-| `EXP-INT4-UFP16` | 68.16 | 64.29 | 78.47 | 79.54 | 72.61 |
-| `EXP-UINT4-ZP-BF16` | 75.44 | 66.00 | 78.52 | 80.58 | 75.13 |
-| `EXP-UINT4-ZP-FP16` | 73.54 | 65.95 | 78.54 | 79.92 | 74.49 |
-| `EXP-INT4-BF16` | 70.05 | 65.04 | 78.52 | 79.38 | 73.25 |
-| `EXP-INT4-FP16` | 68.08 | 65.38 | 78.54 | 79.65 | 72.91 |
+带标记的历史分数不代表当前 preset 的精度，仅保留用于追溯；如需按当前定义比较，请使用「完整结果 · W4A4」或重新评测。
 
 ### 平均精度
 
@@ -159,71 +140,75 @@ auto-round eval "$EVAL_MODEL" \
 
 ### 完整结果
 
-分数为百分比。结果列统一为 GSM8K strict-match、MMLU acc、HellaSwag acc_norm 和 PIQA acc_norm。
+分数为百分比。结果列统一为 GSM8K strict-match、MMLU acc、HellaSwag acc_norm 和 PIQA acc_norm。两张表的 BF16 基线相同。所有结果均为单次评测。
+
+#### WOQ（W4A16）
+
+INT4 方案的历史结果，只量化权重（`act_bits=16`），对应上方「结论」和「平均精度」中带 `†` 的 INT4 分数。`‡` 表示还使用了已修复的 `[-8, 7]` 截断逻辑。
 
 | 模型 | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
 | --- | --- | --- | --- | --- | --- |
 | Llama-3.1-8B-Instruct | BF16 | 76.72 | 68.07 | 79.17 | 81.01 |
-| Llama-3.1-8B-Instruct | `EXP-FP4-UE5M3` | 67.93 | 63.32 | 77.69 | 79.05 |
-| Llama-3.1-8B-Instruct | `EXP-FP4-BF16`† | 63.53 | 63.74 | 78.04 | 79.87 |
-| Llama-3.1-8B-Instruct | `EXP-FP4-FP16`† | 63.84 | 63.71 | 77.93 | 78.84 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3`† | 68.99 | 64.19 | 77.78 | 80.14 |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3`† | 75.82 | 66.42 | 79.00 | 80.79 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3`†‡ | 68.31 | 64.88 | 78.09 | 80.25 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16`† | 71.49 | 66.56 | 79.39 | 80.69 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16`† | 71.72 | 66.74 | 79.29 | 80.90 |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16`† | 74.91 | 67.11 | 79.08 | 80.63 |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16`† | 74.15 | 67.17 | 78.97 | 80.20 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-BF16`† | 71.72 | 66.91 | 78.97 | 80.74 |
-| Llama-3.1-8B-Instruct | `EXP-INT4-FP16`† | 71.49 | 66.85 | 79.00 | 80.69 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3` | 68.99 | 64.19 | 77.78 | 80.14 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3` | 75.82 | 66.42 | 79.00 | 80.79 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3`‡ | 68.31 | 64.88 | 78.09 | 80.25 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16` | 71.49 | 66.56 | 79.39 | 80.69 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16` | 71.72 | 66.74 | 79.29 | 80.90 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16` | 74.91 | 67.11 | 79.08 | 80.63 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16` | 74.15 | 67.17 | 78.97 | 80.20 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-BF16` | 71.72 | 66.91 | 78.97 | 80.74 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-FP16` | 71.49 | 66.85 | 79.00 | 80.69 |
 | Phi-4 | BF16 | 90.67 | 76.86 | 81.98 | 81.18 |
-| Phi-4 | `EXP-FP4-UE5M3` | 90.45 | 75.67 | 81.00 | 80.52 |
-| Phi-4 | `EXP-FP4-BF16`† | 88.70 | 75.99 | 81.14 | 80.58 |
-| Phi-4 | `EXP-FP4-FP16`† | 88.70 | 75.84 | 80.97 | 80.69 |
-| Phi-4 | `EXP-INT4-E4M3`† | 89.39 | 75.89 | 81.57 | 81.07 |
-| Phi-4 | `EXP-UINT4-ZP-UE5M3`† | 89.99 | 75.98 | 81.59 | 81.77 |
-| Phi-4 | `EXP-INT4-UE5M3`†‡ | 88.63 | 75.67 | 81.36 | 81.07 |
-| Phi-4 | `EXP-INT4-UBF16`† | 89.23 | 76.46 | 81.47 | 81.01 |
-| Phi-4 | `EXP-INT4-UFP16`† | 88.86 | 76.46 | 81.47 | 81.12 |
-| Phi-4 | `EXP-UINT4-ZP-BF16`† | 89.54 | 76.24 | 81.61 | 81.61 |
-| Phi-4 | `EXP-UINT4-ZP-FP16`† | 89.92 | 76.10 | 81.54 | 81.28 |
-| Phi-4 | `EXP-INT4-BF16`† | 89.69 | 76.79 | 81.49 | 80.85 |
-| Phi-4 | `EXP-INT4-FP16`† | 89.31 | 76.73 | 81.45 | 80.90 |
+| Phi-4 | `EXP-INT4-E4M3` | 89.39 | 75.89 | 81.57 | 81.07 |
+| Phi-4 | `EXP-UINT4-ZP-UE5M3` | 89.99 | 75.98 | 81.59 | 81.77 |
+| Phi-4 | `EXP-INT4-UE5M3`‡ | 88.63 | 75.67 | 81.36 | 81.07 |
+| Phi-4 | `EXP-INT4-UBF16` | 89.23 | 76.46 | 81.47 | 81.01 |
+| Phi-4 | `EXP-INT4-UFP16` | 88.86 | 76.46 | 81.47 | 81.12 |
+| Phi-4 | `EXP-UINT4-ZP-BF16` | 89.54 | 76.24 | 81.61 | 81.61 |
+| Phi-4 | `EXP-UINT4-ZP-FP16` | 89.92 | 76.10 | 81.54 | 81.28 |
+| Phi-4 | `EXP-INT4-BF16` | 89.69 | 76.79 | 81.49 | 80.85 |
+| Phi-4 | `EXP-INT4-FP16` | 89.31 | 76.73 | 81.45 | 80.90 |
 | Qwen2.5-7B-Instruct | BF16 | 81.58 | 71.64 | 80.52 | 80.36 |
-| Qwen2.5-7B-Instruct | `EXP-FP4-UE5M3` | 82.94 | 70.57 | 79.04 | 78.07 |
-| Qwen2.5-7B-Instruct | `EXP-FP4-BF16`† | 80.97 | 70.47 | 78.81 | 77.58 |
-| Qwen2.5-7B-Instruct | `EXP-FP4-FP16`† | 81.96 | 70.25 | 79.14 | 78.02 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-E4M3`† | 83.17 | 70.85 | 79.22 | 79.11 |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-UE5M3`† | 84.91 | 71.26 | 80.03 | 79.76 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3`†‡ | 81.05 | 70.44 | 79.54 | 78.89 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UBF16`† | 81.65 | 71.15 | 79.82 | 79.22 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UFP16`† | 80.89 | 71.09 | 79.92 | 79.05 |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-BF16`† | 81.73 | 71.66 | 80.27 | 79.54 |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16`† | 80.59 | 71.82 | 80.22 | 79.49 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-BF16`† | 86.35 | 71.36 | 80.10 | 78.89 |
-| Qwen2.5-7B-Instruct | `EXP-INT4-FP16`† | 86.20 | 71.29 | 80.08 | 78.78 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-E4M3` | 83.17 | 70.85 | 79.22 | 79.11 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-UE5M3` | 84.91 | 71.26 | 80.03 | 79.76 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3`‡ | 81.05 | 70.44 | 79.54 | 78.89 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UBF16` | 81.65 | 71.15 | 79.82 | 79.22 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UFP16` | 80.89 | 71.09 | 79.92 | 79.05 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-BF16` | 81.73 | 71.66 | 80.27 | 79.54 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16` | 80.59 | 71.82 | 80.22 | 79.49 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-BF16` | 86.35 | 71.36 | 80.10 | 78.89 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-FP16` | 86.20 | 71.29 | 80.08 | 78.78 |
 | Qwen3-32B | BF16 | 91.89 | 80.79 | 82.60 | 82.00 |
-| Qwen3-32B | `EXP-FP4-UE5M3` | 91.28 | 79.28 | 81.57 | 81.12 |
-| Qwen3-32B | `EXP-FP4-BF16`† | 91.74 | 79.80 | 81.97 | 80.69 |
-| Qwen3-32B | `EXP-FP4-FP16`† | 92.04 | 79.47 | 81.59 | 80.63 |
-| Qwen3-32B | `EXP-INT4-E4M3`† | 90.67 | 80.35 | 82.28 | 81.45 |
-| Qwen3-32B | `EXP-UINT4-ZP-UE5M3`† | 90.37 | 80.24 | 82.27 | 81.28 |
-| Qwen3-32B | `EXP-INT4-UE5M3`†‡ | 90.90 | 80.01 | 82.29 | 81.23 |
-| Qwen3-32B | `EXP-INT4-UBF16`† | 88.48 | 80.42 | 81.43 | 80.74 |
-| Qwen3-32B | `EXP-INT4-UFP16`† | 87.79 | 80.36 | 81.45 | 80.90 |
-| Qwen3-32B | `EXP-UINT4-ZP-BF16`† | 90.60 | 80.63 | 82.07 | 81.45 |
-| Qwen3-32B | `EXP-UINT4-ZP-FP16`† | 90.07 | 80.54 | 82.18 | 81.77 |
-| Qwen3-32B | `EXP-INT4-BF16`† | 89.01 | 80.56 | 82.12 | 81.18 |
-| Qwen3-32B | `EXP-INT4-FP16`† | 88.78 | 80.58 | 82.15 | 81.23 |
+| Qwen3-32B | `EXP-INT4-E4M3` | 90.67 | 80.35 | 82.28 | 81.45 |
+| Qwen3-32B | `EXP-UINT4-ZP-UE5M3` | 90.37 | 80.24 | 82.27 | 81.28 |
+| Qwen3-32B | `EXP-INT4-UE5M3`‡ | 90.90 | 80.01 | 82.29 | 81.23 |
+| Qwen3-32B | `EXP-INT4-UBF16` | 88.48 | 80.42 | 81.43 | 80.74 |
+| Qwen3-32B | `EXP-INT4-UFP16` | 87.79 | 80.36 | 81.45 | 80.90 |
+| Qwen3-32B | `EXP-UINT4-ZP-BF16` | 90.60 | 80.63 | 82.07 | 81.45 |
+| Qwen3-32B | `EXP-UINT4-ZP-FP16` | 90.07 | 80.54 | 82.18 | 81.77 |
+| Qwen3-32B | `EXP-INT4-BF16` | 89.01 | 80.56 | 82.12 | 81.18 |
+| Qwen3-32B | `EXP-INT4-FP16` | 88.78 | 80.58 | 82.15 | 81.23 |
 
-### 2026-11-23 W4A4 多模型复测数据
+#### W4A4
 
-以下为当前 W4A4 全方案复测结果，与上方历史表分开记录。数值取自 `/data/xinhe/exp_w4a4_models_rerun_20261120` 中带完成标记的日志，统一采用 GSM8K strict-match、MMLU acc、HellaSwag acc_norm 和 PIQA acc_norm。配置：W4A4、group size 16、RTN、seed 42、fake 量化，不保存量化 checkpoint。
+当前 preset 下的全方案结果：12 个方案的激活均与权重同格式量化（W4A4、group size 16、RTN、seed 42、fake 量化）。Qwen3-32B 的 `EXP-FP4-UE5M3`、`EXP-INT4-UE5M3`、`EXP-UINT4-ZP-UE5M3` 三项 GSM8K 使用推理阶段编译的激活 QDQ，已验证与 eager 结果逐位一致。
 
-截至 2026-11-24 06:00 CST，三个模型的 12 个方案均已完成（36/36）。其中 Qwen3-32B 的 `EXP-FP4-UE5M3`、`EXP-INT4-UE5M3`、`EXP-UINT4-ZP-UE5M3` 三项 GSM8K 使用推理阶段编译的激活 QDQ，已验证与 eager 结果逐位一致。
-
-| Model | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
+| 模型 | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
 | --- | --- | --- | --- | --- | --- |
+| Llama-3.1-8B-Instruct | BF16 | 76.72 | 68.07 | 79.17 | 81.01 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-UE5M3` | 63.84 | 63.67 | 77.49 | 79.00 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3` | 65.13 | 62.04 | 76.71 | 78.56 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3` | 64.97 | 64.39 | 78.32 | 79.27 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3` | 71.57 | 65.48 | 78.72 | 80.20 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-BF16` | 63.46 | 64.00 | 78.22 | 78.89 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-FP16` | 62.32 | 63.78 | 78.05 | 79.76 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16` | 67.10 | 64.76 | 78.34 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16` | 68.16 | 64.29 | 78.47 | 79.54 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16` | 75.44 | 66.00 | 78.52 | 80.58 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16` | 73.54 | 65.95 | 78.54 | 79.92 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-BF16` | 70.05 | 65.04 | 78.52 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-FP16` | 68.08 | 65.38 | 78.54 | 79.65 |
+| Phi-4 | BF16 | 90.67 | 76.86 | 81.98 | 81.18 |
 | Phi-4 | `EXP-FP4-UE5M3` | 88.86 | 75.67 | 81.00 | 80.52 |
 | Phi-4 | `EXP-INT4-E4M3` | 88.55 | 75.42 | 81.14 | 80.79 |
 | Phi-4 | `EXP-INT4-UE5M3` | 85.82 | 76.11 | 81.00 | 81.18 |
@@ -236,6 +221,7 @@ auto-round eval "$EVAL_MODEL" \
 | Phi-4 | `EXP-UINT4-ZP-FP16` | 89.76 | 75.78 | 81.30 | 81.07 |
 | Phi-4 | `EXP-INT4-BF16` | 88.78 | 76.47 | 81.20 | 80.79 |
 | Phi-4 | `EXP-INT4-FP16` | 88.78 | 76.47 | 81.20 | 80.79 |
+| Qwen2.5-7B-Instruct | BF16 | 81.58 | 71.64 | 80.52 | 80.36 |
 | Qwen2.5-7B-Instruct | `EXP-FP4-UE5M3` | 83.24 | 70.57 | 79.04 | 78.07 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-E4M3` | 81.96 | 69.69 | 78.44 | 77.64 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3` | 75.59 | 70.11 | 78.55 | 78.84 |
@@ -248,6 +234,7 @@ auto-round eval "$EVAL_MODEL" \
 | Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16` | 80.44 | 71.14 | 79.70 | 78.13 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-BF16` | 83.55 | 70.36 | 79.11 | 78.40 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-FP16` | 83.55 | 70.36 | 79.11 | 78.40 |
+| Qwen3-32B | BF16 | 91.89 | 80.79 | 82.60 | 82.00 |
 | Qwen3-32B | `EXP-FP4-UE5M3` | 91.96 | 79.57 | 81.34 | 81.18 |
 | Qwen3-32B | `EXP-INT4-E4M3` | 90.67 | 79.48 | 81.76 | 80.14 |
 | Qwen3-32B | `EXP-INT4-UE5M3` | 87.19 | 79.28 | 80.50 | 80.14 |

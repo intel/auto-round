@@ -22,13 +22,13 @@ A macro-average is computed with equal weight for GSM8K strict-match, MMLU acc, 
 | `EXP-FP4-BF16`† | W4 / A4 | 78.35 |
 | `EXP-FP4-FP16`† | W4 / A4 | 78.35 |
 
-Note: the table above contains historical results. At the time, INT4 schemes were weight-only quantized (WOQ, W4A16), while FP4 schemes used their historical configuration; these scores do not represent the current all-scheme W4A4 run, and the two families should not be treated as having the same activation setup. `†` marks results whose activation setup differs from the current preset; `‡` marks results that also used the fixed `[-8, 7]` clipping logic. See "Affected Historical Results". All current W4A4 results, including the Llama re-test from November 19, are grouped under the "2026-11-22 W4A4 Multi-Model Re-run Data" section below.
+Note: the table above contains historical results. At the time, INT4 schemes were weight-only quantized (WOQ, W4A16), while FP4 schemes used their historical configuration; these scores do not represent the current all-scheme W4A4 run, and the two families should not be treated as having the same activation setup. `†` marks results whose activation setup differs from the current preset; `‡` marks results that also used the fixed `[-8, 7]` clipping logic. See "Affected Historical Results". Results under the current definitions are in "Full Results · W4A4" below.
 
 BF16 and FP16 scale variants have nearly identical average results, with no consistent dtype advantage. All results are from a single evaluation run; small differences should not be interpreted as statistically significant.
 
 ### Affected Historical Results
 
-Two issues were fixed on 2026-11-19: INT4 schemes previously quantized weights only (`act_bits=16`), and the BF16/FP16-scale FP4 variants quantized activations with `nvfp4_v2` instead of the weight format; `EXP-INT4-UE5M3` previously used `[-8, 7]` and clipped a positive maximum to 7. All EXP schemes now quantize activations with the same format as the weights (W4A4), and `EXP-INT4-UE5M3` uses symmetric `[-7, 7]` again. Markers in the historical tables mean:
+Two issues have been fixed: INT4 schemes previously quantized weights only (`act_bits=16`), and the BF16/FP16-scale FP4 variants quantized activations with `nvfp4_v2` instead of the weight format; `EXP-INT4-UE5M3` previously used `[-8, 7]` and clipped a positive maximum to 7. All EXP schemes now quantize activations with the same format as the weights (W4A4), and `EXP-INT4-UE5M3` uses symmetric `[-7, 7]` again. Markers in the historical tables mean:
 
 | Scheme | Historical configuration | Current definition | Marker |
 | --- | --- | --- | --- |
@@ -37,11 +37,11 @@ Two issues were fixed on 2026-11-19: INT4 schemes previously quantized weights o
 | `EXP-FP4-BF16/FP16` | W4A4; activations use `nvfp4_v2` (UE5M3 scale) | W4A4; activations use the same BF16/FP16-scale FP4 as weights | † |
 | `EXP-FP4-UE5M3` | W4A4; activations use `nvfp4_v2` | Unchanged | None |
 
-Marked historical scores do not represent the current presets and are kept for traceability only. Use the re-test below, or re-evaluate, to compare current definitions.
+Marked historical scores do not represent the current presets and are kept for traceability only. Use "Full Results · W4A4", or re-evaluate, to compare current definitions.
 
 ### Historical Four-Model Average (Including Historical Llama Configuration)
 
-The two tables below summarize the historical multi-model results above; they are not four-model results for the current unified W4A4 setup. The Llama rows also use historical configurations: INT4 is WOQ (W4A16), while FP4 uses its historical setup. These are distinct from the November 19 current-preset Llama scores included in the W4A4 section below. The average is the arithmetic mean of GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm. We first calculate it for each model, then take an equal-weight average over the four models. This summary does not imply equal task difficulty or statistical significance.
+The two tables below summarize the historical multi-model results above; they are not four-model results for the current unified W4A4 setup. The Llama rows also use historical configurations: INT4 is WOQ (W4A16), while FP4 uses its historical setup. These are distinct from the current-preset Llama scores in "Full Results · W4A4". The average is the arithmetic mean of GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm. We first calculate it for each model, then take an equal-weight average over the four models. This summary does not imply equal task difficulty or statistical significance.
 
 #### By Model
 
@@ -138,73 +138,77 @@ auto-round eval "$EVAL_MODEL" \
   --eval_gen_kwargs max_gen_toks=1024,do_sample=False
 ```
 
-### Historical Multi-Model Results (INT4 Is WOQ)
+### Full Results
 
-Scores are percentages. The reported metrics are GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm.
+Scores are percentages. The reported metrics are GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm. Both tables share the same BF16 baseline. All results are from a single evaluation run.
 
-| Model | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
-| --- | --- | --- | --- | --- | --- |
-| Llama-3.1-8B-Instruct | BF16 | 81.01 | 68.07 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-FP4-UE5M3` | 79.05 | 63.32 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-FP4-BF16`† | 79.87 | 63.74 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-FP4-FP16`† | 78.84 | 63.71 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3`† | 80.14 | 64.19 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3`† | 80.79 | 66.42 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3`†‡ | 80.25 | 64.88 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16`† | 80.69 | 66.56 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16`† | 80.90 | 66.74 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16`† | 80.63 | 67.11 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16`† | 80.20 | 67.17 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-BF16`† | 80.74 | 66.91 |  |  |
-| Llama-3.1-8B-Instruct | `EXP-INT4-FP16`† | 80.69 | 66.85 |  |  |
-| Phi-4 | BF16 | 81.18 | 76.86 |  |  |
-| Phi-4 | `EXP-FP4-UE5M3` | 80.52 | 75.67 |  |  |
-| Phi-4 | `EXP-FP4-BF16`† | 80.58 | 75.99 |  |  |
-| Phi-4 | `EXP-FP4-FP16`† | 80.69 | 75.84 |  |  |
-| Phi-4 | `EXP-INT4-E4M3`† | 81.07 | 75.89 |  |  |
-| Phi-4 | `EXP-UINT4-ZP-UE5M3`† | 81.77 | 75.98 |  |  |
-| Phi-4 | `EXP-INT4-UE5M3`†‡ | 81.07 | 75.67 |  |  |
-| Phi-4 | `EXP-INT4-UBF16`† | 81.01 | 76.46 |  |  |
-| Phi-4 | `EXP-INT4-UFP16`† | 81.12 | 76.46 |  |  |
-| Phi-4 | `EXP-UINT4-ZP-BF16`† | 81.61 | 76.24 |  |  |
-| Phi-4 | `EXP-UINT4-ZP-FP16`† | 81.28 | 76.10 |  |  |
-| Phi-4 | `EXP-INT4-BF16`† | 80.85 | 76.79 |  |  |
-| Phi-4 | `EXP-INT4-FP16`† | 80.90 | 76.73 |  |  |
-| Qwen2.5-7B-Instruct | BF16 | 80.36 | 71.64 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-FP4-UE5M3` | 78.07 | 70.57 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-FP4-BF16`† | 77.58 | 70.47 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-FP4-FP16`† | 78.02 | 70.25 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-E4M3`† | 79.11 | 70.85 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-UE5M3`† | 79.76 | 71.26 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3`†‡ | 78.89 | 70.44 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UBF16`† | 79.22 | 71.15 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-UFP16`† | 79.05 | 71.09 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-BF16`† | 79.54 | 71.66 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16`† | 79.49 | 71.82 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-BF16`† | 78.89 | 71.36 |  |  |
-| Qwen2.5-7B-Instruct | `EXP-INT4-FP16`† | 78.78 | 71.29 |  |  |
-| Qwen3-32B | BF16 | 82.00 | 80.79 |  |  |
-| Qwen3-32B | `EXP-FP4-UE5M3` | 81.12 | 79.28 |  |  |
-| Qwen3-32B | `EXP-FP4-BF16`† | 80.69 | 79.80 |  |  |
-| Qwen3-32B | `EXP-FP4-FP16`† | 80.63 | 79.47 |  |  |
-| Qwen3-32B | `EXP-INT4-E4M3`† | 81.45 | 80.35 |  |  |
-| Qwen3-32B | `EXP-UINT4-ZP-UE5M3`† | 81.28 | 80.24 |  |  |
-| Qwen3-32B | `EXP-INT4-UE5M3`†‡ | 81.23 | 80.01 |  |  |
-| Qwen3-32B | `EXP-INT4-UBF16`† | 80.74 | 80.42 |  |  |
-| Qwen3-32B | `EXP-INT4-UFP16`† | 80.90 | 80.36 |  |  |
-| Qwen3-32B | `EXP-UINT4-ZP-BF16`† | 81.45 | 80.63 |  |  |
-| Qwen3-32B | `EXP-UINT4-ZP-FP16`† | 81.77 | 80.54 |  |  |
-| Qwen3-32B | `EXP-INT4-BF16`† | 81.18 | 80.56 |  |  |
-| Qwen3-32B | `EXP-INT4-FP16`† | 81.23 | 80.58 |  |  |
+#### WOQ (W4A16)
 
-## 2026-11-23 W4A4 Multi-Model Re-run Data
-
-This is the current all-scheme W4A4 re-run, kept separate from the historical INT4 WOQ table above. Scores are taken from logs under `/data/xinhe/exp_w4a4_models_rerun_20261120`; values are filled only when that stage has a completion marker. Blank cells mean the corresponding stage has not completed successfully, not a score of zero. The reported metrics are GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm. Configuration: W4A4, group size 16, RTN, seed 42, fake quantization; no quantized checkpoint is saved.
-
-As of 2026-11-24 06:00 CST, all three models are complete for 12/12 schemes (36/36 model/scheme combinations). The Qwen3-32B GSM8K runs for `EXP-FP4-UE5M3`, `EXP-INT4-UE5M3`, and `EXP-UINT4-ZP-UE5M3` used the inference-time compiled activation QDQ, which was verified to be bit-identical to eager.
+Historical INT4 results with weight-only quantization (`act_bits=16`); these correspond to the `†` INT4 scores in the Summary and the historical averages. `‡` marks results that also used the fixed `[-8, 7]` clipping logic.
 
 | Model | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
 | --- | --- | --- | --- | --- | --- |
+| Llama-3.1-8B-Instruct | BF16 | 76.72 | 68.07 | 79.17 | 81.01 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3` | 68.99 | 64.19 | 77.78 | 80.14 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3` | 75.82 | 66.42 | 79.00 | 80.79 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3`‡ | 68.31 | 64.88 | 78.09 | 80.25 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16` | 71.49 | 66.56 | 79.39 | 80.69 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16` | 71.72 | 66.74 | 79.29 | 80.90 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16` | 74.91 | 67.11 | 79.08 | 80.63 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16` | 74.15 | 67.17 | 78.97 | 80.20 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-BF16` | 71.72 | 66.91 | 78.97 | 80.74 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-FP16` | 71.49 | 66.85 | 79.00 | 80.69 |
+| Phi-4 | BF16 | 90.67 | 76.86 | 81.98 | 81.18 |
+| Phi-4 | `EXP-INT4-E4M3` | 89.39 | 75.89 | 81.57 | 81.07 |
+| Phi-4 | `EXP-UINT4-ZP-UE5M3` | 89.99 | 75.98 | 81.59 | 81.77 |
+| Phi-4 | `EXP-INT4-UE5M3`‡ | 88.63 | 75.67 | 81.36 | 81.07 |
+| Phi-4 | `EXP-INT4-UBF16` | 89.23 | 76.46 | 81.47 | 81.01 |
+| Phi-4 | `EXP-INT4-UFP16` | 88.86 | 76.46 | 81.47 | 81.12 |
+| Phi-4 | `EXP-UINT4-ZP-BF16` | 89.54 | 76.24 | 81.61 | 81.61 |
+| Phi-4 | `EXP-UINT4-ZP-FP16` | 89.92 | 76.10 | 81.54 | 81.28 |
+| Phi-4 | `EXP-INT4-BF16` | 89.69 | 76.79 | 81.49 | 80.85 |
+| Phi-4 | `EXP-INT4-FP16` | 89.31 | 76.73 | 81.45 | 80.90 |
+| Qwen2.5-7B-Instruct | BF16 | 81.58 | 71.64 | 80.52 | 80.36 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-E4M3` | 83.17 | 70.85 | 79.22 | 79.11 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-UE5M3` | 84.91 | 71.26 | 80.03 | 79.76 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3`‡ | 81.05 | 70.44 | 79.54 | 78.89 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UBF16` | 81.65 | 71.15 | 79.82 | 79.22 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-UFP16` | 80.89 | 71.09 | 79.92 | 79.05 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-BF16` | 81.73 | 71.66 | 80.27 | 79.54 |
+| Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16` | 80.59 | 71.82 | 80.22 | 79.49 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-BF16` | 86.35 | 71.36 | 80.10 | 78.89 |
+| Qwen2.5-7B-Instruct | `EXP-INT4-FP16` | 86.20 | 71.29 | 80.08 | 78.78 |
+| Qwen3-32B | BF16 | 91.89 | 80.79 | 82.60 | 82.00 |
+| Qwen3-32B | `EXP-INT4-E4M3` | 90.67 | 80.35 | 82.28 | 81.45 |
+| Qwen3-32B | `EXP-UINT4-ZP-UE5M3` | 90.37 | 80.24 | 82.27 | 81.28 |
+| Qwen3-32B | `EXP-INT4-UE5M3`‡ | 90.90 | 80.01 | 82.29 | 81.23 |
+| Qwen3-32B | `EXP-INT4-UBF16` | 88.48 | 80.42 | 81.43 | 80.74 |
+| Qwen3-32B | `EXP-INT4-UFP16` | 87.79 | 80.36 | 81.45 | 80.90 |
+| Qwen3-32B | `EXP-UINT4-ZP-BF16` | 90.60 | 80.63 | 82.07 | 81.45 |
+| Qwen3-32B | `EXP-UINT4-ZP-FP16` | 90.07 | 80.54 | 82.18 | 81.77 |
+| Qwen3-32B | `EXP-INT4-BF16` | 89.01 | 80.56 | 82.12 | 81.18 |
+| Qwen3-32B | `EXP-INT4-FP16` | 88.78 | 80.58 | 82.15 | 81.23 |
+
+#### W4A4
+
+All 12 schemes under the current presets, with activations quantized in the same format as the weights (W4A4, group size 16, RTN, seed 42, fake quantization). The Qwen3-32B GSM8K runs for `EXP-FP4-UE5M3`, `EXP-INT4-UE5M3`, and `EXP-UINT4-ZP-UE5M3` used inference-time compiled activation QDQ, verified to be bit-identical to eager.
+
+| Model | Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm |
+| --- | --- | --- | --- | --- | --- |
+| Llama-3.1-8B-Instruct | BF16 | 76.72 | 68.07 | 79.17 | 81.01 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-UE5M3` | 63.84 | 63.67 | 77.49 | 79.00 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-E4M3` | 65.13 | 62.04 | 76.71 | 78.56 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UE5M3` | 64.97 | 64.39 | 78.32 | 79.27 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-UE5M3` | 71.57 | 65.48 | 78.72 | 80.20 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-BF16` | 63.46 | 64.00 | 78.22 | 78.89 |
+| Llama-3.1-8B-Instruct | `EXP-FP4-FP16` | 62.32 | 63.78 | 78.05 | 79.76 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UBF16` | 67.10 | 64.76 | 78.34 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-UFP16` | 68.16 | 64.29 | 78.47 | 79.54 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-BF16` | 75.44 | 66.00 | 78.52 | 80.58 |
+| Llama-3.1-8B-Instruct | `EXP-UINT4-ZP-FP16` | 73.54 | 65.95 | 78.54 | 79.92 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-BF16` | 70.05 | 65.04 | 78.52 | 79.38 |
+| Llama-3.1-8B-Instruct | `EXP-INT4-FP16` | 68.08 | 65.38 | 78.54 | 79.65 |
+| Phi-4 | BF16 | 90.67 | 76.86 | 81.98 | 81.18 |
 | Phi-4 | `EXP-FP4-UE5M3` | 88.86 | 75.67 | 81.00 | 80.52 |
 | Phi-4 | `EXP-INT4-E4M3` | 88.55 | 75.42 | 81.14 | 80.79 |
 | Phi-4 | `EXP-INT4-UE5M3` | 85.82 | 76.11 | 81.00 | 81.18 |
@@ -217,6 +221,7 @@ As of 2026-11-24 06:00 CST, all three models are complete for 12/12 schemes (36/
 | Phi-4 | `EXP-UINT4-ZP-FP16` | 89.76 | 75.78 | 81.30 | 81.07 |
 | Phi-4 | `EXP-INT4-BF16` | 88.78 | 76.47 | 81.20 | 80.79 |
 | Phi-4 | `EXP-INT4-FP16` | 88.78 | 76.47 | 81.20 | 80.79 |
+| Qwen2.5-7B-Instruct | BF16 | 81.58 | 71.64 | 80.52 | 80.36 |
 | Qwen2.5-7B-Instruct | `EXP-FP4-UE5M3` | 83.24 | 70.57 | 79.04 | 78.07 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-E4M3` | 81.96 | 69.69 | 78.44 | 77.64 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-UE5M3` | 75.59 | 70.11 | 78.55 | 78.84 |
@@ -229,6 +234,7 @@ As of 2026-11-24 06:00 CST, all three models are complete for 12/12 schemes (36/
 | Qwen2.5-7B-Instruct | `EXP-UINT4-ZP-FP16` | 80.44 | 71.14 | 79.70 | 78.13 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-BF16` | 83.55 | 70.36 | 79.11 | 78.40 |
 | Qwen2.5-7B-Instruct | `EXP-INT4-FP16` | 83.55 | 70.36 | 79.11 | 78.40 |
+| Qwen3-32B | BF16 | 91.89 | 80.79 | 82.60 | 82.00 |
 | Qwen3-32B | `EXP-FP4-UE5M3` | 91.96 | 79.57 | 81.34 | 81.18 |
 | Qwen3-32B | `EXP-INT4-E4M3` | 90.67 | 79.48 | 81.76 | 80.14 |
 | Qwen3-32B | `EXP-INT4-UE5M3` | 87.19 | 79.28 | 80.50 | 80.14 |
@@ -241,22 +247,3 @@ As of 2026-11-24 06:00 CST, all three models are complete for 12/12 schemes (36/
 | Qwen3-32B | `EXP-UINT4-ZP-FP16` | 90.37 | 79.78 | 82.06 | 80.90 |
 | Qwen3-32B | `EXP-INT4-BF16` | 89.23 | 79.70 | 81.60 | 80.09 |
 | Qwen3-32B | `EXP-INT4-FP16` | 89.23 | 79.69 | 81.62 | 80.09 |
-
-### Llama-3.1-8B-Instruct (2026-11-19 W4A4 Re-test)
-
-These single-model Llama results were completed on 2026-11-19 using the fixed current presets and are grouped here with the W4A4 results; the original test date is retained to distinguish them from the other models' November 22 re-runs. All 12 schemes use W4A4, group size 16, and RTN. GSM8K uses 5-shot greedy decoding with a 1024-token generation limit. Scores are percentages. The four-metric average is the arithmetic mean of GSM8K strict-match, MMLU acc, HellaSwag acc_norm, and PIQA acc_norm. Do not directly compare this single-model re-test with the historical four-model averages above.
-
-| Scheme | GSM8K strict-match | MMLU acc | HellaSwag acc_norm | PIQA acc_norm | Four-metric average |
-| --- | --- | --- | --- | --- | --- |
-| `EXP-FP4-UE5M3` | 63.84 | 63.67 | 77.49 | 79.00 | 71.00 |
-| `EXP-INT4-E4M3` | 65.13 | 62.04 | 76.71 | 78.56 | 70.61 |
-| `EXP-INT4-UE5M3` | 64.97 | 64.39 | 78.32 | 79.27 | 71.74 |
-| `EXP-UINT4-ZP-UE5M3` | 71.57 | 65.48 | 78.72 | 80.20 | 73.99 |
-| `EXP-FP4-BF16` | 63.46 | 64.00 | 78.22 | 78.89 | 71.14 |
-| `EXP-FP4-FP16` | 62.32 | 63.78 | 78.05 | 79.76 | 70.98 |
-| `EXP-INT4-UBF16` | 67.10 | 64.76 | 78.34 | 79.38 | 72.40 |
-| `EXP-INT4-UFP16` | 68.16 | 64.29 | 78.47 | 79.54 | 72.61 |
-| `EXP-UINT4-ZP-BF16` | 75.44 | 66.00 | 78.52 | 80.58 | 75.13 |
-| `EXP-UINT4-ZP-FP16` | 73.54 | 65.95 | 78.54 | 79.92 | 74.49 |
-| `EXP-INT4-BF16` | 70.05 | 65.04 | 78.52 | 79.38 | 73.25 |
-| `EXP-INT4-FP16` | 68.08 | 65.38 | 78.54 | 79.65 | 72.91 |
