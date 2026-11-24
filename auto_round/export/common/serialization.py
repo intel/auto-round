@@ -460,21 +460,55 @@ def save_model(
         _save_model_configs(model, save_dir)
     else:
         export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
-        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
-        try:
-            model.save_pretrained(
-                save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
-            )
-            _save_source_config(model, save_dir)
-        except (KeyError, TypeError) as e:
-            # Some third-party configs fail during config serialization in save_pretrained.
-            # Fall back to saving weights separately + config without diff.
-            logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
-            from safetensors.torch import save_file
+        native_v4_export = (
+            getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4"
+            and isinstance(getattr(model.config, "quantization_config", None), dict)
+            and model.config.quantization_config.get("quant_method") == "compressed-tensors"
+        )
+        if native_v4_export:
+            from auto_round.export.common.deepseek_v4_names import prepare_native_export
 
-            state_dict = model.state_dict() if export_state_dict is None else export_state_dict
-            save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
-            _save_model_configs(model, save_dir)
+            export_state_dict, native_quantization_config = prepare_native_export(
+                model,
+                model.state_dict() if export_state_dict is None else export_state_dict,
+                _resolve_model_source_dir(model),
+            )
+        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
+        if native_v4_export:
+            # Only restore names. Reversing FP8 dequantization or expert fusion
+            # would reinterpret packed NVFP4 bytes and corrupt their payload.
+            save_kwargs["save_original_format"] = False
+        original_quantization_config = model.config.quantization_config if native_v4_export else None
+        if native_v4_export:
+            model.config.quantization_config = native_quantization_config
+        try:
+            try:
+                model.save_pretrained(
+                    save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
+                )
+                _save_source_config(model, save_dir)
+            except (KeyError, TypeError) as e:
+                # Some third-party configs fail during config serialization in save_pretrained.
+                # Fall back to saving weights separately + config without diff.
+                logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
+                from safetensors.torch import save_file
+
+                state_dict = model.state_dict() if export_state_dict is None else export_state_dict
+                save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+                _save_model_configs(model, save_dir)
+        finally:
+            if native_v4_export:
+                model.config.quantization_config = original_quantization_config
+
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            config = (
+                native_quantization_config
+                if not immediate_saving and native_v4_export
+                else model.config.quantization_config
+            )
+            json.dump(config, f, indent=2)
 
     apply_post_save_source_fixes(model, save_dir)
 
@@ -490,38 +524,11 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    config_file = "quantization_config.json"
-    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
-        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
-
 
 def filter_quantization_config(quantization_config):
-    default_dict = {
-        "amp": True,
-        "batch_size": 8,
-        "data_type": int,
-        "dataset": "NeelNanda/pile-10k",
-        "enable_minmax_tuning": True,
-        "enable_norm_bias_tuning": False,
-        "enable_quanted_input": True,
-        "gradient_accumulate_steps": 1,
-        "iters": 200,
-        "low_gpu_mem_usage": False,
-        "nsamples": 128,
-        "scale_dtype": "torch.float16",
-        "seqlen": 2048,
-    }
-    iters = quantization_config.get("iters")
-    if iters is None:
-        iters = 0
-
-    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
-    default_dict["minmax_lr"] = default_dict["lr"]
-
-    for key, default_value in default_dict.items():
-        if key in quantization_config and default_value == quantization_config[key]:
-            quantization_config.pop(key)
+    # Values are no longer pruned when they equal the defaults: every serialized key (including
+    # tuning hyper-parameters such as iters/nsamples/seqlen/lr) is kept so a checkpoint always
+    # records how it was produced. Only None values and the inert entries below are dropped.
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)

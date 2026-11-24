@@ -29,6 +29,7 @@ from packaging import version
 
 from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
+from auto_round.utils.regex import matches_any_regex, to_standard_regex  # noqa: F401
 
 
 def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "<idx>") -> str:
@@ -419,10 +420,25 @@ def monkey_patch_transformers():
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
     _patch_nvfp4_e5m3_compressed_tensors_quantizer()
+    _patch_qwen4_exp_qsa_indexer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_qwen4_exp_qsa_indexer():
+    """Vectorize the Qwen4-Exp / Qwen3.8-Flash-Next QSA indexer.
+
+    The upstream indexer walks every (batch, query) pair in Python and issues a
+    handful of tiny kernels per token, so the full-attention blocks of
+    Qwen3.8-Flash-Next take minutes each during tuning. See
+    ``auto_round/modeling/qwen4_exp_qsa.py`` and intel/auto-round#2323.
+    """
+    from auto_round.modeling.qwen4_exp_qsa import patch_qwen4_exp_indexer
+
+    if patch_qwen4_exp_indexer():
+        logger.debug("Applied vectorized QSA indexer patch for Qwen4-Exp.")
 
 
 def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
@@ -450,7 +466,9 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
         from auto_round.inference.convert_model import convert_hf_model
 
         model.config.quantization_config = self.compressor.quantization_config
-        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        from auto_round.utils.device_manager import get_major_device
+
+        target_device = get_major_device()
         model, _ = convert_hf_model(model, target_device=target_device)
         self.run_compressed = True
         return model
@@ -862,92 +880,6 @@ def flatten_list(nested_list):
         else:
             flattened.append(item)
     return flattened
-
-
-def to_standard_regex(pattern: str) -> str:
-    """
-    Convert a user-specified string into a standardized regex for layer matching.
-
-    Rules:
-    - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
-      keep them as-is.
-    - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
-    - Always ensure the returned regex is valid (compilable by re).
-
-    Examples:
-    >>> to_standard_regex("model.embed_tokens")
-    '.*model\\.embed_tokens.*'
-    >>> to_standard_regex("mlp.gate")
-    '.*mlp\\.gate.*'
-    >>> to_standard_regex("mlp.gate$")
-    '.*mlp\\.gate$'
-    >>> to_standard_regex("mlp.*gate")
-    '.*mlp.*gate.*'
-    """
-    # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {"*", "{", "}", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
-    has_regex = any(tok in pattern for tok in meta_chars)
-    if not has_regex:
-        # Escape literal dots, etc., and wrap with .* for substring matching
-        pattern = re.escape(pattern)
-        regex = f".*{pattern}.*"
-    else:
-        # Only escape bare dots that are not already part of regex constructs:
-        # keep escape sequences (e.g. "\\.", "\\d") and quantified dots
-        # (".*", ".+", ".?", ".{n}") unchanged.
-        tmp = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i] == "\\" and i + 1 < len(pattern):
-                tmp.append(pattern[i : i + 2])  # keep escape sequence
-                i += 2
-                continue
-            if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] in "*+?{":
-                    tmp.append(".")  # keep regex token
-                else:
-                    tmp.append("\\.")  # escape bare dot
-            else:
-                tmp.append(pattern[i])
-            i += 1
-        regex = "".join(tmp)
-        # If no anchors are provided, allow substring matching
-        if not regex.startswith("^") and not regex.startswith(".*"):
-            regex = ".*" + regex
-        if not regex.endswith("$") and not regex.endswith(".*"):
-            regex = regex + ".*"
-    # Validate regex
-    try:
-        re.compile(regex)
-    except re.error as e:
-        raise ValueError(f"Invalid regex generated from pattern '{pattern}': {e}")
-    return regex
-
-
-def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
-    """
-    Check whether `layer_name` matches any regex pattern key in `regex_config`.
-    Args:
-        layer_name (str): The layer name to test.
-        regex_config (dict[str, dict]): A mapping of regex patterns to configs.
-    Returns:
-        bool: True if any pattern matches `layer_name`, otherwise False.
-    """
-    if not regex_config:
-        return False
-
-    for pattern in regex_config:
-        # Strip dynamic prefixes (e.g., "+:" or "-:")
-        raw_pattern = pattern[2:] if pattern.startswith(("+:", "-:")) else pattern
-
-        try:
-            if re.search(raw_pattern, layer_name):
-                return True
-        except re.error as e:
-            logger.warning("Skipping invalid regex pattern %r: %s", pattern, e)
-            continue
-
-    return False
 
 
 def json_serialize(obj: Any):
@@ -1529,6 +1461,21 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
             preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.language_model.") and reverted_part.startswith(
+            "thinker.model.layers"
+        ):
+            # Qwen-Omni checkpoints use ``thinker.model.layers`` while newer
+            # Transformers exposes them as ``thinker.model.language_model.layers``.
+            # Keep both so runtimes can match either layout.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.") and reverted_part == original_part.replace(
+            "thinker.model.", "thinker.", 1
+        ):
+            # Vision/audio towers move between ``thinker.<tower>`` and
+            # ``thinker.model.<tower>`` across Transformers releases.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
         else:
             preserved_parts.append(reverted_part)
 
@@ -1571,6 +1518,11 @@ def expand_layer_config_for_weight_renames(
 
     if model is None:
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+
+    if to_model_names and getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+        from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+        return expand_layer_config(expanded)
 
     if to_model_names:
         # get_reverse_checkpoint_conversion_mapping is intended.

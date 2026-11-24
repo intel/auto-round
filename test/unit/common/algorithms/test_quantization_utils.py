@@ -14,8 +14,10 @@
 
 """Tests for algorithms/quantization/utils.py."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -49,6 +51,25 @@ def _mock_check_to_quantized(config):
 
 class TestRegisterActMaxHooks:
     """Tests for register_act_max_hooks."""
+
+    @pytest.mark.parametrize("with_scheme", [False, True])
+    def test_layer_nvfp_metadata_collects_global_max(self, with_scheme):
+        model = nn.Linear(256, 128)
+        model.act_dynamic = False
+        model.act_data_type = "nv_fp4_static_gs"
+        model.act_bits = 4
+        quantizer = MockQuantizer(act_group_size=128)
+        if with_scheme:
+            quantizer.scheme = SimpleNamespace(act_data_type="int")
+        with patch("auto_round.algorithms.quantization.utils.check_to_quantized", _mock_check_to_quantized):
+            handles = register_act_max_hooks(quantizer, model)
+        try:
+            inputs = torch.arange(1024, dtype=torch.float32).reshape(4, 256)
+            model(inputs)
+            torch.testing.assert_close(model.act_max, inputs.abs().max().reshape(1))
+        finally:
+            for handle in handles:
+                handle.remove()
 
     def test_single_linear_module_with_act_dynamic(self):
         """Test hook registered on a single linear with act_dynamic=False."""

@@ -265,22 +265,23 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
             _check_tensor_ops(dist.init_device_mesh("cpu", (2,)))
         tokens = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 10]])
         configs = [
-            SignRoundConfig(iters=2, group_size=8, not_use_best_mse=True),
-            SignRoundV2Config(iters=2, group_size=8, not_use_best_mse=True),
-            RTNConfig(group_size=8, disable_opt_rtn=True),
-            OptimizedRTNConfig(group_size=8),
-            [AWQConfig(n_grid=3, group_size=8), RTNConfig(group_size=8)],
-            [AWQConfig(n_grid=3, group_size=8), SignRoundConfig(iters=2, group_size=8)],
-            [AWQConfig(n_grid=3, group_size=8), SignRoundV2Config(iters=2, group_size=8)],
-            [SignRoundConfig(iters=2, group_size=8), SignRoundConfig(iters=2, group_size=8)],
-            [RTNConfig(group_size=8, disable_opt_rtn=True), SignRoundV2Config(iters=2, group_size=8)],
+            SignRoundConfig(iters=2, not_use_best_mse=True),
+            SignRoundV2Config(iters=2, not_use_best_mse=True),
+            RTNConfig(disable_opt_rtn=True),
+            OptimizedRTNConfig(),
+            [AWQConfig(n_grid=3), RTNConfig()],
+            [AWQConfig(n_grid=3), SignRoundConfig(iters=2)],
+            [AWQConfig(n_grid=3), SignRoundV2Config(iters=2)],
+            [SignRoundConfig(iters=2), SignRoundConfig(iters=2)],
+            [RTNConfig(disable_opt_rtn=True), SignRoundV2Config(iters=2)],
             [
-                AWQConfig(n_grid=3, group_size=8),
-                SignRoundV2Config(iters=2, group_size=8),
-                SignRoundConfig(iters=2, group_size=8),
+                AWQConfig(n_grid=3),
+                SignRoundV2Config(iters=2),
+                SignRoundConfig(iters=2),
             ],
-            AWQConfig(n_grid=3, group_size=8),
+            AWQConfig(n_grid=3),
         ]
+        configs = [(config, {"group_size": 8}) for config in configs]
         if device_type == "cuda":
             configs = [configs[0], configs[5], configs[7]]
         else:
@@ -296,16 +297,18 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
                     else {}
                 )
                 configs.append(
-                    config_class(
-                        bits=4,
-                        group_size=group_size,
-                        data_type=data_type,
-                        act_bits=4,
-                        act_group_size=group_size,
-                        act_data_type=act_type,
-                        act_sym=True,
-                        act_dynamic=True,
-                        **tuning,
+                    (
+                        config_class(**tuning),
+                        dict(
+                            bits=4,
+                            group_size=group_size,
+                            data_type=data_type,
+                            act_bits=4,
+                            act_group_size=group_size,
+                            act_data_type=act_type,
+                            act_sym=True,
+                            act_dynamic=True,
+                        ),
                     )
                 )
         original_full_tensor = DTensor.full_tensor
@@ -314,11 +317,12 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
             assert tuple(value.shape) not in ((64, 64), (128, 64), (64, 128)), "full weight gather during tuning"
             return original_full_tensor(value, *args, **kwargs)
 
-        for config in configs:
+        for config, scheme_overrides in configs:
             compressor = AutoRound(
                 checkpoint,
                 parallel_config={"tp_size": 2},
                 alg_configs=config,
+                **scheme_overrides,
                 dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
                 nsamples=2,
                 seqlen=4,

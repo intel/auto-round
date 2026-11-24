@@ -15,7 +15,6 @@
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
-from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
@@ -76,9 +75,7 @@ class RTNConfig(QuantizationConfig):
                 (frozen init). Requires the optimized path (``disable_opt_rtn``
                 not forced True). The search grid sizes are tunable via
                 ``AR_NEUQI_COARSE`` and ``AR_NEUQI_FINE``.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         super().__init__(**kwargs)
 
@@ -86,20 +83,10 @@ class RTNConfig(QuantizationConfig):
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
 
-        if disable_opt_rtn is None:  # TODO wenhuach move to AR entry
-            if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
-                logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
-                disable_opt_rtn = True
-        if disable_opt_rtn is None:
-            logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
-            )
-            disable_opt_rtn = False
-        self.disable_opt_rtn = disable_opt_rtn
+        self.disable_opt_rtn = False if disable_opt_rtn is None else disable_opt_rtn
 
         if enable_neuqi and disable_opt_rtn:
-            # validated AFTER the W8A16/W8A8 heuristic above so the auto-disable
-            # cannot silently neutralize the search opt-in
+            # Validate explicit policy here; the entry builder validates its scheme heuristic.
             raise ValueError(
                 "--enable_neuqi requires the optimized-RTN path: it replaces the plain min/max "
                 "initialization with a search. Drop --disable_opt_rtn. Note "

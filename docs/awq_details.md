@@ -34,9 +34,9 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
-# AWQ + RTN / AWQ + AutoRound / AWQ + AutoRound with algorithm extension
+# Historical AWQ + plain RTN / AWQ + AutoRound / AWQ + AutoRound with algorithm extension
 auto-round --model <model> --scheme <scheme> --format fake \
-  --algorithm awq \
+  --algorithm awq,rtn --disable_opt_rtn \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
@@ -47,6 +47,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
+
+The older `AWQ_RTN` results used the previous AWQ default of plain RTN, shown explicitly as `--algorithm awq,rtn --disable_opt_rtn`. The latest `main` defaults to AWQ + opt-RTN: use `--algorithm awq` or `--algorithm awq,opt_rtn`. Rows explicitly labeled `AWQ + opt-RTN` used optimized RTN, not the old plain-RTN default. All historical measurements remain unchanged.
 
 ## Calibration Controls
 
@@ -61,29 +63,31 @@ AWQ has its own calibration budget for activation statistics and for the smoothi
 
 `--awq-nsamples` is independent of the global `--nsamples`. AWQ selects a deterministic random subset (seed 42) from the cached calibration inputs and reuses the same subset for every block. The global cache is not modified, so the downstream RTN/AutoRound quantizer and the FP reference forward still use all cached samples. Set `--awq-nsamples` greater than or equal to `--nsamples` to use all of them.
 
-`--awq-v2-scale-search` takes effect only when the terminal quantizer is AutoRoundV2, which is enabled with `--enable_alg_ext` and `--algorithm auto_round` (or `awq,auto_round`). With an RTN terminal quantizer, the option is ignored. The policy changes only the QDQ used to score AWQ candidates; the terminal AutoRoundV2 quantizer always performs its own initialization search.
+`--awq-v2-scale-search` takes effect only when the terminal quantizer is AutoRoundV2, selected with `--algorithm auto_round_v2` (or `awq,auto_round_v2`). With an RTN terminal quantizer, the option is ignored. The policy changes only the QDQ used to score AWQ candidates; the terminal AutoRoundV2 quantizer always performs its own initialization search.
 
 - `auto` (default): use `off` for INT schemes and `full` for non-INT schemes such as MXFP and NVFP.
 - `off`: use plain RTN for AWQ's candidate loss. This is the fastest option and the recommended default for INT.
 - `full`: reproduce the terminal V2 optimized init-scale search for every AWQ candidate. This is the slowest and most faithful option.
 - `reuse`: run the optimized init-scale search once per balance layer and reuse it for every AWQ candidate. This is a middle ground between `off` and `full`.
 
+Based on the WnA16 data, `off` was selected as the policy for INT data types: it reduces average AWQ search time by approximately 30% with virtually no accuracy loss.
+
 When smoothing or hard clipping changes a block, AWQ requests a fresh FP reference forward before quantization, so a stale reference is never used as the quantizer target or passed to the next block.
 
 ```bash
 # INT: auto resolves to off; AWQ uses at most 128 samples while the quantizer uses 256.
 auto-round --model <model> --scheme W4A16 --format fake \
-  --algorithm awq,auto_round --enable_alg_ext \
+  --algorithm awq,auto_round_v2 \
   --nsamples 256 --awq-nsamples 128
 
 # MXFP4: auto resolves to full; use reuse to cut AWQ calibration time.
 auto-round --model <model> --scheme MXFP4 --format fake \
-  --algorithm awq,auto_round --enable_alg_ext \
+  --algorithm awq,auto_round_v2 \
   --awq-v2-scale-search reuse
 
 # INT with an explicit full optimized search for every AWQ candidate.
 auto-round --model <model> --scheme W4A16 --format fake \
-  --algorithm awq,auto_round --enable_alg_ext \
+  --algorithm awq,auto_round_v2 \
   --awq-v2-scale-search full
 ```
 
@@ -555,7 +559,230 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 
 - W4A16 shows model-dependent behavior. The clearest gain is Llama `AWQ_AR` over `AR`, with +1.13 average points and +1.63% relative AVG gain.
 - `AWQ_RTN` is not a strong W4A16 default. It wins 2/4 AVG comparisons against `RTN` and `opt_rtn`.
-- `AWQ_AR2` improves AVG on both models, but the gain is small compared with the added runtime.
+- `AWQ_AR2` improves AVG on both models, but the gain is small.
+
+## Additional W2/W3/W4 Results on 8B Models
+
+The following `--format fake` results cover W2A16G64, W3A16, and W4A16 on Qwen3-8B and Llama-3.1-8B-I. Where a configuration was evaluated more than once, each metric is the arithmetic mean across runs; ARC_C is averaged only over runs that recorded it. ARC_C is shown for completeness but excluded from AVG, which remains the five-task average of GSM8K, HellaSwag, MMLU, PIQA, and WinoGrande.
+
+### Qwen3-8B
+
+| Scheme | Config | ARC_C | GSM8K | HellaSwag | MMLU | PIQA | WinoGrande | AVG |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| W2A16G64 | awq_ar | 42.24 | 52.95 | 44.91 | 56.47 | 71.71 | 62.95 | 57.80 |
+| W2A16G64 | arv2 | 43.26 | 58.68 | 45.21 | 57.89 | 71.82 | 66.69 | 60.06 |
+| W2A16G64 | awq_arv2_full | 42.58 | 59.63 | 46.06 | 58.52 | 71.44 | 65.43 | 60.22 |
+| W2A16G64 | awq_arv2_off | 43.43 | 62.17 | 45.73 | 58.70 | 72.88 | 66.45 | 61.19 |
+| W2A16G64 | awq_arv2_reuse | 43.52 | 57.47 | 45.25 | 56.81 | 71.66 | 66.03 | 59.44 |
+| W3A16 | awq_ar | 51.62 | 84.50 | 53.85 | 69.40 | 75.74 | 67.88 | 70.27 |
+| W3A16 | awq_arv2_full | 51.62 | 83.06 | 53.80 | 69.56 | 76.22 | 68.62 | 70.25 |
+| W3A16 | awq_arv2_grid9 | - | 84.46 | 53.77 | 69.36 | 76.39 | 68.43 | 70.48 |
+| W3A16 | awq_arv2_off | 52.90 | 85.90 | 54.20 | 70.33 | 76.25 | 68.31 | 71.00 |
+| W3A16 | awq_arv2_reuse | 52.90 | 86.24 | 53.52 | 70.59 | 76.22 | 68.94 | 71.11 |
+| W3A16 | arv2 | 52.56 | 86.05 | 53.75 | 70.04 | 75.90 | 69.06 | 70.96 |
+| W4A16 | awq_ar | 54.18 | 86.35 | 56.19 | 71.98 | 75.79 | 68.35 | 71.73 |
+| W4A16 | arv2 | 54.18 | 86.66 | 56.05 | 72.12 | 76.55 | 69.69 | 72.21 |
+| W4A16 | awq_arv2_full | 55.12 | 86.58 | 55.94 | 72.30 | 76.28 | 69.14 | 72.05 |
+| W4A16 | awq_arv2_grid9 | 52.99 | 85.67 | 55.97 | 71.70 | 76.82 | 68.43 | 71.72 |
+| W4A16 | awq_arv2_off | 53.75 | 86.43 | 56.11 | 72.06 | 76.28 | 69.93 | 72.16 |
+| W4A16 | awq_arv2_reuse | 54.35 | 87.04 | 55.95 | 72.10 | 76.33 | 69.46 | 72.18 |
+
+### Llama-3.1-8B-I
+
+| Scheme | Config | ARC_C | GSM8K | HellaSwag | MMLU | PIQA | WinoGrande | AVG |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| W2A16G64 | awq_ar | 36.77 | 17.29 | 46.55 | 46.06 | 72.58 | 64.48 | 49.39 |
+| W2A16G64 | arv2 | 38.74 | 22.21 | 47.08 | 48.39 | 73.34 | 66.85 | 51.57 |
+| W2A16G64 | awq_arv2_full | 38.14 | 20.77 | 47.60 | 47.35 | 73.61 | 67.96 | 51.46 |
+| W2A16G64 | awq_arv2_off | 38.40 | 24.11 | 47.49 | 50.44 | 73.88 | 68.19 | 52.82 |
+| W2A16G64 | awq_arv2_reuse | 38.31 | 22.29 | 47.51 | 48.51 | 72.91 | 67.72 | 51.79 |
+| W3A16 | awq_ar | 48.21 | 63.76 | 56.75 | 62.42 | 77.97 | 72.53 | 66.69 |
+| W3A16 | arv2 | 47.95 | 64.75 | 57.00 | 63.26 | 78.84 | 73.01 | 67.37 |
+| W3A16 | awq_arv2_full | 49.62 | 65.81 | 56.85 | 63.34 | 78.81 | 72.69 | 67.50 |
+| W3A16 | awq_arv2_off | 49.53 | 68.50 | 57.00 | 63.03 | 79.27 | 72.10 | 67.98 |
+| W3A16 | awq_arv2_reuse | 49.14 | 67.97 | 57.03 | 63.53 | 78.53 | 72.77 | 67.97 |
+| W4A16 | awq_ar | 52.05 | 71.72 | 58.91 | 67.38 | 80.14 | 73.32 | 70.29 |
+| W4A16 | arv2 | 52.65 | 71.72 | 58.98 | 67.37 | 80.09 | 73.95 | 70.42 |
+| W4A16 | awq_arv2_full | 52.99 | 64.90 | 59.21 | 66.81 | 79.65 | 73.48 | 68.81 |
+| W4A16 | awq_arv2_off | 51.96 | 73.09 | 58.94 | 67.38 | 79.92 | 73.24 | 70.51 |
+| W4A16 | awq_arv2_reuse | 52.13 | 72.02 | 59.06 | 67.08 | 79.92 | 73.72 | 70.36 |
+
+### W2/W3/W4 Observations
+
+- At W2A16G64, `AWQ + AR2` clearly outperforms both `AWQ + AR` and native `AR2`. `awq_arv2_off` reaches 61.19 AVG on Qwen3-8B (versus 60.06 for `arv2` and 57.80 for `awq_ar`) and 52.82 on Llama-3.1-8B-I (versus 51.57 and 49.39).
+- At W3A16, `off` and `reuse` remain the strongest AWQ policies: 71.00 / 71.11 AVG on Qwen3-8B and 67.98 / 67.97 on Llama-3.1-8B-I. The spread across AWQ variants narrows to about one point.
+- At W4A16, the AWQ gain diminishes and native `arv2` is competitive. Qwen3-8B peaks at 72.21 with native `arv2` (`awq_arv2_reuse` reaches 72.18), while Llama-3.1-8B-I peaks at 70.51 with `awq_arv2_off` (native `arv2` reaches 70.42).
+- For the WOQ INT scheme, `awq_arv2_full` is never the best policy in these 8B comparisons; the additional per-candidate search cost does not translate into higher AVG.
+
+## Qwen3.8-27B W4A16 and MXFP4 W4A4 results
+
+The following case study is separate from the `--format fake` tables above. It uses exported checkpoints and vLLM evaluation with `lm-eval` 0.4.12 and vLLM 0.27.1. HellaSwag, MMLU, PIQA, and Winogrande use `acc`; GSM8K uses `exact_match,strict-match`.
+
+### vLLM Setup
+
+- Model: Qwen3.8-27B, a Qwen3.5 hybrid-attention model with 64 blocks.
+- Calibration: 128 samples and sequence length 2048; AWQ uses up to 128 samples and 512-token calibration sequences.
+- W4A16: INT W4A16 with `--format auto_round` and deterministic algorithms enabled.
+- MXFP4: W4A4 with `--format llm_compressor`; evaluation used `FlashInferMxFp4LinearKernel`.
+
+The recipes map to the following settings:
+
+| Table name | Algorithm settings |
+| --- | --- |
+| AWQ + AR2 full / off / reuse | `--algorithm awq,auto_round_v2 --awq-v2-scale-search POLICY --iters 200` |
+| AWQ + opt-RTN | `--algorithm awq,opt_rtn --iters 0` |
+| Native AR2 full | `--algorithm auto_round_v2 --iters 200` |
+| Native opt-RTN | `--algorithm opt-rtn --iters 0` |
+| Native plain RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --disable_model_free` |
+| Model-free RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --model_free` |
+
+Replace `POLICY` with one of `full`, `off`, or `reuse`.
+
+Unlike the earlier `AWQ_RTN` results, the `AWQ + opt-RTN` rows below used optimized RTN.
+
+### W4A16 INT
+
+| Config | GSM8K (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) | Quant time (min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 96.97 | 63.68 | 83.43 | 80.90 | 75.45 | 80.09 | - |
+| AWQ + AR2 full | 96.13 | 63.32 | 83.02 | 81.61 | 76.64 | 80.14 | 103 |
+| AWQ + AR2 off | 96.66 | 63.39 | 82.42 | 81.39 | 76.40 | 80.06 | 76 |
+| AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
+| AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
+
+Quantization times are indicative; in this run, `off` saved about 26.3% of the quantization time versus `full` while losing only 0.09 average points. `reuse` is the most time-efficient AWQ+AR2 configuration, AWQ + opt-RTN is the fastest overall, and AVG remains essentially unchanged.
+
+### MXFP4 W4A4
+
+| Config | GSM8K (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 96.97 | 63.68 | 83.43 | 80.90 | 75.45 | 80.09 |
+| Native plain RTN | 94.84 | 61.12 | 80.08 | 80.30 | 74.35 | 78.14 |
+| Model-free RTN | 94.54 | 61.12 | 80.08 | 80.30 | 74.35 | 78.08 |
+| Native opt-RTN | 95.22 | 61.10 | 77.97 | 79.65 | 71.35 | 77.06 |
+| Native AR2 full | 93.10 | 61.29 | 80.62 | 80.41 | 74.35 | 77.96 |
+| AWQ + AR2 reuse | 94.01 | 61.18 | 80.37 | 80.47 | 73.95 | 78.00 |
+| AWQ + AR2 full | 94.84 | 61.55 | 81.24 | 80.69 | 73.80 | 78.42 |
+| AWQ + opt-RTN | 95.30 | 61.73 | 80.35 | 79.00 | 75.30 | 78.34 |
+
+The best AWQ W4A4 result is AWQ + AR2 full at **78.42**, only 0.08 points above AWQ + opt-RTN. AWQ + AR2 full improves over native AR2 by 0.46 points, while AWQ + opt-RTN improves over native opt-RTN by 1.28 points. Native plain RTN and model-free RTN reach 78.14 and 78.08, respectively, providing strong baselines.
+
+### Hadamard + AWQ MXFP4 W4A4
+
+This subsection extends the MXFP4 case study with deterministic block-wise Hadamard rotation. Rotation runs before AWQ smoothing, and the exported `rotation_config` lets vLLM apply the online Hadamard when the checkpoint is loaded. The runs use vLLM PR [#54006](https://github.com/vllm-project/vllm/pull/54006) (`vllm 0.32.0rc1.dev110`) and `lm-eval` 0.4.13; vLLM selected `FlashInferMxFp4LinearKernel` for the MXFP4 GEMM. See [rotation_details](rotation_details.md) for the rotation options.
+
+Recipes (algorithm order: Hadamard rotation → AWQ smoothing → optional TEQ scale optimization → terminal quantizer):
+
+| Table name | Algorithm settings |
+| --- | --- |
+| `hmt_awq` | `--algorithm awq,rtn --disable_opt_rtn --iters 0` |
+| `hmt_awq_opt_rtn` | `--algorithm awq,rtn --enable_opt_rtn --iters 0` |
+| `hmt_awq_opt_rtn_awq2048` | `--algorithm awq,rtn --enable_opt_rtn --awq_seqlen 2048 --iters 0` |
+| `hmt_awq_ar2` | `--algorithm awq,auto_round_v2 --awq-v2-scale-search full --iters 200` |
+| `hmt_awq_teq_opt_rtn` | `--algorithm awq,teq,rtn --enable_opt_rtn --iters 0` |
+| `hmt_awq_teq_ar2` | `--algorithm awq,teq,auto_round_v2 --awq-v2-scale-search full --iters 200` |
+| `hmt_awq_teq_ar2_rceil` | `--scheme MXFP4_RCEIL --algorithm awq,teq,auto_round --awq-n-grid 20 --iters 200 --teq-iters 5 --enable_alg_ext` |
+
+All rows use `--scheme MXFP4 --format auto_round --rotation_type hadamard --rotation_block_size 32 --nsamples 128 --seqlen 2048 --awq_nsamples 128`, except the explicitly marked `MXFP4_RCEIL` row. The 32B TEQ follow-up uses the same `awq,teq,auto_round_v2` composition as `hmt_awq_teq_ar2` under the local name `hmt_awq_teq_default_main`.
+
+`hmt_awq` uses the rotation-aware AWQ scoring introduced in PR [#2301](https://github.com/intel/auto-round/pull/2301). The legacy-scoring rows below reuse the same recipe with an experiment-only source gate that restores the pre-#2301 `QDQ(W * s) / s` objective; the gate is not an upstream CLI option.
+
+| Model | Config | GSM8K strict (%) | GSM8K flexible (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | BF16 | 77.71 | 84.08 | 57.09 | 72.87 | 76.50 | 67.88 | 70.41 |
+| Qwen3-8B | Hadamard + AWQ (`hmt_awq`) | 81.88 | 84.91 | 54.88 | 70.29 | 75.90 | 66.85 | 69.96 |
+| Qwen3-8B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 83.32 | 85.60 | 55.02 | 70.08 | 75.68 | 68.98 | 70.62 |
+| Qwen3.8-27B | BF16 | 97.19 | 97.19 | 63.69 | 83.46 | 80.79 | 75.77 | 80.18 |
+| Qwen3.8-27B | Hadamard + AWQ (`hmt_awq`) | 94.77 | 94.69 | 62.26 | 82.03 | 80.09 | 74.43 | 78.71 |
+| Qwen3.8-27B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 91.96 | 92.12 | 62.26 | 82.22 | 81.01 | 74.35 | 78.36 |
+| Qwen3-32B | BF16 | 92.87 | 93.03 | 63.90 | 80.80 | 81.28 | 73.32 | 78.44 |
+| Qwen3-32B | Hadamard + AWQ (`hmt_awq`) | 91.58 | 92.27 | 62.82 | 78.39 | 79.98 | 72.69 | 77.09 |
+| Qwen3-32B | Hadamard + AWQ, legacy scoring | 90.90 | 92.57 | 62.52 | 78.87 | 79.87 | 70.17 | 76.47 |
+| Qwen3-32B | Hadamard + AWQ + AR2 (`hmt_awq_ar2`) | 92.95 | 93.03 | 62.65 | 79.08 | 80.47 | 72.77 | 77.58 |
+
+AVG is the five-task average of GSM8K strict-match, HellaSwag, MMLU, PIQA, and WinoGrande. HellaSwag, MMLU, PIQA, and WinoGrande use `acc`. The BF16 rows were re-evaluated on the same vLLM/`lm-eval` stack; the Qwen3.8-27B BF16 AVG matches the earlier table (80.18 versus 80.09). The Qwen3-8B BF16 row has a large strict/flexible gap, so its strict number mostly reflects answer-format extraction rather than reasoning accuracy.
+
+The ablation below re-ran `hmt_awq` on the same stack and reproduced 69.97 (Qwen3-8B) and 78.75 (Qwen3.8-27B); the small differences from the rows above are evaluation noise.
+
+- On Qwen3.8-27B, Hadamard + AWQ + optimized RTN is stronger than plain RTN: **78.98** AVG, and **79.26** with `--awq_seqlen 2048`. Plain RTN reaches 78.71, and AR2 is lower at 78.36. The best non-`MXFP4_RCEIL` rotated result is therefore the TEQ-free `AWQ_opt_rtn_awq2048` recipe.
+- On Qwen3-8B, AR2 adds 0.66 AVG over plain RTN under rotation (70.62 versus 69.96), driven by GSM8K (+1.44 strict) and WinoGrande (+2.13); HellaSwag, MMLU, and PIQA are flat or slightly lower. The resulting AVG is at parity with BF16 on this suite.
+- On Qwen3-32B, Hadamard + AWQ + RTN reaches **77.09** AVG with rotation-aware scoring and **76.47** with legacy scoring, 1.35 and 1.97 below the same-stack BF16 baseline (78.44). Rotation-aware scoring gains GSM8K (+0.68), HellaSwag (+0.30), PIQA (+0.11), and WinoGrande (+2.53), while losing MMLU (-0.48).
+- On Qwen3-32B, adding AR2 raises the rotation-aware RTN result from **77.09 to 77.58 AVG**. The gain is driven by GSM8K strict (+1.37), MMLU (+0.69), PIQA (+0.49), and WinoGrande (+0.08), with HellaSwag nearly flat (-0.17). The AR2 result is still 0.86 AVG below BF16. Optimized RTN with AWQ2048 and the default TEQ + AR2 recipe do not beat AR2: 77.14 and 77.15 AVG, respectively.
+- Cross-stack comparison: the rows in the previous table use vLLM 0.27.1, `lm-eval` 0.4.12, and `--format llm_compressor`; the rows here use vLLM PR #54006, `lm-eval` 0.4.13, and `--format auto_round`. The re-evaluated BF16 rows show that the stack difference is small.
+
+#### TEQ and optimized-RTN composition
+
+The following sweep applies the same Hadamard → AWQ → TEQ → terminal-quantizer pipeline. The `MXFP4_RCEIL` row uses a different activation scheme and evaluation harness, so differences below about 0.15 point are cross-harness ties.
+
+| Model | Config | GSM8K strict (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8-27B | BF16 | 97.19 | 63.69 | 83.46 | 80.79 | 75.77 | **80.18** |
+| Qwen3.8-27B | AWQ + plain RTN | 94.77 | 62.26 | 82.03 | 80.09 | 74.43 | 78.71 |
+| Qwen3.8-27B | AWQ + opt-RTN | 95.00 | 62.17 | 82.44 | 80.25 | 75.06 | 78.98 |
+| Qwen3.8-27B | AWQ + opt-RTN, AWQ2048 | 94.92 | 62.36 | 82.32 | 81.01 | 75.69 | **79.26** |
+| Qwen3.8-27B | AWQ + AR2 | 91.96 | 62.26 | 82.22 | 81.01 | 74.35 | 78.36 |
+| Qwen3.8-27B | AWQ + TEQ + opt-RTN | 83.24 | 62.29 | 81.41 | 80.47 | 76.24 | 76.73 |
+| Qwen3.8-27B | AWQ + TEQ + AR2 | 95.15 | 61.87 | 81.80 | 80.25 | 74.27 | 78.67 |
+| Qwen3.8-27B | MXFP4_RCEIL + AWQ + TEQ + AR2 † | 97.04 | 61.87 | 82.01 | 79.38 | 76.01 | **79.26** |
+| Qwen3-32B | BF16 | 92.87 | 63.90 | 80.80 | 81.28 | 73.32 | **78.44** |
+| Qwen3-32B | AWQ + plain RTN | 91.58 | 62.82 | 78.39 | 79.98 | 72.69 | 77.09 |
+| Qwen3-32B | AWQ + opt-RTN, AWQ2048 | 92.57 | 62.60 | 79.16 | 79.71 | 71.67 | 77.14 |
+| Qwen3-32B | AWQ + AR2 | 92.95 | 62.65 | 79.08 | 80.47 | 72.77 | **77.58** |
+| Qwen3-32B | AWQ + TEQ + AR2 (default) | 90.90 | 62.57 | 79.07 | 79.16 | 74.03 | 77.15 |
+
+TEQ runs use 5 iterations, LR `1.5e-4`, scale range `[1e-5, 3]`, and 32 calibration samples of length 512; the 32B default row also enables `awq_init`.
+
+- The 27B TEQ-free controls show that optimized RTN is better than plain RTN: `AWQ_opt_rtn` reaches 78.98 AVG, and extending AWQ calibration to 2048 tokens raises it to 79.26. This supersedes the earlier claim that plain RTN was the best rotated 27B recipe.
+- Among the standard-MXFP4 rows, TEQ + AR2 is the only composition that recovers GSM8K: it reaches 95.15 GSM8K and 78.67 AVG, but that is still below TEQ-free `AWQ_opt_rtn` and only at parity with plain RTN. TEQ + optimized RTN collapses GSM8K to 83.24 and AVG to 76.73, so TEQ should not be used as a drop-in pre-initializer for optimized RTN.
+- `MXFP4_RCEIL` + AWQ + TEQ + AR2 ties `AWQ_opt_rtn_awq2048` on AVG (79.26). It uses a different activation scheme and evaluation harness, so this is a cross-harness tie rather than evidence that TEQ is required.
+- On Qwen3-32B, AR2 remains the strongest measured recipe at 77.58 AVG. Optimized RTN with AWQ2048 reaches 77.14 AVG, only +0.05 over plain RTN. TEQ + AR2 default reaches 77.15 AVG, below AR2 and close to optimized RTN.
+- On Qwen3-8B, the strict HMT-vLLM TEQ Adam run reaches 69.74 AVG versus 71.22 for AR2, so TEQ does not improve the 8B recipe.
+
+† `MXFP4_RCEIL` uses the serving-matched rceil activation rule with `auto_round_v2`, enabled via `--enable_alg_ext`.
+
+#### Rotation-aware AWQ scoring ablation
+
+PR [#2301](https://github.com/intel/auto-round/pull/2301) changed the AWQ candidate objective for layers that publish an equivalent transform pair. The old objective scores the unrotated candidate, `QDQ(W * s) / s`; the new one scores the deployed rotated form, `QDQ(T_w(W * s))`, with the matching input transform `T_i(x / s)`. For the Hadamard `transform` backend, `T_w(W) = W @ H.T` and `T_i(x) = x @ H`, so the two transforms are exact inverses (round-trip relative error `2e-7` on synthetic layers). The change affects smoothing-scale selection rather than the correctness of the transform pair.
+
+| Model | Legacy AVG (%) | Rotation-aware AVG (%) | Δ AVG | Δ GSM8K | Δ HellaSwag | Δ MMLU | Δ PIQA | Δ WinoGrande |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 69.83 | 69.97 | +0.14 | +0.00 | +0.26 | +0.23 | -0.16 | +0.39 |
+| Qwen3.8-27B | 78.64 | 78.75 | +0.10 | -0.76 | -0.40 | +0.07 | +0.33 | +1.26 |
+| Qwen3-32B | 76.47 | 77.09 | +0.63 | +0.68 | +0.30 | -0.48 | +0.11 | +2.53 |
+
+Deltas are rotation-aware minus legacy in percentage points. AVG uses GSM8K strict-match, consistent with the table above.
+
+- On these three models the rotation-aware branch is non-negative in AVG (+0.14, +0.10, +0.63). This plain `awq,rtn --disable_opt_rtn` ablation does not reproduce a ~1% Qwen3-32B regression. The 8B and 27B deltas are near single-seed evaluation noise; the 32B delta is a task trade-off, with WinoGrande and GSM8K gains offsetting an MMLU loss.
+- The ablation isolates the `rotation_aware` scoring branch. For plain RTN the other commit changes are inert: a diagonal `imatrix` is not used, `v2_scale_search=reuse` does not apply, and AWQ clipping is disabled. A regression specific to `hmt_awq_ar2` (which drops the rotated-layer `imatrix` and disables scale reuse) would require a separate AR2 ablation.
+
+```bash
+# Hadamard + AWQ + plain RTN (use --model Qwen3-8B for the 8B run)
+auto-round --model Qwen3.8-27B --scheme MXFP4 --format auto_round \
+  --algorithm awq,rtn --disable_opt_rtn --iters 0 \
+  --rotation_type hadamard --rotation_block_size 32 \
+  --nsamples 128 --seqlen 2048 --awq_nsamples 128 \
+  --output_dir Qwen3.8-27B-mxfp4-hmt-awq
+
+# Hadamard + AWQ + AR2 full
+auto-round --model Qwen3.8-27B --scheme MXFP4 --format auto_round \
+  --algorithm awq,auto_round_v2 --awq-v2-scale-search full --iters 200 \
+  --rotation_type hadamard --rotation_block_size 32 \
+  --nsamples 128 --seqlen 2048 --awq_nsamples 128 \
+  --output_dir Qwen3.8-27B-mxfp4-hmt-awq-ar2
+```
+
+Evaluation used the same vLLM model arguments as the existing case study:
+
+```bash
+lm_eval run --model vllm \
+  --model_args pretrained=<checkpoint>,tensor_parallel_size=1,max_model_len=8192,max_num_batched_tokens=32768,max_num_seqs=128,add_bos_token=True,gpu_memory_utilization=0.85,dtype=bfloat16,max_gen_toks=2048,enable_prefix_caching=False,reasoning_parser=qwen3,language_model_only=True,enable_thinking=False,kv_cache_dtype=auto \
+  --tasks gsm8k --batch_size 64 --seed 42 --apply_chat_template --fewshot_as_multiturn
+
+lm_eval run --model vllm \
+  --model_args pretrained=<checkpoint>,tensor_parallel_size=1,max_model_len=8192,max_num_batched_tokens=32768,max_num_seqs=128,add_bos_token=True,gpu_memory_utilization=0.85,dtype=bfloat16,max_gen_toks=2048,enable_prefix_caching=False,reasoning_parser=qwen3,language_model_only=True,enable_thinking=False,kv_cache_dtype=auto \
+  --tasks hellaswag,mmlu,piqa,winogrande --batch_size 64 --seed 42
+```
+
 
 ## INT8 / W8A8
 
@@ -713,3 +940,5 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 AWQ is most useful for schemes where quantization is sensitive to activation-aware weight smoothing, such as MXFP4. It can improve scheme accuracy, especially when combined with AutoRound plus the algorithm extension (`--algorithm auto_round_v2`).
 
 AWQ does not add persistent memory overhead to the quantized model and is orthogonal to terminal quantization algorithms, so it can be composed with RTN, AutoRound, or AutoRound2 without changing their core quantization logic.
+
+On the Qwen3.8-27B case study, W4A16 INT is insensitive to the AWQ policy: `off` reduces quantization time versus `full` with only a 0.09-point AVG change, while `reuse` and opt-RTN are also competitive. For MXFP4 W4A4 without rotation, AWQ + AR2 `full` and `reuse` provide the strongest AWQ-only results. With deterministic Hadamard rotation, the best 27B recipe is AWQ + optimized RTN, reaching 78.98 AVG and 79.26 with 2048-token AWQ calibration, versus 78.71 for plain RTN and 78.36 for AR2.

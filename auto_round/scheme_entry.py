@@ -34,88 +34,40 @@ if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
 
-def collect_config_scheme_overrides(config) -> dict:
-    """Return the config's explicitly-set scheme fields as a ``{field: value}`` dict.
-
-    These are exactly the per-field overrides layered on top of ``scheme=`` — the
-    single mechanism through which ``bits`` / ``act_bits`` / ``data_type`` etc.
-    reach the resolved scheme. Fields left as ``None`` are omitted so the scheme's
-    own value wins.
-    """
-    return {k: getattr(config, k) for k in config._scheme_fields if getattr(config, k, None) is not None}
-
-
-def preview_resolved_attrs(config, scheme=None, format=None) -> dict:
-    """Resolve scheme attributes without mutating config, for routing decisions.
-
-    Called in ``AutoRound.__new__`` before the concrete compressor class is
-    chosen.  ``SchemeMixin.resolve_scheme()`` will do the authoritative
-    resolution later; this is just a lightweight preview so routing logic
-    (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
-    even when the user specified only ``scheme=`` without explicit bit/dtype args.
-
-    This is the single source of resolved scheme fields for entry-level routing:
-    callers read from the returned dict and never re-read raw ``config`` attrs.
-    When the scheme cannot be previewed (``AutoScheme``, or a deferred parse
-    error), the config's own explicitly-set scheme overrides are returned so the
-    values still reflect what the user passed. ``format`` must match the
-    authoritative parse so format-scoped policies (e.g. the 8-bit asym rule)
-    resolve identically here and never turn a refusal into fabricated defaults.
-
-    Returns:
-        dict: resolved scheme attributes (config overrides when preview is skipped).
-    """
+def preview_resolved_attrs(scheme_overrides=None, scheme=None, format=None) -> dict:
+    """Resolve scheme attributes for routing without mutating algorithm configs."""
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-    config_overrides = collect_config_scheme_overrides(config)
+    overrides = {key: value for key, value in (scheme_overrides or {}).items() if value is not None}
     if isinstance(scheme, AutoScheme):
-        # AutoScheme needs model info — cannot preview; fall back to raw config attrs.
-        return config_overrides
+        return overrides
     try:
-        _, _, final_attrs = parse_scheme(scheme, config_overrides, format=format)
+        _, _, final_attrs = parse_scheme(scheme, overrides, format=format)
         return final_attrs
-    except Exception as e:
+    except Exception as error:
         logger.warning_once(
-            "Scheme preview failed (%s: %s); routing falls back to the config's explicit overrides.",
-            type(e).__name__,
-            e,
+            "Scheme preview failed (%s: %s); routing falls back to explicit overrides.",
+            type(error).__name__,
+            error,
         )
-        return config_overrides
+        return overrides
 
 
-def eager_validate_scheme(config, scheme=None, format=None) -> None:
-    """Eagerly validate scheme/config constraints at construction time.
-
-    Mirrors the old-arch ``_check_configs()`` call in ``BaseCompressor.__init__``.
-    Raises ``ValueError`` or ``NotImplementedError`` immediately if the scheme
-    contains config-only invalid combinations (e.g. tuple group_size with non-fp8
-    weight dtype) so that callers get a fast failure rather than a deferred error
-    buried inside ``post_init()``.
-
-    ``AutoScheme`` is skipped because it requires model information.
-    """
+def eager_validate_scheme(scheme_overrides=None, scheme=None, format=None) -> None:
+    """Validate fixed scheme constraints before loading a model."""
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(scheme, AutoScheme):
         return
-
-    user_overrides = collect_config_scheme_overrides(config)
+    overrides = {key: value for key, value in (scheme_overrides or {}).items() if value is not None}
     try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides, format=format)
+        _, _, final_attrs = parse_scheme(scheme, overrides, format=format)
     except (ValueError, NotImplementedError):
         raise
     except Exception:
-        return  # Other parse errors are deferred to post_init
-
-    import copy
-
-    temp_config = copy.copy(config)
-    if hasattr(config, "scheme"):
-        temp_config.scheme = config.scheme.copy()
-        temp_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
-    for key, value in final_attrs.items():
-        setattr(temp_config, key, value)
-    temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
+        return
+    QuantizationScheme.from_dict(final_attrs).validate()
 
 
 def is_weight_scheme(scheme: str | dict | object) -> bool:

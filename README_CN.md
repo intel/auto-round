@@ -52,6 +52,19 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2026/11] 权重量化精度为 4 bit 及以上时，如果未指定 `dataset`，LLM 及仅量化文本模块的 MLLM（`quant_nontext_module=False`）现默认使用 75% UltraChat + 25% OpenCode。UltraChat 使用模型的 chat template；没有可用模板时回退到 `NeelNanda/pile-10k`。W2/W3 和完整多模态量化保留原默认方案；代码模型保留专用校准方案。对于 4 bit 及以上的量化，我们建议采用该混合方案，以提升模型的推理能力和 Agentic 任务能力。如需显式指定，请使用 `--dataset "HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25"`，样本数会随 `nsamples` 自动按比例缩放。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。
 
+* [2026/11] 我们实验性地支持**递归残差量化（RRQ）**。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。
+  ```bash
+  # 量化：输出目录中同时产出 base/ 和 residual/
+  python -m auto_round.cli.main \
+      --model Qwen/Qwen3-0.6B --scheme W2A16 \
+      --backend_format auto_round:rrq --dump_config
+
+  # 加载（激活 4-bit：base + 1 个残差平面）
+  from auto_round import load_rrq_model
+  model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
+  ```
+  注意：该功能仍处于实验阶段，尚不支持生产级部署场景。
+
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
@@ -339,7 +352,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 # 对于非 GGUF 方案，将 iters 改为 200
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,

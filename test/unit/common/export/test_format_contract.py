@@ -70,6 +70,7 @@ def test_public_format_names_match_existing_contract():
         "auto_round:fp8",
         "mlx",
         "auto_round:mlx",
+        "auto_round:rrq",
         "svdquant_nunchaku",
         "svdquant_omni",
     }

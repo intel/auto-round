@@ -32,6 +32,12 @@ from auto_round.algorithms.registry import (
 )
 
 
+def _is_rrq_format(args) -> bool:
+    """Check whether the requested output format is RRQ."""
+    fmt = getattr(args, "format", None) or getattr(args, "_api_format", None) or ""
+    return "auto_round:rrq" in fmt.lower()
+
+
 def _parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
     if _has_custom_register_args(config_cls):
         return config_cls.get_registered_args()
@@ -183,7 +189,7 @@ def _find_merge_target(merged_parameters, locations, group_name, parameter) -> i
     """Find an already-declared parameter that ``parameter`` should merge into.
 
     Option strings are matched before the destination. A mutually exclusive pair
-    (e.g. ``--enable_minmax_tuning`` / ``--no-enable_minmax_tuning``) declares two
+    (e.g. ``--enable_quanted_input`` / ``--no-enable_quanted_input``) declares two
     actions that share one ``dest``, so matching on ``dest`` alone would report a
     conflict between the two halves of the same pair when a second algorithm
     redeclares it. Parameters that share only a ``dest`` are merged when their
@@ -227,7 +233,7 @@ class AlgorithmHandler:
         parameters_by_group = {}
         locations = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             config_cls = (
                 entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
@@ -297,7 +303,7 @@ class AlgorithmHandler:
             raw = getattr(args, "algorithm", None)
         plan = getattr(args, "_recipe_plan", None)
         if plan is not None and raw is None:
-            from auto_round.autoround import _normalize_alg_configs
+            from auto_round.algorithms.config_resolver import _normalize_alg_configs
 
             configs = []
             explicit = args._explicit_fields
@@ -308,8 +314,6 @@ class AlgorithmHandler:
                     for parameter in registry.parameters
                     if parameter.dest in explicit and hasattr(args, parameter.dest)
                 }
-                if getattr(type(default_config), "cli_include_common_args", True):
-                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
                 configs.append(stage.build_config(overrides))
             direct = {"iters": args.iters} if "iters" in explicit else {}
             if direct.get("iters") == 0:
@@ -333,6 +337,11 @@ class AlgorithmHandler:
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
+        # Auto-select RRQ when the output format is auto_round:rrq and the user
+        # did not explicitly choose an algorithm.
+        if not names and _is_rrq_format(args):
+            names = ["rrq"]
+
         canonical = resolve_algorithm_names(names)
         validate_rtn_variant_names(canonical)
         # Names the user actually wrote. The implicit block-quantizer fallback
@@ -341,7 +350,7 @@ class AlgorithmHandler:
         explicit_names = set(canonical)
         seen = set(canonical)
         if not cls._has_quantizer(canonical):
-            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
+            canonical.append("rtn" if {"awq", "teq"} & seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]
 
@@ -351,8 +360,6 @@ class AlgorithmHandler:
             awq_entry = get_algorithm_entry("awq")
             awq_cls = cls.get("awq")
             awq_kwargs = _parameter_registry(awq_cls).config_kwargs(args)
-            if getattr(awq_cls, "cli_include_common_args", True):
-                awq_kwargs.update(common_kwargs)
             if isinstance(awq_entry.config_factory, type):
                 awq_config = awq_entry.config_factory(**awq_kwargs)
             elif awq_kwargs:
@@ -371,8 +378,6 @@ class AlgorithmHandler:
             entry = get_algorithm_entry(name)
             config_cls = cls.get(name)
             kwargs = _parameter_registry(config_cls).config_kwargs(args)
-            if getattr(config_cls, "cli_include_common_args", True):
-                kwargs.update(common_kwargs)
             if name in explicit_names and name in RTN_VARIANT_DISABLE_OPT_RTN:
                 # The algorithm name is authoritative: it selects the variant
                 # even when the opposite flag was passed as well.
@@ -392,7 +397,7 @@ class AlgorithmHandler:
     def format_listing(cls) -> str:
         lines = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             other = [alias for alias in entry.aliases if alias != entry.name]
             alias_str = f" (aliases: {', '.join(other)})" if other else ""
@@ -403,7 +408,11 @@ class AlgorithmHandler:
     def format_detail(cls, name: str) -> str:
         canonical = cls.resolve_alias(name)
         if canonical is None:
-            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None]
+            supported = [
+                entry.name
+                for entry in iter_algorithm_entries()
+                if entry.config_factory is not None and not entry.hidden
+            ]
             raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
         entry = get_algorithm_entry(canonical)
         lines = [f"{entry.name}: {entry.summary}"]

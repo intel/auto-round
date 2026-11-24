@@ -294,10 +294,12 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
-_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
+# DeepSeek V4 uses this same FP8 checkpoint loader for dense FP8 and packed
+# FP4 experts. Dequantize both before generic fused-MoE replacements run.
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32", "deepseek_v4"}
 
 
-def _is_mxfp4_model(model_path, trust_remote_code=True):
+def _is_mxfp4_model(model_path, trust_remote_code=False):
     """Check if a model is an MXFP4 quantized model supported for direct loading.
 
     Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
@@ -326,7 +328,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
 
 
-def _is_fp8_model(model_path, trust_remote_code=True):
+def _is_fp8_model(model_path, trust_remote_code=False):
     """Check if a model is an FP8 quantized model supported for direct loading.
 
     Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
@@ -447,7 +449,7 @@ def install_debug_layer_config_patch() -> None:
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     device: str = "cpu",
     **kwargs,
@@ -543,7 +545,7 @@ def llm_load_model(
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
-        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
+        logger.warning("trust_remote_code is explicitly enabled, please ensure the model source is trusted.")
 
     if is_hpex_available():
         # For loading FP8 model on HPU
@@ -670,7 +672,7 @@ def mllm_load_model(
     device: str = "cpu",
     torch_dtype: str = "auto",
     use_auto_mapping: bool = True,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     **kwargs,
 ):
@@ -997,7 +999,7 @@ def diffusion_load_model(
     device: str | torch.device = "cpu",
     torch_dtype: str | torch.dtype = "auto",
     use_auto_mapping: bool = False,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     default_torch_dtype: str | torch.dtype = "auto",
     **kwargs,
@@ -1032,7 +1034,7 @@ def diffusion_load_model(
     if model_type == "nextstep":
         from auto_round.special_model_handler import load_next_step_diffusion
 
-        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str, trust_remote_code)
         return pipe, pipe.model
 
     # A special case for Cosmos3: model_index.json _class_name may not match
@@ -1079,7 +1081,7 @@ def diffusion_load_model(
                     torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
+            pretrained_model_name_or_path, torch_dtype=torch_dtype, trust_remote_code=trust_remote_code
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
@@ -1152,7 +1154,7 @@ def load_model(
     pretrained_model_name_or_path: str | torch.nn.Module,
     platform: str = "hf",
     model_dtype: str | None = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     device: str = "cpu",
     use_auto_mapping: bool | None = None,
     use_model_replacements: bool = False,
@@ -1484,7 +1486,7 @@ def _get_modular_pipeline_class():
         return None
 
 
-def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = True) -> bool:
+def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = False) -> bool:
     from auto_round.utils.common import LazyImport
 
     # Then check if model_index.json exists for diffusion pipeline,
@@ -1628,6 +1630,27 @@ def get_block_names(model, quant_vision=False):
 
 
 def get_lm_head_name(model):
+    """Resolve the name of the LM head module (e.g. ``lm_head``).
+
+    Prefers the model's own ``get_output_embeddings()`` declaration — the
+    transformers-native source of truth, overridden per family — and
+    reverse-maps the returned module to its registered name. Falls back to the
+    last-leaf walk for objects without the method, raising getters, or
+    unregistered heads (trust-remote-code, diffusers, plain ``nn.Module``).
+    Weight tying shares parameters while module objects stay distinct, so the
+    identity mapping stays unambiguous for tied models.
+    """
+    getter = getattr(model, "get_output_embeddings", None)
+    if callable(getter):
+        try:
+            head = getter()
+        except Exception:  # family-specific failures fall back to the walk
+            head = None
+        if head is not None:
+            for name, module in model.named_modules():
+                if module is head:
+                    return name
+            # an unregistered head: fall through to the last-leaf walk
     block_names = get_block_names(model, True)
     last_name = None
     for n, m in model.named_modules():
@@ -1659,6 +1682,7 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         [
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
+            "Qwen3_5MoeSparseMoeBlock",
             "DeepseekMoE",
             "DeepseekV2MoE",
             "DeepseekV3MoE",
@@ -1699,6 +1723,7 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
         [
             "Qwen2MoeSparseMoeBlock",
             "Qwen3MoeSparseMoeBlock",
+            "Qwen3_5MoeSparseMoeBlock",
             "Qwen3VLMoeTextSparseMoeBlock",
             "Qwen3OmniMoeThinkerTextSparseMoeBlock",
             "Qwen3OmniMoeTalkerTextSparseMoeBlock",
@@ -2212,7 +2237,7 @@ def to_dtype(input, dtype=torch.float32):
 def set_amax_for_uncalibrated_experts(
     experts: torch.nn.Module, set_amax_value: float | None = None, attr_name="act_max", unify_all: bool = False
 ):
-    """Set amax of uncalibrated experts to a given value or the max of existing amax value from other experts.
+    """Fill missing or degenerate NVFP amax from the largest valid peer statistic.
 
     Args:
         experts: a list of experts
@@ -2241,10 +2266,50 @@ def set_amax_for_uncalibrated_experts(
             value = get_nested_attr(module.orig_layer, attr_name)
         return value
 
+    def _needs_nvfp_repair(module, value):
+        from auto_round.data_type.nvfp import (
+            FLOAT4_E2M1_MAX,
+            FLOAT8_E4M3_MAX,
+            FLOAT8_UE5M3_MAX,
+            get_reciprocal,
+            is_valid_nvfp_global_scale,
+        )
+        from auto_round.schemes import needs_nvfp_global_scale
+
+        data_type = _get_attr(module, "act_data_type")
+        act_bits = _get_attr(module, "act_bits")
+        if (
+            attr_name != "act_max"
+            or not isinstance(data_type, str)
+            or not needs_nvfp_global_scale(data_type)
+            or not isinstance(act_bits, (float, int))
+            or act_bits > 8
+        ):
+            return False
+        if value is None:
+            return True
+        amax = value.to(torch.float32)
+        if not torch.isfinite(amax).all() or (amax < 0).any():
+            raise ValueError("NVFP expert act_max must contain finite, nonnegative calibration statistics.")
+        scale_max = FLOAT8_UE5M3_MAX if "nvfp4_v2" in data_type else FLOAT8_E4M3_MAX
+        global_scale = scale_max * FLOAT4_E2M1_MAX * get_reciprocal(amax.max())
+        return not bool(is_valid_nvfp_global_scale(global_scale).all())
+
+    # ModelOpt set_expert_quantizer_amax reuses the largest calibrated peer amax.
+    # Extend its missing-statistic handling to zero/overflowing NVFP activation ranges.
+    # https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/main/modelopt/torch/export/layer_utils.py
+    values = [_get_amax_value(module) for module in experts]
+    needs_repair = [_needs_nvfp_repair(module, value) for module, value in zip(experts, values)]
+    degenerate_count = sum(repair and value is not None for repair, value in zip(needs_repair, values))
+
     # get the max amax value from all experts
     if set_amax_value is None:
-        amax_values = [_get_amax_value(m) for m in experts if _get_amax_value(m) is not None]
+        amax_values = [value for value, repair in zip(values, needs_repair) if value is not None and not repair]
         if len(amax_values) == 0:
+            if any(needs_repair):
+                raise ValueError(
+                    "No valid NVFP expert activation statistics are available for this projection; recalibrate."
+                )
             # Check if any expert actually needs act_max (act_bits < 8, not dynamic, not already quantized)
             sample = next((m for m in experts if m is not None), None)
             if sample is not None:
@@ -2266,17 +2331,22 @@ def set_amax_for_uncalibrated_experts(
         set_amax_value = torch.max(all_values)
         set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
 
-    for module in experts:
-        current_amax = _get_amax_value(module)
+    if not isinstance(set_amax_value, torch.Tensor):
+        set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
 
-        # Set amax if it's None (uncalibrated) OR if unify_all is True
-        if current_amax is None or unify_all:
-            # Use float32 dtype explicitly to ensure we create a floating point tensor
-            if not isinstance(set_amax_value, torch.Tensor):
-                set_amax_value = torch.tensor(set_amax_value, dtype=torch.float32)
+    for module, current_amax, repair in zip(experts, values, needs_repair):
+        if current_amax is None or unify_all or repair:
+            if _needs_nvfp_repair(module, set_amax_value):
+                raise ValueError("The replacement NVFP expert act_max must produce a finite positive global scale.")
             set_nested_attr(module, attr_name, set_amax_value.clone())
             if current_amax is None:
                 uncalibrated_experts.append(module)
+
+    if degenerate_count:
+        logger.warning_once(
+            f"Replaced {degenerate_count} degenerate NVFP expert activation statistics "
+            "with the maximum valid amax from the same projection group."
+        )
 
     if uncalibrated_experts:
         logger.info_once(
@@ -2332,6 +2402,8 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                         attr_name=attr_name,
                         unify_all=unify_scale,  # Unify scales for input projections (gate/up)
                     )
+                except ValueError as e:
+                    raise ValueError(f"Invalid activation statistics in '{name}.experts.*.{linear_name}': {e}") from e
                 except AttributeError as e:
                     # Provide more helpful debugging information
                     expert_types = list({type(expert).__name__ for expert in sub_module.experts})
@@ -3304,8 +3376,8 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
     for prefix, config_dir in dirs:
         try:
             with torch.device("meta"):
-                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
-                model = AutoModel.from_config(config, trust_remote_code=True)
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=False)
+                model = AutoModel.from_config(config, trust_remote_code=False)
         except Exception as e:
             logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
             continue  # skip silently
