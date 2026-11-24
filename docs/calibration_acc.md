@@ -1,11 +1,13 @@
 
-## Calibration Dataset Study (WIP)
+## Calibration Dataset Study
 
-**Current Recommendation**: For 4-bit quantization, current results suggest **75% UltraChat + 25% OpenCode (Mix2 recipe)**. With the default `nsamples=128`, this recipe can be applied using:
+**Default Calibration**: For weight quantization at 4 bits and above, LLMs and MLLMs quantizing only text modules (`quant_nontext_module=False`) now use **75% UltraChat + 25% OpenCode** when `dataset` is omitted. UltraChat uses the model's chat template, with a fallback to `NeelNanda/pile-10k` when no usable template is available. W2/W3 and full multimodal quantization retain their previous defaults; code models retain their dedicated calibration recipe. Explicitly supplied datasets are unchanged. We recommend this mix for quantization at 4 bits and above. To select it explicitly, use:
 
 ```bash
---dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:num=96,nvidia/OpenCodeInstruct:num=32'
+--dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25'
 ```
+
+Sample counts scale automatically with `nsamples`; the default of 128 samples gives 96 UltraChat and 32 OpenCode sequences. Bold values mark the highest score in each metric column within each model table; ties are all bolded.
 
 ### Qwen3.8-27B-W4A16
 
@@ -80,7 +82,7 @@
 <td align="center">73.65<br><sub>72.3 / 75</sub></td>
 <td align="center">85.40</td>
 <td align="center"><b>92.70</b></td>
-<td align="center"><b>60.00</b></td>
+<td align="center">60.00</td>
 <td align="center">44.94</td>
 </tr>
 <tr>
@@ -114,14 +116,14 @@
 <td align="center">43.80</td>
 </tr>
 <tr>
-<td>mix_d</td>
+<td>mix_d (UltraChat 62.5%, apply_chat_template=true + OpenCode 37.5%)</td>
 <td align="center">98.00<br><sub>100 / 100 / 100 / 93.33 / 96.67</sub></td>
 <td align="center">89.80<br><sub>89.39 / 89.39 / 90.91 / 90.40 / 88.89</sub></td>
-<td align="center">–</td>
+<td align="center">71.56<br><sub>71.00 / 72.11</sub></td>
 <td align="center">85.41</td>
 <td align="center">91.18</td>
-<td align="center">66.00</td>
-<td align="center">–</td>
+<td align="center"><b>66.00</b></td>
+<td align="center">42.70</td>
 </tr>
 </tbody>
 </table>
@@ -193,7 +195,7 @@
 <td align="center"><b>76.70</b></td>
 <td align="center">58.60</td>
 <td align="center">67.95</td>
-<td align="center">77.30</td>
+<td align="center"><b>77.30</b></td>
 <td align="center">67.20</td>
 </tr>
 <tr>
@@ -213,10 +215,10 @@
 <td align="center"><b>73.50</b></td>
 </tr>
 <tr>
-<td>mix_d</td>
+<td>mix_d (UltraChat 62.5%, apply_chat_template=true + OpenCode 37.5%)</td>
 <td align="center">65.33<br><sub>66.67 / 60 / 63.33 / 63.33 / 73.33</sub></td>
 <td align="center">61.42<br><sub>57.58 / 62.63 / 62.63 / 60.10 / 64.14</sub></td>
-<td align="center">–</td>
+<td align="center">67.43<br><sub>67.06 / 67.80</sub></td>
 <td align="center">76.20</td>
 <td align="center">58.39</td>
 </tr>

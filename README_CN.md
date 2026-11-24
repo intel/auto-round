@@ -50,7 +50,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 ## 🆕 最新进展
 
-* [WIP] 对于 4 bit 及以上的量化，我们目前建议采用 75% UltraChat + 25% OpenCode 的混合数据集，以提升模型的推理能力和 Agentic 任务能力。使用默认配置 nsamples=128 时，请指定 --dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。待评测全部完成后，我们将更新默认校准数据集。
+* [2026/11] 权重量化精度为 4 bit 及以上时，如果未指定 `dataset`，LLM 及仅量化文本模块的 MLLM（`quant_nontext_module=False`）现默认使用 75% UltraChat + 25% OpenCode。UltraChat 使用模型的 chat template；没有可用模板时回退到 `NeelNanda/pile-10k`。W2/W3 和完整多模态量化保留原默认方案；代码模型保留专用校准方案。对于 4 bit 及以上的量化，我们建议采用该混合方案，以提升模型的推理能力和 Agentic 任务能力。如需显式指定，请使用 `--dataset "HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25"`，样本数会随 `nsamples` 自动按比例缩放。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。
 
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
@@ -284,10 +284,21 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 标定数据集
 
-- ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
+- ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集。权重量化精度为 4 bit 及以上时，如果未指定此参数，LLM 及仅量化文本模块的 MLLM（`quant_nontext_module=False`）默认使用 75% UltraChat（应用模型的 chat template）+ 25% OpenCode；没有可用模板时回退到 `"NeelNanda/pile-10k"`。W2/W3 和完整多模态量化保留原默认方案；代码模型保留专用校准方案。显式指定的数据集不会被覆盖。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
 - I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AR_CACHE` 后则缓存在 `$AR_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
+
+按比例采样支持两个或更多校准数据集，例如：
+
+```bash
+--dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25'
+```
+
+每个数据集都必须指定 `ratio`，取值在 0 到 1 之间且总和为 1，不能与 `num` 混用。
+样本数随 `nsamples` 缩放：128 个样本对应 96/32。数量不能整除时，采用最大余数法分配，保持总数不变。
+比例针对有效校准序列数，而非 token 数；过滤后样本不足会报错。
+Python 的 `dataset` 参数同样支持上述字符串，或使用设置了 `ratio` 的 `CalibDataset` 对象列表。
 
 ##### 设备 / 速度配置
 

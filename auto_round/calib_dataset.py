@@ -22,6 +22,7 @@ import random
 import ssl
 import sys
 import tempfile
+from fractions import Fraction
 from importlib.metadata import PackageNotFoundError, version
 
 logging.getLogger("datasets").setLevel(logging.WARNING)
@@ -50,6 +51,7 @@ from .utils.dataset_utils import (
     auto_detect_text_field_from_sample,
     extract_text_from_sample,
     normalize_dataset_spec,
+    parse_dataset_spec,
     split_unescaped,
     unescape_spec_value,
 )
@@ -136,6 +138,22 @@ def _preprocess_dataset_in_subprocess(
         result_queue.put((_DATASET_RESULT_ERROR, str(network_error) if network_error is not None else None))
         raise
     result_queue.put((_DATASET_RESULT_SUCCESS, output_path))
+
+
+def get_default_calibration_dataset(tokenizer):
+    """Use the default calibration mix for chat models, falling back to pile without a usable template."""
+    try:
+        rendered = tokenizer.apply_chat_template(
+            [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        if not isinstance(rendered, str) or not rendered.strip():
+            raise ValueError("The tokenizer did not render a chat conversation.")
+    except Exception:
+        logger.info("Tokenizer has no usable chat template; using NeelNanda/pile-10k for calibration.")
+        return "NeelNanda/pile-10k"
+    return "HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75," "nvidia/OpenCodeInstruct:ratio=0.25"
 
 
 def get_code_calibration_dataset(nsamples, datasets_version=None):
@@ -1857,6 +1875,27 @@ def _get_dataset_impl(
     # Split on unescaped commas so that commas inside option values (e.g. a
     # system_prompt or template) are not mistaken for dataset separators.
     dataset_names = split_unescaped(dataset_name, ",")
+    specs = [parse_dataset_spec(name) for name in dataset_names]
+    using_ratios = any("ratio" in spec for spec in specs)
+    if using_ratios:
+        if any("ratio" not in spec or spec["num"] is not None for spec in specs):
+            raise ValueError("Specify ratio for every dataset, without mixing ratio and num.")
+        ratios = [Fraction(str(spec["ratio"])) for spec in specs]
+        if any(ratio < 0 or ratio > 1 for ratio in ratios) or sum(ratios) != 1:
+            raise ValueError("Dataset ratios must be between 0 and 1 and sum to 1.")
+        if nsamples <= 0:
+            raise ValueError("nsamples must be positive when using dataset ratios.")
+        quotas = [nsamples * ratio for ratio in ratios]
+        counts = [int(quota) for quota in quotas]
+        order = sorted(range(len(counts)), key=lambda index: (-(quotas[index] - counts[index]), index))
+        for index in order[: nsamples - sum(counts)]:
+            counts[index] += 1
+        dataset_names = [
+            ":".join(segment for segment in split_unescaped(name, ":") if segment.split("=", 1)[0].strip() != "ratio")
+            + f":num={count}"
+            for name, count in zip(dataset_names, counts)
+            if count
+        ]
 
     def cast_dataset_columns(dataset):
         features = dict(dataset.features)
@@ -2093,6 +2132,11 @@ def _get_dataset_impl(
         # Format last: tensorizing whole batches during filter/select would run torch ops that
         # are not fork-safe (libgomp) in the preprocessing subprocess.
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        if using_ratios and len(dataset) != data_lens[name]:
+            raise ValueError(
+                f"Dataset {name!r} cannot supply its ratio quota: "
+                f"requested {data_lens[name]} samples, found {len(dataset)} after filtering."
+            )
         datasets.append(dataset)
 
     if len(datasets) == 1:

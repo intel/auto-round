@@ -51,7 +51,7 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
-* [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
+* [2026/11] For weight quantization at 4 bits and above, LLMs and MLLMs quantizing only text modules (`quant_nontext_module=False`) now default to 75% UltraChat with 25% OpenCode when `dataset` is omitted. UltraChat uses the model's chat template, with a fallback to `NeelNanda/pile-10k` when no usable template is available. W2/W3 and full multimodal quantization retain their previous defaults; code models retain their dedicated calibration recipe. We recommend this mix for quantization at 4 bits and above to improve reasoning capabilities and agent compatibility. To select it explicitly, use `--dataset "HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25"`; sample counts scale automatically with `nsamples`. See the [doc](./docs/calibration_acc.md) for details.
 
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
@@ -269,10 +269,21 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
 
 ##### Calibration Dataset
-- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning. When omitted for weight quantization at 4 bits and above, LLMs and MLLMs quantizing only text modules (`quant_nontext_module=False`) default to 75% UltraChat with the model's chat template and 25% OpenCode, falling back to `"NeelNanda/pile-10k"` without a usable template. W2/W3 and full multimodal quantization retain their previous defaults; code models retain their dedicated calibration recipe. Explicitly supplied datasets are unchanged. Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
 - I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AR_CACHE/datasets/coco2014` when `AR_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
+
+Proportional sampling supports two or more calibration datasets. For example:
+
+```bash
+--dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25'
+```
+
+Specify `ratio` for every dataset, with values between 0 and 1 summing to 1; do not mix `ratio` and `num`.
+Counts scale with `nsamples`: 128 samples use 96/32. Fractional counts use largest-remainder rounding to preserve the total.
+Ratios apply to usable calibration sequences, not token counts; insufficient samples after filtering raise an error.
+The Python `dataset` parameter accepts the same string, or a list of `CalibDataset` objects with `ratio` set.
 
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: Enabling `torch.compile` may speed up quantization, but compilation overhead can change peak memory and may increase it for some models or quantization schemes. It is enabled by default except on Windows, where it is disabled because TorchInductor requires the MSVC `cl.exe` compiler. On Windows, pass `enable_torch_compile=True` in Python or `--enable_torch_compile` on the CLI to force enable it. On other platforms, use `enable_torch_compile=False` or `--disable_torch_compile` to opt out.
