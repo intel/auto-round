@@ -16,7 +16,6 @@ import test_woq_s4 as fixture
 import torch
 
 ark = fixture.ark
-TABLE = "ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES"
 GROUP_SIZE = 128
 OPTIONS = (fixture.COMPUTE_TYPE, fixture.WEIGHT_TYPE, fixture.SCALE_TYPE, fixture.ASYM)
 M1_SHAPES = (
@@ -33,17 +32,17 @@ M1_SHAPES = (
 )
 
 
-def select_split4(enabled, shape_table):
-    os.environ[TABLE] = shape_table if enabled else ""
+def uses_ark_split4(inner, columns):
+    return inner == fixture.K and 8192 <= columns <= fixture.N and columns % 128 == 0
 
 
 def check_memory(*, timing):
     free, total = torch.xpu.mem_get_info()
     print(f"free_bytes={free}/{total} ({free / total:.1%})", flush=True)
     if timing and free <= 0.90 * total:
-        raise SystemExit("Timing blocked: the verified CRI device must have >90% free memory.")
+        raise SystemExit("Timing blocked: the selected XPU must have >90% free memory.")
     if free < 8 * 2**30:
-        raise SystemExit("The verified CRI device needs at least 8 GiB for this check.")
+        raise SystemExit("The selected XPU needs at least 8 GiB for this check.")
 
 
 def make_case(group_size, *, with_bias, rows, inner, columns):
@@ -108,7 +107,6 @@ def compare_m1_matrix_group(
     inner,
     columns,
     group_size,
-    shape_table,
     *,
     routes_only,
     profile_stages,
@@ -124,18 +122,23 @@ def compare_m1_matrix_group(
     queue_ptr = ark.get_stream(activation)
     device = activation.device
     native = ark.xpu_lib.woqgemm
-    split4 = probe.run_k64_split4
+    integrated = uses_ark_split4(inner, columns)
     dtype_code = ark.cvt_dtype(torch.float16)
     compute, weight_type, scale_type = (ark.cvtstr_dtype(dtype) for dtype in OPTIONS[:3])
     batch = 1 if routes_only else fixture._batch_for_m(1)
     runs = fixture._runs_for_m(1)
     warmup = fixture._warmup_for_runs(runs)
     weights = fixture._repeat_ark_blob(packed, batch)
-    scale_bytes = inner // group_size * columns * activation.element_size()
-    weight_ptrs = [(view.data_ptr(), view[-scale_bytes:].data_ptr()) for view in weights]
+    weight_ptrs = [view.data_ptr() for view in weights]
     blob_size = packed.numel()
-    scratch = torch.empty(4 * columns, dtype=torch.float32, device=device)
-    scratch_ptr = scratch.data_ptr()
+    if not integrated:
+        if probe is None:
+            raise ValueError(f"{shape} requires the standalone split-K4 probe")
+        split4 = probe.run_k64_split4
+        scale_bytes = inner // group_size * columns * activation.element_size()
+        scale_ptrs = [view[-scale_bytes:].data_ptr() for view in weights]
+        scratch = torch.empty(4 * columns, dtype=torch.float32, device=device)
+        scratch_ptr = scratch.data_ptr()
     orders = (("gemv", "k64-s4"),) if routes_only else (("gemv", "k64-s4"), ("k64-s4", "gemv"))
     bf16_only = bias_cast_ab or bf16_io_ab or io_buffer_ab == "split"
     dtypes = (torch.bfloat16,) if bf16_only else (torch.float16, torch.bfloat16)
@@ -165,7 +168,6 @@ def compare_m1_matrix_group(
                 else (("normal", bias_input),)
             )
             expected = reference + caller_bias.float() if with_bias else reference
-            integrated = group_size == GROUP_SIZE and not with_bias
             dtype_name = "fp16" if dtype == torch.float16 else "bf16"
             path = "ark" if integrated else "probe"
             label = f"{shape} M=1 group={group_size} bias={int(with_bias)} dtype={dtype_name} path={path}"
@@ -179,7 +181,7 @@ def compare_m1_matrix_group(
                 ):
                     buffer_label, reuse_input, reuse_output = buffers
                     enabled = mode == "k64-s4"
-                    select_split4(integrated and enabled, shape_table)
+                    os.environ[fixture.M1_SPLIT4_SWITCH] = "1" if integrated and enabled else "0"
                     use_probe = enabled and not integrated
                     case_label = f"{label} bias_cast={bias_cast}" if bias_cast_ab else label
                     if bf16_io_ab:
@@ -206,13 +208,13 @@ def compare_m1_matrix_group(
                             if reuse_output
                             else torch.zeros((1, columns), dtype=torch.float16, device=device)
                         )
-                        weight_ptr, scale_ptr = weight_ptrs[slot]
+                        weight_ptr = weight_ptrs[slot]
                         if use_probe:
                             split4(
                                 queue_ptr,
                                 input_fp16.data_ptr(),
                                 weight_ptr,
-                                scale_ptr,
+                                scale_ptrs[slot],
                                 bias_fp16.data_ptr(),
                                 output.data_ptr(),
                                 scratch_ptr,
@@ -305,15 +307,15 @@ def compare_m1_matrix_group(
 
 
 def compare_m1_matrix(probe, shapes, *, routes_only, profile_stages, bias_cast_ab, bf16_io_ab, io_buffer_ab):
-    shape_table = ",".join(shapes)
+    shape_labels = ",".join(shapes)
     if bf16_io_ab:
-        print(f"M=1 group128 no-bias BF16: input/output casts inside/outside timing; {shape_table}")
+        print(f"M=1 group128 no-bias BF16: input/output casts inside/outside timing; {shape_labels}")
     elif io_buffer_ab:
         buffer_dtypes = "BF16" if io_buffer_ab == "split" else "FP16/BF16"
-        print(f"M=1 group128 no-bias {buffer_dtypes}: per-call allocation vs reusable I/O buffers; {shape_table}")
+        print(f"M=1 group128 no-bias {buffer_dtypes}: per-call allocation vs reusable I/O buffers; {shape_labels}")
     else:
-        print(f"M=1 group32/128 x bias/no-bias x FP16/BF16: {shape_table}")
-    print("Common caller includes casts and output allocation; only group128 without bias uses integrated split4.")
+        print(f"M=1 group32/128 x bias/no-bias x FP16/BF16: {shape_labels}")
+    print("Common caller includes casts and output allocation; split4 outside the wide-N rule uses the probe.")
     if bias_cast_ab:
         print(
             "BF16+bias only: per-call bias cast vs the same bias cast before the timing window; verify bitwise outputs."
@@ -328,7 +330,6 @@ def compare_m1_matrix(probe, shapes, *, routes_only, profile_stages, bias_cast_a
                 inner,
                 columns,
                 group_size,
-                shape_table,
                 routes_only=routes_only,
                 profile_stages=profile_stages,
                 bias_cast_ab=bias_cast_ab,
@@ -368,34 +369,30 @@ def main():
         help="test reusable I/O buffers without removing casts; split tests each side in BF16",
     )
     parser.add_argument("--shape", choices=M1_SHAPES, action="append", help="restrict the shape sweep; may be repeated")
-    parser.add_argument("--device-uuid", help="require this exact CRI device UUID in addition to the device ID check")
+    parser.add_argument("--device-uuid", help="require this exact XPU device UUID")
     parser.add_argument("--expect-sha256", help="require this exact ARK XPU shared-library hash")
     parser.add_argument("--expect-probe-sha256", help="require this exact split4 probe shared-library hash")
     args = parser.parse_args()
-    for flag in (
-        "ARK_WOQ_S4_DPAS_M1",
-        "ARK_WOQ_S4_DPAS_M1_SHAPES",
-        "ARK_WOQ_S4_DPAS_SMALL_M_TILE_K",
-        "ARK_WOQ_S4_DPAS_SPLIT_K4_M1",
-        TABLE,
-    ):
-        os.environ.pop(flag, None)
+    os.environ.pop(fixture.M1_SPLIT4_SWITCH, None)
     verify_binary(ark.xpu_lib, args.expect_sha256)
     print(f"Fixture: {Path(fixture.__file__).resolve()}")
     if torch.xpu.device_count() != 1:
-        raise SystemExit("Select exactly one CRI GPU before running the benchmark.")
+        raise SystemExit("Select exactly one XPU before running the benchmark.")
     device = torch.xpu.get_device_properties(0)
-    print(f"Torch {torch.__version__}; XPU {device.name}, UUID {device.uuid}")
-    if device.device_id != 0x674F or (args.device_uuid and str(device.uuid).lower() != args.device_uuid.lower()):
+    print(f"Torch {torch.__version__}; XPU {device.name}, ID {device.device_id:#06x}, UUID {device.uuid}")
+    if args.device_uuid and str(device.uuid).lower() != args.device_uuid.lower():
         raise SystemExit(f"Unexpected XPU device: {device}")
     check_memory(timing=not args.routes_only)
     torch.set_num_threads(4)
-    probe = importlib.import_module("ark_2673_dpas_probe")
-    verify_binary(probe, args.expect_probe_sha256)
+    shapes = args.shape or M1_SHAPES
+    probe = None
+    if args.expect_probe_sha256 or any(not uses_ark_split4(*map(int, shape.split("x"))) for shape in shapes):
+        probe = importlib.import_module("ark_2673_dpas_probe")
+        verify_binary(probe, args.expect_probe_sha256)
     with torch.inference_mode():
         compare_m1_matrix(
             probe,
-            args.shape or M1_SHAPES,
+            shapes,
             routes_only=args.routes_only,
             profile_stages=args.profile_stages,
             bias_cast_ab=args.bias_cast_ab,

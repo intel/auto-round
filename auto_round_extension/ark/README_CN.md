@@ -46,24 +46,24 @@ ARK 算子已集成到以下项目：
 
 **XPU 上的稠密 W4A16（SYCL TLA）**
 
-以下设置仅适用于设备 ID `0x674f`、对称 INT4 权重、INT8 compute 配置、内核激活和 scale 为 FP16、group size 为 128、group-major packed scale 且无 bias 的调用。各项设置默认均关闭：
+设置 `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` 后，`M=1, K=4096, 8192 <= N <= 16384` 且 `N` 能被 128 整除的调用可以走 K64 split-K4。这是唯一的单行 DPAS 规则，不依赖设备 ID 或形状表。
 
-- `ARK_WOQ_S4_DPAS_M1=1` 让 `ARK_WOQ_S4_DPAS_M1_SHAPES` 中的单行形状走 DPAS，不需要补行。形状表使用逗号分隔的 `KxN` 格式，在首次启用的单行调用时读取一次。未设置、为空或格式不合法时保留 GEMV。
-- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` 让 `M=2, K=14336, N=4096` 使用 K64。
-- `ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES=KxN,...` 让表中的形状在 `M=1` 和 `M=2` 均使用 K64 split-K4，优先于不切分的 DPAS 设置。要求 `K` 能被 512 整除，`N` 能被 128 整除且不超过 16384，并使用未处于图录制状态的有序队列。每个使用该路径的队列复用 512 KiB 的 FP32 临时空间。形状表在首次检查时解析一次；未设置、为空、格式不合法或未命中时不通过此设置启用。
-- `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` 是针对 `M=1, K=4096, 8192 <= N <= 16384` 的实验规则，仍需满足相同的 split-K 条件。它无需配置形状表，不影响 `M>1`。FP16 和 BF16 共用规则，BF16 在阈值附近不保证有收益。未命中时其他设置仍有效；未开启其他设置时，单行调用保留 GEMV。
+该路由要求对称 INT4 权重、FP16 内核输入输出、group-major FP16 scale、group size 为 32、64 或 128，以及未处于图录制状态的有序队列。每个队列复用 256 KiB 的 FP32 临时空间；四份 FP32 partial 求和后只加一次可选 bias，再转为 FP16。Split-K 改变累加顺序，输出不保证与不切分 DPAS 逐 bit 相等。
 
-单行形状表只应包含在目标设备上与同批大小 GEMV 做过对照的形状。进程使用的每种输入 dtype 都应满足中位延迟下降、尾延迟不回退且数值检查通过。FP16 输入和转换后的 BF16 输入到达原生分流时都是 FP16，因此形状表不能区分二者。
-
-请根据两种行数和进程所用各输入 dtype 的整次调用延迟及数值正确性，单独选择 split-K 形状。在本次测试的 CRI 设备上，`14336x4096` 的 FP16 和 BF16 在两种行数下中位延迟均下降，`4096x4096` 和 `4096x14336` 则没有在两种 dtype 上都复现收益。形状表没有默认条目。Split-K 改变 FP32 累加顺序，因此输出不保证与不切分 DPAS 逐 bit 相等。
-
-其他调用（包括 B70 上的调用）保留原有分流。BF16 转换和权重打包格式不变。
+默认关闭，规则未命中的单行调用仍走 GEMV。`M>1` 的分流、权重打包和 BF16 转换不变。启用前请在目标设备测量整次调用延迟；FP16 和 BF16 共用规则，BF16 在下界附近不保证有收益。
 
 ### M=1 W4A16 基准测试
 
-[bench_woq_s4.py](test/bench_woq_s4.py) 复用 [test_woq_s4.py](test/test_woq_s4.py) 的测试夹具，在包括 `4096x16384` 的十种 K/N 形状上对照 GEMV 和 K64 split-K4，覆盖 group32/128、有无 bias 以及 FP16/BF16 输入。只有 group128 无 bias 的 S4 使用已集成的 ARK 路由，其余使用独立探针。BF16 使用 FP16 内核及 dtype 转换。基准测试不改变原测试扫描范围或默认分流。
+[bench_woq_s4.py](test/bench_woq_s4.py) 复用 [test_woq_s4.py](test/test_woq_s4.py) 的测试夹具，在包括 `4096x16384` 的十种 K/N 形状上对照 GEMV 和 K64 split-K4，覆盖 group32/128、有无 bias 以及 FP16/BF16 输入。宽 N 规则内的所有配置走生产路由。规则外的 split-K4 使用独立探针，标为 `path=probe`，不代表生产路由。
 
-在 ARK 目录下运行，使用可导入 ARK XPU 运行时的 Python 3.11 或更新版本。将 `SYCL_TLA_SRC`、`PYBIND11_SRC` 指向编译 ARK 时使用的依赖源码根目录。为 CRI 编译独立探针，并选择一张空闲 CRI 卡的编号：
+在 ARK 目录下运行，使用可导入新编译 ARK XPU 运行时的 Python 3.11 或更新版本。用 `ZE_AFFINITY_MASK` 选择一张空闲卡。以下命令只检查生产内核和数值，无需编译探针，也不计时：
+
+```bash
+PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+    python -P test/bench_woq_s4.py --routes-only --shape 4096x8192 --shape 4096x16384
+```
+
+全量扫描时，将 `SYCL_TLA_SRC`、`PYBIND11_SRC` 指向编译 ARK 时使用的依赖源码根目录，并为目标设备编译独立探针。以下以 CRI 为例，B70 使用 `bmg-g31`：
 
 ```bash
 source /opt/intel/oneapi/setvars.sh --force
@@ -79,7 +79,7 @@ icpx -std=c++17 -O3 -DNDEBUG -shared -fPIC -fsycl -fno-sycl-instrument-device-co
     -isystem "$SYCL_TLA_SRC/examples/common" -isystem "$PYBIND11_SRC/include" \
     -isystem "$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
     test/ark_2673_dpas_probe.cpp -o "$probe_dir/ark_2673_dpas_probe.so"
-ZE_AFFINITY_MASK=1 ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
     python -P test/bench_woq_s4.py
 ```
 

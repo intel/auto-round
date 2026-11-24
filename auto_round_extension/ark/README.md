@@ -46,24 +46,24 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-These opt-ins apply only to device ID `0x674f` with symmetric INT4 weights, INT8 compute configuration, FP16 activation and scale at the kernel boundary, group size 128, group-major packed scales, and no bias. All are disabled by default:
+Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` to opt in to K64 split-K4 for `M=1, K=4096, 8192 <= N <= 16384` with `N` divisible by 128. This is the only single-row DPAS rule; it does not use a device ID or a shape table.
 
-- `ARK_WOQ_S4_DPAS_M1=1` allows unpadded single-row DPAS for shapes listed in `ARK_WOQ_S4_DPAS_M1_SHAPES` as comma-separated `KxN` pairs. The shape table is read once, on the first enabled single-row call. An unset, empty, or invalid table keeps GEMV.
-- `ARK_WOQ_S4_DPAS_SMALL_M_TILE_K=64` selects K64 for `M=2, K=14336, N=4096`.
-- `ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES=KxN,...` selects four-way K64 split-K for listed shapes at both `M=1` and `M=2`, taking precedence over unsplit DPAS opt-ins. It requires `K` divisible by 512, `N` divisible by 128 and at most 16384, and an in-order queue outside graph recording. It reuses a 512 KiB FP32 scratch buffer per participating queue. The shape table is parsed once on the first call that checks it; an unset, empty, malformed, or unmatched table does not select this path.
-- `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` is an experimental rule for `M=1, K=4096, 8192 <= N <= 16384` with the same split-K eligibility checks. It does not require a shape table and does not change `M>1` dispatch. FP16 and BF16 inputs use the same rule; BF16 gains are not guaranteed near the lower boundary. Outside the rule, other opt-ins still apply; without them single-row calls keep GEMV.
+The route requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 256 KiB of FP32 scratch per queue, adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
 
-Populate the single-row table only with shapes measured on the target device against GEMV at the same batch size. Require a lower median latency, no tail-latency regression, and acceptable numerical results for each input dtype the process uses. The native selector sees FP16 for both FP16 input and converted BF16 input, so the table cannot distinguish them.
-
-Tune the split-K table separately using whole-call latency and correctness for both row counts and all input dtypes in use. On the tested CRI device, `14336x4096` improved median latency for FP16 and BF16 inputs at both row counts. The same improvement did not hold across dtypes for `4096x4096` or `4096x14336`. There are no default entries. Split-K changes FP32 accumulation order, so its outputs need not match unsplit DPAS bitwise.
-
-All other calls, including calls on B70, retain the existing dispatch. BF16 conversion and packed weights are unchanged.
+By default and outside the rule, single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and BF16 conversion are unchanged. Measure whole-call latency on the target device before enabling the rule; FP16 and BF16 inputs share it, and BF16 gains are not guaranteed near the lower boundary.
 
 ### M=1 W4A16 Benchmark
 
-[bench_woq_s4.py](test/bench_woq_s4.py) reuses the [test_woq_s4.py](test/test_woq_s4.py) fixture and compares the existing GEMV route against K64 split-K4 at ten K/N shapes, including `4096x16384`. It measures group32/128 with and without bias, with FP16 and BF16 inputs. Only the group128 no-bias S4 case uses the integrated ARK route; the rest use a standalone probe. BF16 uses FP16 kernel I/O and casts. This benchmark does not change the default test sweep or dispatch.
+[bench_woq_s4.py](test/bench_woq_s4.py) reuses the [test_woq_s4.py](test/test_woq_s4.py) fixture and compares GEMV against K64 split-K4 at ten K/N shapes, including `4096x16384`, with group32/128, optional bias, and FP16/BF16 input. All cases within the wide-N rule use the integrated route. Split-K4 outside the rule uses a standalone probe and is labeled `path=probe`, not a production route.
 
-Run from the ARK directory with the ARK XPU runtime importable in Python 3.11 or newer. Set `SYCL_TLA_SRC` and `PYBIND11_SRC` to the same dependency source roots used for the ARK build. Build the standalone probe for CRI and select the ordinal of one idle CRI card:
+Run from the ARK directory with the newly built ARK XPU runtime importable in Python 3.11 or newer. Set `ZE_AFFINITY_MASK` to select one idle GPU. To verify production kernels without building the probe or timing them:
+
+```bash
+PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+  python -P test/bench_woq_s4.py --routes-only --shape 4096x8192 --shape 4096x16384
+```
+
+For the full sweep, set `SYCL_TLA_SRC` and `PYBIND11_SRC` to the dependency source roots used for the ARK build. Build the standalone probe for the target GPU; this example uses CRI (`bmg-g31` for B70):
 
 ```bash
 source /opt/intel/oneapi/setvars.sh --force
@@ -79,7 +79,7 @@ icpx -std=c++17 -O3 -DNDEBUG -shared -fPIC -fsycl -fno-sycl-instrument-device-co
   -isystem "$SYCL_TLA_SRC/examples/common" -isystem "$PYBIND11_SRC/include" \
   -isystem "$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
   test/ark_2673_dpas_probe.cpp -o "$probe_dir/ark_2673_dpas_probe.so"
-ZE_AFFINITY_MASK=1 ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
+ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
   python -P test/bench_woq_s4.py
 ```
 

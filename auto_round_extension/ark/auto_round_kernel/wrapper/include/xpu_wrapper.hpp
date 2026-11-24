@@ -12,7 +12,6 @@
 
 #pragma once
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -563,7 +562,6 @@ class XpuWrapper {
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   static constexpr size_t kWoqS4DpasMaxM = 128;
-  static constexpr int kWoqS4SplitK4MaxM = 2;
   static constexpr int kWoqS4SplitK4MaxN = 16384;
   static constexpr size_t kWoqS4SplitK4ScratchLoc = 15;
 
@@ -578,82 +576,37 @@ class XpuWrapper {
   }
 
   static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
-    if (m == 0 || m > kWoqS4DpasMaxM) return false;
+    if (m <= 1 || m > kWoqS4DpasMaxM) return false;
     if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
     if (p->blocksize <= 0 || p->n % woq_s4_dpas_tile_n(m, p) != 0 || (p->k & 1) != 0) return false;
     if (p->k % p->blocksize != 0) return false;
     return woq_s4_dpas_group_size_ok(p->blocksize);
   }
 
-  static bool woq_s4_dpas_env_matches(const char* setting, const char* value) {
-    const char* option = std::getenv(setting);
-    return option && std::strcmp(option, value) == 0;
-  }
-
-  static bool woq_s4_dpas_tuning_supported(sycl::queue* q, const QuantParam* p, const void* bias, bool group_n) {
-    if (p->blocksize != 128 || p->compute_type != BTLA_DTYPE::S8 || bias || !group_n) return false;
-    const auto device = q->get_device();
-    return device.has(sycl::aspect::ext_intel_device_id) &&
-           device.get_info<sycl::ext::intel::info::device::device_id>() == 0x674f;
-  }
-
-  static std::vector<std::pair<int, int>> parse_woq_s4_dpas_shapes(const char* begin) {
-    std::vector<std::pair<int, int>> entries;
-    if (!begin) return entries;
-    const char* end = begin + std::strlen(begin);
-    while (begin != end) {
-      int in_features = 0;
-      int out_features = 0;
-      const auto k_field = std::from_chars(begin, end, in_features);
-      if (k_field.ec != std::errc{} || in_features <= 0 || k_field.ptr == end || *k_field.ptr != 'x') return {};
-      const auto n_field = std::from_chars(k_field.ptr + 1, end, out_features);
-      if (n_field.ec != std::errc{} || out_features <= 0 ||
-          (n_field.ptr != end && (*n_field.ptr != ',' || n_field.ptr + 1 == end))) return {};
-      entries.emplace_back(in_features, out_features);
-      begin = n_field.ptr == end ? end : n_field.ptr + 1;
-    }
-    return entries;
-  }
-
-  static bool woq_s4_dpas_m1_selected(int k, int n) {
-    if (!woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_M1", "1")) return false;
-    static const auto shapes = parse_woq_s4_dpas_shapes(std::getenv("ARK_WOQ_S4_DPAS_M1_SHAPES"));
-    return std::find(shapes.begin(), shapes.end(), std::make_pair(k, n)) != shapes.end();
-  }
-
-  static bool woq_try_s4_dpas_split4(sycl::queue* queue, int rows, QuantParam* params, const void* matA, const void* blobB,
+  static bool woq_try_s4_dpas_split4(sycl::queue* queue, QuantParam* params, const void* matA, const void* blobB,
                                     void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
-    const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES");
-    const bool large_m1_selected = rows == 1 && params->k == 4096 && params->n >= 8192 &&
-      woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_SPLIT_K4_M1", "1");
-    if (!large_m1_selected && (!setting || !*setting)) return false;
     using namespace dense_woq_s4_dpas;
-    if (rows < 1 || rows > kWoqS4SplitK4MaxM || params->n <= 0 || params->n > kWoqS4SplitK4MaxN ||
-      params->n % woq_s4_dpas_tile_n(rows, params) != 0 || params->k <= 0 ||
-      params->k % (kSplitK4Parts * kSplitK4GroupSize) != 0 || params->weight_type != BTLA_DTYPE::S4 ||
-      params->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || params->asym) {
+    const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_M1");
+    if (!setting || std::strcmp(setting, "1") != 0 || params->k != 4096 || params->n < 8192 ||
+        params->n > kWoqS4SplitK4MaxN || params->n % woq_s4_dpas_tile_n(1, params) != 0 ||
+        outt != BTLA_DTYPE::F16 || !has_dpas_scale_layout(params, blob_count)) {
       return false;
     }
-    if (!large_m1_selected) {
-      static const auto shapes = parse_woq_s4_dpas_shapes(setting);
-      if (std::find(shapes.begin(), shapes.end(), std::make_pair(params->k, params->n)) == shapes.end()) return false;
-    }
-    if (!queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording ||
-      !woq_s4_dpas_tuning_supported(queue, params, bias, has_dpas_scale_layout(params, blob_count))) {
+    if (!queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {
       return false;
     }
-    constexpr size_t scratch_bytes = kSplitK4Parts * kWoqS4SplitK4MaxM * kWoqS4SplitK4MaxN * sizeof(float);
+    constexpr size_t scratch_bytes = kSplitK4Parts * kWoqS4SplitK4MaxN * sizeof(float);
     auto* partials = static_cast<float*>(
-      DeviceMemoryPool::Instance()->get_scratch_mem(scratch_bytes, kWoqS4SplitK4ScratchLoc, queue));
+        DeviceMemoryPool::Instance()->get_scratch_mem(scratch_bytes, kWoqS4SplitK4ScratchLoc, queue));
     if (!partials) return false;
     const auto* scales = reinterpret_cast<const int8_t*>(blobB) + get_dpas_scale_offset(params);
     if (env_params::Instance()->verbose <= 1) {
       std::fprintf(stdout, "[ARK_WOQ_S4_DPAS] launch:dpas_w4a16_dense_policy_m_4_n128_k64_split4 "
-                           "m=%d n=%d k=%d blocksize=%d scale_layout=group_n\n",
-                   rows, params->n, params->k, params->blocksize);
+                           "m=1 n=%d k=%d blocksize=%d scale_layout=group_n\n",
+                   params->n, params->k, params->blocksize);
     }
-    dense_woq_s4_dpas::detail::run_m4_n128_k64_split4(queue, matA, blobB, scales, matC, partials, rows, params->n,
-                            params->k);
+    dense_woq_s4_dpas::detail::run_m4_n128_k64_split4(queue, matA, blobB, scales, bias, matC, partials, 1,
+                                                    params->n, params->k, params->blocksize);
     return true;
   }
 
@@ -689,13 +642,7 @@ class XpuWrapper {
     } while (false);
 
     if (m <= 4) {
-      if (m == 2 && p->k == 14336 && p->n == 4096 &&
-          woq_s4_dpas_env_matches("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", "64") &&
-          woq_s4_dpas_tuning_supported(q, p, bias, use_dpas_scales)) {
-        ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128_k64, "dpas_w4a16_dense_policy_m_4_n128_k64")
-      } else {
-        ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
-      }
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
     } else if (m <= 8) {
       ARK_WOQ_S4_DPAS_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
     } else if (m <= 16) {
@@ -720,16 +667,13 @@ class XpuWrapper {
 
   static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
                       const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
+    if (m > 1) {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-    if (m > 1) return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
-  if (m == 1 && outt == BTLA_DTYPE::F16 && woq_s4_dpas_m1_selected(p->k, p->n) &&
-    woq_s4_dpas_tuning_supported(q, p, bias, has_dpas_scale_layout(p, blob_count)) &&
-        woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count)) {
-      return 0;
-    }
+      return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
 #else
-    if (m > 1) return -1;
+      return -1;
 #endif
+    }
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blobB;
@@ -911,7 +855,7 @@ class XpuWrapper {
       }
     }
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-    if (m <= kWoqS4SplitK4MaxM && woq_try_s4_dpas_split4(q, m, p, a, b, c, bias, acdt, blob_count)) return;
+  if (m == 1 && woq_try_s4_dpas_split4(q, p, a, b, c, bias, acdt, blob_count)) return;
 #endif
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {

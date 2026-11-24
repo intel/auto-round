@@ -27,6 +27,7 @@ WEIGHT_TYPE = "int4"
 SCALE_TYPE = "fp16"
 ASYM = False
 WARMUP_LIMIT = 1000
+M1_SPLIT4_SWITCH = "ARK_WOQ_S4_DPAS_SPLIT_K4_M1"
 
 
 def _print_config_types():
@@ -362,116 +363,45 @@ def test_dense_s4_dpas_non_tile_aligned_m_accuracy_and_output_bounds():
         _assert_ark_woqgemm_matches_reference_with_output_bounds(m)
 
 
-def test_dense_s4_dpas_single_row_opt_in(monkeypatch):
+@pytest.mark.parametrize("group_size", [32, 64, 128])
+def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
         raise unittest.SkipTest("No XPU Device")
 
-    m1_switch = "ARK_WOQ_S4_DPAS_M1"
-    monkeypatch.delenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", raising=False)
-    monkeypatch.setenv("ARK_WOQ_S4_DPAS_M1_SHAPES", "256x256,512x384,256x192")
-    device_id = getattr(torch.xpu.get_device_properties(0), "device_id", None)
-    group_size = 128
-    for in_features, n, can_select in ((256, 256, True), (512, 384, True), (512, 256, False), (256, 192, False)):
-        eligible = can_select and device_id == 0x674F
-        activation, packw, bias, reference = _ark_case(8, n=n, k=in_features, blocksize=group_size, with_bias=False)
-        single = activation[:1].clone()
-        args = (packw, bias, n, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
-        monkeypatch.delenv(m1_switch, raising=False)
-        default = ark.woqgemm(single, *args).cpu().view(torch.int16)
-        monkeypatch.setenv(m1_switch, "0")
-        assert torch.equal(ark.woqgemm(single, *args).cpu().view(torch.int16), default)
-
-        monkeypatch.setenv(m1_switch, "1")
-        actual = _ark_woqgemm_with_output_guard(single, packw, bias, n, in_features, group_size)
-        actual_bits = actual.view(torch.int16)
-        if not eligible:
-            assert torch.equal(actual_bits, default)
-            continue
-
-        assert not torch.equal(actual_bits, default)
-        torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
-        for row_count in (2, 4, 8):
-            first = ark.woqgemm(activation[:row_count], *args)[:1].cpu().view(torch.int16)
-            assert torch.equal(actual_bits, first), f"M={row_count}"
-
-
-@pytest.mark.parametrize(
-    "in_features,out_features,group_size", [(256, 256, 128), (14336, 4096, 32), (14336, 4096, 128), (512, 256, 256)]
-)
-def test_dense_s4_dpas_small_m_k64(monkeypatch, in_features, out_features, group_size):
-    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
-        raise unittest.SkipTest("No XPU Device")
-
-    tile_switch = "ARK_WOQ_S4_DPAS_SMALL_M_TILE_K"
-    monkeypatch.delenv("ARK_WOQ_S4_DPAS_M1", raising=False)
-    activation, packw, bias, reference = _ark_case(
-        8, n=out_features, k=in_features, blocksize=group_size, with_bias=False
+    monkeypatch.setenv(M1_SPLIT4_SWITCH, "1")
+    inner, columns = 4096, 8192
+    slice_k = inner // 4
+    indices = [0, group_size, slice_k, 2 * slice_k, 3 * slice_k]
+    weights = torch.zeros(inner, columns, dtype=torch.int8)
+    weights[indices] = 1
+    scales = torch.zeros(inner // group_size, columns, dtype=DTYPE)
+    half_ulp = 2**-11
+    for index, scale in zip(indices, (0.5, 0.25, 0.125, 0.125, half_ulp)):
+        scales[index // group_size] = scale
+    packed = ark.repack_quantized_weight(
+        weights.to(DEVICE), scales.to(DEVICE), None, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM
     )
-    args = (packw, bias, out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
-    for row_count in (2, 3, 4, 8):
-        rows = activation[:row_count].clone()
-        monkeypatch.delenv(tile_switch, raising=False)
-        expected = ark.woqgemm(rows, *args).cpu()
-
-        monkeypatch.setenv(tile_switch, "64")
-        actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
-        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16)), f"M={row_count}"
-        torch.testing.assert_close(actual, reference[:row_count], rtol=0.01, atol=0.01)
-
-
-def test_dense_s4_dpas_split4_opt_in(monkeypatch):
-    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
-        raise unittest.SkipTest("No XPU Device")
-
-    table = "ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES"
-    monkeypatch.delenv("ARK_WOQ_S4_DPAS_M1", raising=False)
-    monkeypatch.delenv("ARK_WOQ_S4_DPAS_SMALL_M_TILE_K", raising=False)
-    device_id = getattr(torch.xpu.get_device_properties(0), "device_id", None)
-    group_size = 128
-    cases = ((1024, 256, True), (2048, 384, True), (1024, 384, False), (768, 256, False))
-    for in_features, out_features, can_select in cases:
-        eligible = can_select and device_id == 0x674F
-        activation, packw, bias, reference = _ark_case(
-            3, n=out_features, k=in_features, blocksize=group_size, with_bias=False
-        )
-        args = (packw, bias, out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
-        monkeypatch.delenv(table, raising=False)
-        defaults = {rows: ark.woqgemm(activation[:rows], *args).cpu().view(torch.int16) for rows in (1, 2, 3)}
-
-        monkeypatch.setenv(table, "1024x256,2048x384,768x256")
-        pending = {}
-        for rows in (2, 1, 3):
-            output, guard = _guarded_output(rows, out_features)
-            assert ark.woqgemm(activation[:rows], *args, out=output).data_ptr() == output.data_ptr()
-            pending[rows] = (output, guard)
-        _sync_xpu()
-
-        bits = {}
-        for rows, (output, guard) in pending.items():
-            assert torch.all(guard.cpu() == OUTPUT_GUARD_VALUE)
-            actual = output.cpu()
-            bits[rows] = actual.view(torch.int16)
-            if not eligible or rows == 3:
-                assert torch.equal(bits[rows], defaults[rows])
-            else:
-                torch.testing.assert_close(actual, reference[:rows], rtol=0.01, atol=0.01)
-        if eligible:
-            assert not torch.equal(bits[1], defaults[1])
-            assert torch.equal(bits[1], bits[2][:1])
+    activation = torch.zeros(1, inner, dtype=DTYPE)
+    activation[:, indices] = 1
+    activation = activation.to(DEVICE)
+    bias = torch.tensor([half_ulp, -half_ulp], dtype=DTYPE).repeat(columns // 2).view(1, columns)
+    for output_bias in (torch.empty(0, dtype=DTYPE), bias):
+        reference = torch.full((1, columns), 1 + half_ulp, dtype=torch.float32)
+        if output_bias.numel():
+            reference += output_bias.float()
+        actual = _ark_woqgemm_with_output_guard(activation, packed, output_bias.to(DEVICE), columns, inner, group_size)
+        torch.testing.assert_close(actual, reference.to(DTYPE), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
     "in_features,out_features,selected",
-    [(4096, 8064, False), (4096, 8192, True), (4096, 8320, True), (4608, 8192, False)],
+    [(4096, 8064, False), (4096, 8192, True), (4096, 8320, True), (4096, 16384, True), (4608, 8192, False)],
 )
 def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_features, selected):
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
         raise unittest.SkipTest("No XPU Device")
 
-    threshold_switch = "ARK_WOQ_S4_DPAS_SPLIT_K4_M1"
-    for switch in (threshold_switch, "ARK_WOQ_S4_DPAS_SPLIT_K4_SHAPES", "ARK_WOQ_S4_DPAS_M1"):
-        monkeypatch.delenv(switch, raising=False)
-    eligible = selected and getattr(torch.xpu.get_device_properties(0), "device_id", None) == 0x674F
+    monkeypatch.delenv(M1_SPLIT4_SWITCH, raising=False)
     at_threshold = (in_features, out_features) == (4096, 8192)
     group_size = 128
     activation, packw, bias, reference = _ark_case(
@@ -482,22 +412,27 @@ def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_feature
     default = ark.woqgemm(rows, packw, bias, *options).cpu()
     if at_threshold:
         two_row_default = ark.woqgemm(activation, packw, bias, *options).cpu()
+        scale_bytes = in_features // group_size * out_features * activation.element_size()
+        legacy_packw = packw[:-scale_bytes]
+        legacy_default = ark.woqgemm(rows, legacy_packw, bias, *options).cpu()
         bf16_rows = rows.bfloat16()
         bf16_default = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
 
-    monkeypatch.setenv(threshold_switch, "1")
+    monkeypatch.setenv(M1_SPLIT4_SWITCH, "1")
     actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
-    assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not eligible)
+    assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not selected)
     torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
 
     if at_threshold:
         two_row_actual = ark.woqgemm(activation, packw, bias, *options).cpu()
         assert torch.equal(two_row_actual.view(torch.int16), two_row_default.view(torch.int16))
+        legacy_actual = ark.woqgemm(rows, legacy_packw, bias, *options).cpu()
+        assert torch.equal(legacy_actual.view(torch.int16), legacy_default.view(torch.int16))
         bf16_actual = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
         bf16_expected = ark.woqgemm(bf16_rows.half(), packw, bias, *options).cpu().bfloat16()
         assert bf16_actual.dtype == torch.bfloat16
         assert torch.equal(bf16_actual.view(torch.int16), bf16_expected.view(torch.int16))
-        assert torch.equal(bf16_actual.view(torch.int16), bf16_default.view(torch.int16)) == (not eligible)
+        assert not torch.equal(bf16_actual.view(torch.int16), bf16_default.view(torch.int16))
 
 
 if __name__ == "__main__":
