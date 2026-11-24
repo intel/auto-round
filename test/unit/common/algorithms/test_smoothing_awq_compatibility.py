@@ -18,6 +18,23 @@ import torch
 from auto_round.algorithms.transforms.awq.base import AWQTransform
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+from auto_round.schemes import QuantizationScheme
+
+
+def _make_awq_transform(config, *, scheme=None):
+    """Bind isolated AWQ tests to the run-owned quantization scheme."""
+    from types import SimpleNamespace
+
+    from auto_round.algorithms.transforms.awq.qdq import QDQTool
+    from auto_round.schemes import QuantizationScheme
+
+    scheme = scheme or QuantizationScheme()
+    transform = config if isinstance(config, AWQTransform) else AWQTransform(config)
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
+    transform._qdq_tool = QDQTool(
+        bits=scheme.bits, group_size=scheme.group_size, sym=scheme.sym, data_type=scheme.data_type
+    )
+    return transform
 
 
 class Parent(torch.nn.Module):
@@ -50,16 +67,13 @@ def test_shared_search_preserves_awq_candidates_and_loss(duo_scaling, parent_for
         parent_name="block",
         parent=parent,
     )
-    transform = AWQTransform(
+    transform = _make_awq_transform(
         AWQConfig(
-            bits=4,
-            group_size=8,
-            sym=True,
-            data_type="int",
             duo_scaling=duo_scaling,
             n_grid=6,
             smooth_batch_size=1,
-        )
+        ),
+        scheme=QuantizationScheme(bits=4, group_size=8, sym=True, data_type="int"),
     )
     calls = [((torch.randn(batch, 3, 8),), {}) for batch in (2, 1)]
     if parent_forward:

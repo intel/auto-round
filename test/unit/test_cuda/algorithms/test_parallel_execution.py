@@ -62,7 +62,8 @@ def test_local_tp_task_api_and_cli(tmp_path):
         str(checkpoint),
         str(tmp_path / "api"),
         parallel_config=ParallelConfig(tensor_parallel=2),
-        alg_configs=SignRoundConfig(iters=2, group_size=8, not_use_best_mse=True),
+        alg_configs=SignRoundConfig(iters=2, not_use_best_mse=True),
+        group_size=8,
         dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
         nsamples=2,
         seqlen=4,
@@ -132,12 +133,12 @@ def _whole_model_worker(rank, rendezvous, checkpoint, algorithm):
         compressor = AutoRound(
             checkpoint,
             scheme="W2A16",
+            group_size=8,
             parallel_config={"tp_size": 2},
             alg_configs=[
-                SignRoundV2Config(iters=1, group_size=8),
+                SignRoundV2Config(iters=1),
                 config_class(
                     iters=1,
-                    group_size=8,
                     topk=8,
                     gradient_checkpointing=True,
                     qad_workspace=str(Path(checkpoint).parent / "teacher"),

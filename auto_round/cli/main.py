@@ -150,7 +150,7 @@ def _requests_overview_help(argv: list[str]) -> bool:
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
-    """Map parsed CLI args back to QuantizationConfig constructor kwargs.
+    """Collect scheme overrides from parsed CLI arguments.
 
     Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
@@ -388,6 +388,7 @@ def start(recipe="auto-round", argv=None):
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
     )
+    scheme_was_explicit = any(arg in {"--scheme"} or arg.startswith("--scheme=") for arg in argv)
 
     if _print_algorithm_help(argv):
         return
@@ -395,6 +396,12 @@ def start(recipe="auto-round", argv=None):
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
+
+    # RRQ only supports the W2A16 (2+2+2+2) pipeline. If the user selects the
+    # RRQ format without an explicit --scheme, auto-default to W2A16 so the
+    # CLI gives a sensible default instead of a confusing deep-error.
+    if "auto_round:rrq" in (args.format or "").lower() and not scheme_was_explicit:
+        args.scheme = "W2A16"
 
     from auto_round.parallel import ParallelConfig
     from auto_round.parallel.tp.launcher import launch, needs_local_launch
@@ -618,6 +625,7 @@ def tune(args):
         scheme=scheme,
         recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        **{key: value for key, value in common_kwargs.items() if value is not None},
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,

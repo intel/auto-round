@@ -1913,8 +1913,8 @@ def _get_dataset_impl(
         return not (len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2)
 
     def concat_dataset_element(dataset):
-        input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
-        attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
+        input_ids, concat_input_ids = [torch.as_tensor(eg["input_ids"], dtype=torch.int64) for eg in dataset], []
+        attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
         buffer_input_id = torch.Tensor().to(torch.int64)
         bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
         for input_id in input_ids:
@@ -2047,10 +2047,16 @@ def _get_dataset_impl(
             calib_name = name
             if name not in CALIB_DATASETS:
                 calib_name = name.split("/")[-1]
-                for key in CALIB_DATASETS:
-                    if calib_name in key:
-                        calib_name = key
-                        break
+                # Only a bare short name may be matched as a substring of a
+                # registered key. "org/name" is a real dataset id: if neither it
+                # nor its last part is registered, use the generic loader rather
+                # than e.g. loading "HuggingFaceFW/fineweb-edu" for
+                # "HuggingFaceFW/fineweb".
+                if calib_name not in CALIB_DATASETS and "/" not in name:
+                    for key in CALIB_DATASETS:
+                        if calib_name in key:
+                            calib_name = key
+                            break
             get_dataset = CALIB_DATASETS.get(calib_name)
             if get_dataset is None:
                 # Fallback: use generic loader for any HuggingFace dataset

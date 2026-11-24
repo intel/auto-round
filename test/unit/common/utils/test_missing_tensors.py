@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -23,6 +24,7 @@ import torch
 from auto_round.utils.missing_tensors import (
     _get_woq_config_from_dir,
     _normalize_tensor_name_for_warning,
+    _register_missing_modules_in_ct_ignore,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
     restore_fp32_tensors_from_source,
@@ -94,9 +96,81 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quan
     return qcfg
 
 
+def _make_compressed_tensors_config(ignore: list | None = None) -> dict:
+    """Minimal compressed-tensors ``quantization_config`` with a ``"Linear"`` catch-all group."""
+    return {
+        "quant_method": "compressed-tensors",
+        "format": "mixed-precision",
+        "provider": "auto-round",
+        "config_groups": {
+            "group_0": {
+                "format": "mxfp8-quantized",
+                "targets": ["Linear"],
+                "weights": {"num_bits": 8, "type": "float", "group_size": 32},
+            }
+        },
+        "ignore": list(ignore) if ignore is not None else [],
+    }
+
+
 # ===========================================================================
 #  split_fused_expert_tensors
 # ===========================================================================
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_glm_nextn_missing_weights_remain_full_precision(tmp_path, nested):
+    """Draft-layer weights absent from the model must survive checkpoint copying."""
+    src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+    os.makedirs(src)
+    os.makedirs(tgt)
+    name = "model.language_model.layers.45.mlp.experts.0.down_proj.weight"
+    weight = torch.randn(32, 128, dtype=torch.bfloat16)
+    _save_safetensors({name: weight}, os.path.join(src, "model.safetensors"))
+    _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+    config = _make_auto_round_config()
+    config["model_type"] = "glm5_next"
+    text_config = {"num_hidden_layers": 45, "num_nextn_predict_layers": 1}
+    if nested:
+        config["text_config"] = text_config
+    else:
+        config.update(text_config)
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import extract_regex_config
+    from auto_round.schemes import QuantizationScheme
+    from auto_round.special_model_handler import get_predefined_ignore_layers
+    from auto_round.utils.common import to_standard_regex
+
+    # Exercise the normal ignore-layer/export path with no draft module loaded.
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(model_type="glm5_next", name_or_path=src, architectures=[])
+    if nested:
+        model.config.text_config = SimpleNamespace(**text_config)
+    else:
+        for key, value in text_config.items():
+            setattr(model.config, key, value)
+    ignored = get_predefined_ignore_layers(model)
+    assert "layers.45." in ignored
+    regex_config = extract_regex_config(
+        model=model,
+        scheme=ResolvedScheme.from_scheme(QuantizationScheme()),
+        layer_config={},
+        ignore_layers=",".join(ignored),
+    )
+    config["quantization_config"]["extra_config"] = {
+        to_standard_regex(key): {"bits": value["bits"], "data_type": value["data_type"]}
+        for key, value in regex_config.items()
+    }
+    with open(os.path.join(tgt, "config.json"), "w") as f:
+        json.dump(config, f)
+    copy_missing_tensors_from_source(src, tgt)
+    restored = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+    assert name in restored
+    assert restored[name].dtype == weight.dtype
+    assert torch.equal(restored[name], weight)
+    with open(os.path.join(tgt, "config.json")) as f:
+        updated = json.load(f)
+    assert updated["quantization_config"]["extra_config"][name.removesuffix(".weight")]["bits"] == 16
 
 
 class TestSplitFusedExpertTensors:
@@ -236,6 +310,29 @@ class TestSplitFusedExpertTensors:
         for k, v in result.items():
             assert v.is_contiguous(), f"{k} is not contiguous"
 
+    @pytest.mark.parametrize("scale_suffix", ["_scale_inv", "_weight_scale_inv"])
+    def test_block_fp8_fused_scale_inv_split(self, scale_suffix):
+        """Hy4-flash style: experts.gate_up_proj + experts.gate_up_proj_scale_inv (128x128 blocks)."""
+        N, I, H, B = 2, 256, 128, 128
+        weight = torch.randn(N, 2 * I, H).to(torch.float8_e4m3fn)
+        scale = torch.rand(N, 2 * I // B, H // B)
+        down_scale = torch.rand(N, H // B, I // B)
+        result = split_fused_expert_tensors(
+            {
+                "mlp.experts.gate_up_proj": weight,
+                f"mlp.experts.gate_up_proj{scale_suffix}": scale,
+                f"mlp.experts.down_proj{scale_suffix}": down_scale,
+            }
+        )
+        assert not any("proj_scale_inv" in k or "_weight_scale_inv" in k for k in result)
+        for i in range(N):
+            gs = result[f"mlp.experts.{i}.gate_proj.weight_scale_inv"]
+            us = result[f"mlp.experts.{i}.up_proj.weight_scale_inv"]
+            assert torch.equal(gs, scale[i, : I // B])
+            assert torch.equal(us, scale[i, I // B :])
+            assert result[f"mlp.experts.{i}.gate_proj.weight"].shape == (I, H)
+            assert torch.equal(result[f"mlp.experts.{i}.down_proj.weight_scale_inv"], down_scale[i])
+
 
 # ===========================================================================
 #  quantize_weight_rtn
@@ -327,6 +424,18 @@ class TestQuantizeWeightRtn:
         )
         z = (qz[:, :, None].to(torch.int64) >> (torch.arange(8, dtype=torch.int32) * 4)[None, None, :]) & 0xF
         assert (z == 7).all()
+
+    @pytest.mark.parametrize("packing,stored_zp", [("auto_round:auto_gptq", 7), ("auto_round", 8)])
+    def test_sym_opt_rtn_matches_qdq_scale(self, packing, stored_zp):
+        from auto_round.data_type.int import quant_tensor_opt_rtn_sym
+
+        torch.manual_seed(5)
+        w = torch.randn(16, 64)
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=32, sym=True, disable_opt_rtn=False, packing=packing)
+        _, ref_scale, _ = quant_tensor_opt_rtn_sym(w, bits=4, group_size=32)
+        assert torch.equal(sc, ref_scale.reshape(16, 2).t().to(torch.float16))
+        _, z, _ = self._unpack_4bit(qw, qz, sc)
+        assert (z == stored_zp).all()
 
     def test_output_shapes_8bit(self):
         out_f, in_f, bits, gs = 16, 128, 8, 128
@@ -891,6 +1000,143 @@ class TestCopyMissingTensorsFromSource:
 
 
 # ===========================================================================
+#  _register_missing_modules_in_ct_ignore: compressed-tensors ``ignore`` fix
+#
+#  Copied-through (unquantized) Linear modules — most notably MTP layers that
+#  ``transformers`` does not instantiate — must be added to the compressed-tensors
+#  ``ignore`` list so a ``"Linear"`` catch-all target does not make an inference
+#  engine (e.g. vLLM) treat them as quantized and fail to load their scale-less
+#  weights.
+# ===========================================================================
+
+
+class TestRegisterMissingModulesInCtIgnore:
+
+    def test_mtp_linear_added_to_ignore_in_both_config_files(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "mtp.fc.weight": torch.randn(32, 64),
+                "mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64),
+                "mtp.norm.weight": torch.randn(64),  # 1-D: not a Linear, must NOT be ignored
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        qcfg = _make_compressed_tensors_config()
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        with open(os.path.join(tgt, "quantization_config.json"), "w") as f:
+            json.dump(qcfg, f)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in embedded_ignore
+        assert "mtp.norm" not in embedded_ignore  # 1-D norm is not matched by a "Linear" catch-all
+
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in standalone_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in standalone_ignore
+
+    def test_existing_regex_ignore_not_duplicated(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:.*mtp.*"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:.*mtp.*"], "a covering regex should suppress redundant exact-name entries"
+
+    def test_non_prefix_regex_does_not_suppress_exact_name(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:mtp"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"model.mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:mtp", "model.mtp.fc"]
+
+    def test_save_model_preserves_ignore_in_both_config_files(self, tmp_path):
+        from types import SimpleNamespace
+
+        from auto_round.export.common.serialization import save_model
+
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.fc.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(src, "config.json"), "w") as f:
+            json.dump({}, f)
+        qcfg = _make_compressed_tensors_config()
+        model = SimpleNamespace(name_or_path=src, config=SimpleNamespace(quantization_config=qcfg))
+
+        save_model(model, tgt, immediate_saving=True)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.fc" in standalone_ignore
+
+    def test_config_groups_with_other_quant_method_untouched(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["quant_method"] = "other"
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == []
+
+    def test_idempotent_no_duplicate_exact_names(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": _make_compressed_tensors_config()}, f)
+        missing = {"mtp.fc.weight": torch.randn(32, 64)}
+
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore.count("mtp.fc") == 1
+
+    def test_non_compressed_tensors_config_untouched(self, tmp_path):
+        """The WOQ / auto_round:auto_gptq config has no ``config_groups`` and must be left alone."""
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            qcfg = json.load(f)["quantization_config"]
+        assert "ignore" not in qcfg
+
+
+# ===========================================================================
 #  restore_fp32_tensors_from_source: decoupled from MTP handling
 #
 #  Regression coverage for Qwen/Qwen3.5-0.8B-style checkpoints, which keep
@@ -1243,3 +1489,20 @@ class TestKeepSpecialFp32Params:
 
         assert keep_special_fp32_params(model, str(tmp_path)) == []
         assert model.norm.weight.dtype == torch.bfloat16
+
+
+def test_model_free_index_total_size_matches_payload(tmp_path):
+    """_write_index_file must record the real referenced payload, not 0."""
+    from safetensors.torch import save_file
+
+    from auto_round.utils.model_free_utils import _write_index_file
+
+    save_file({"a": torch.zeros(4, 8, dtype=torch.bfloat16)}, str(tmp_path / "s1.safetensors"))
+    save_file(
+        {"b": torch.zeros(3, dtype=torch.float32), "c": torch.zeros(5, dtype=torch.uint8)},
+        str(tmp_path / "s2.safetensors"),
+    )
+    _write_index_file(str(tmp_path), {"a": "s1.safetensors", "b": "s2.safetensors", "c": "s2.safetensors"})
+    with open(tmp_path / "model.safetensors.index.json") as f:
+        index = json.load(f)
+    assert index["metadata"]["total_size"] == 4 * 8 * 2 + 3 * 4 + 5

@@ -57,8 +57,6 @@ class AlgorithmSpec:
             )
         defaults = {name: copy.deepcopy(getattr(config, name)) for name in fields if hasattr(config, name)}
         result = type(config)(**{**defaults, **params})
-        if hasattr(config, "_user_set_scheme_fields"):
-            result._user_set_scheme_fields.update(config._user_set_scheme_fields)
         return result
 
 

@@ -209,6 +209,12 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
     "Gemma2ForCausalLM": _gemma_mappings,
     "Gemma3ForCausalLM": _gemma_mappings,
     "Gemma3ForConditionalGeneration": _gemma_mappings,
+    # Gemma 4 separates the post-attention residual normalization from the
+    # MLP input normalization.  The MLP is fed by ``pre_feedforward_layernorm``
+    # (not ``post_attention_layernorm`` as in Llama), so the generic fallback
+    # would fold an otherwise invalid equivalent transform through a residual.
+    "Gemma4ForConditionalGeneration": _gemma_mappings,
+    "Gemma4UnifiedForConditionalGeneration": _gemma_mappings,
     # Llama
     "LlamaForCausalLM": default_mappings,
     "Llama4ForConditionalGeneration": _llama4_default_mappings,

@@ -392,7 +392,7 @@ class AlgorithmComposer:
         """
         from auto_round.data_type.utils import register_act_max_hooks
 
-        return register_act_max_hooks(block, getattr(self.active_quantizer.config, "act_data_type", None))
+        return register_act_max_hooks(block, getattr(self.scheme, "act_data_type", None))
 
     def _get_fp_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
         """Register FP-input act_max + quantizer forward hooks.
@@ -469,7 +469,24 @@ class AlgorithmComposer:
         for preprocessor in self.preprocessors:
             if getattr(preprocessor, "enable_quanted_input", False):
                 return True
+        return self._active_uses_quanted_input()
+
+    def _active_uses_quanted_input(self) -> bool:
+        # Only quantizers that own ``enable_quanted_input`` (e.g. SignRound) opt in.
         return bool(getattr(self.active_quantizer, "enable_quanted_input", False))
+
+    def serialized_algorithm_fields(self) -> dict[str, Any]:
+        """Collect the algorithm-specific export fields declared by each member's config.
+
+        Members are visited in pipeline order, so a later stage overrides an
+        earlier one on a shared field name.
+        """
+        fields: dict[str, Any] = {}
+        for member in (*self.preprocessors, *self.quantizers):
+            config = getattr(member, "config", None)
+            if config is not None and hasattr(config, "to_serialized_dict"):
+                fields.update(config.to_serialized_dict())
+        return fields
 
     def compress_embedding_layer(self):
         return self.active_quantizer.quantize_embedding_layer()
@@ -676,7 +693,7 @@ class AlgorithmComposer:
                 for h in quant_hooks:
                     h.remove()
 
-                if self.active_quantizer.enable_quanted_input:
+                if self._active_uses_quanted_input():
                     q_hooks, q_merge_stats = self._get_q_act_hooks(block)
                     if q_hooks:
                         self._collect_forward_timed(
@@ -755,7 +772,7 @@ class AlgorithmComposer:
         effective_input = q_inputs if q_inputs is not None else fp_inputs
         warm_start_outputs = []
         collect_warm_start_output = None
-        if getattr(self, "_preserve_weights", False) and self.active_quantizer.enable_quanted_input:
+        if getattr(self, "_preserve_weights", False) and self._active_uses_quanted_input():
 
             def collect_warm_start_output(wrapped_block):
                 output = block_forward_fn(wrapped_block, effective_input, input_others)
@@ -795,7 +812,7 @@ class AlgorithmComposer:
                 # Warm-up has restored FP weights by now; use the output collected
                 # while the wrappers still held the best quantization parameters.
                 new_q_input = warm_start_outputs[0]
-            elif self.active_quantizer.enable_quanted_input:
+            elif self._active_uses_quanted_input():
                 with torch.no_grad():
                     with self._kv_qdq_context():
                         new_q_input = self._collect_forward_timed(block, effective_input, input_others)
@@ -956,7 +973,7 @@ class AlgorithmComposer:
         if self.scheme is not None and getattr(self.scheme, "data_type", None):
             return self.scheme.data_type
         if self.active_quantizer is not None:
-            return getattr(self.active_quantizer.config, "data_type", "mx_fp")
+            return getattr(self.scheme, "data_type", "mx_fp")
         return "mx_fp"
 
     def apply_model_transforms(self, model: torch.nn.Module) -> torch.nn.Module:

@@ -1297,6 +1297,7 @@ def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
         "use_auto_mapping": False,
         "use_model_replacements": True,
         "low_cpu_mem_usage": True,
+        "trust_remote_code": False,
     }
 
 
@@ -1313,7 +1314,7 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
 
     model, tokenizer, disk_index = FakeMetaModel(), object(), object()
     expected = (model, tokenizer, disk_index)
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name, trust_remote_code=False: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
 
@@ -1334,9 +1335,13 @@ def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
     disk_index = object()
     calls = []
 
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: (model, tokenizer, disk_index))
+    monkeypatch.setattr(
+        disk_stream_util,
+        "build_meta_model",
+        lambda model_name, trust_remote_code=False: (model, tokenizer, disk_index),
+    )
 
-    def fake_update_module(input_model, formats, cleanup_original):
+    def fake_update_module(input_model, formats, cleanup_original, trust_remote_code=False):
         calls.append(("update", input_model, formats, cleanup_original))
         return updated_model
 
@@ -1908,3 +1913,47 @@ def test_w8_asym_allowance_derived_at_generation_time():
         __import__("auto_round.auto_scheme.delta_loss", fromlist=["gen_layer_config"]).gen_layer_config
     )
     assert "export_format" in gen_sig.parameters
+
+
+def test_autoscheme_no_warning_on_bf16_plus_int(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """BF16 + integer schemes should not emit the mixed data_type warning."""
+    import logging
+
+    from auto_round.logger import logger
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    scheme = AutoScheme(avg_bits=5, options=("W4A16", "BF16"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        ar.quantize()
+    assert not any("mixed data_types" in record.message for record in caplog.records)
+
+
+def test_autoscheme_warning_on_mixed_non_fp(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """Multiple non-fp quantized data types should still warn."""
+    import logging
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    # Use options that map to different non-fp data types if possible; fallback to known mixed
+    scheme = AutoScheme(avg_bits=4, options=("W4A16", "MXFP4"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        try:
+            ar.quantize()
+        except Exception:
+            pass  # Some combos may not be fully supported in tiny model; we care about the warning
+    assert any("mixed data_types" in record.message for record in caplog.records)

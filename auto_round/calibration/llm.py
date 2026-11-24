@@ -47,7 +47,7 @@ from auto_round.utils import (
     to_dtype,
 )
 from auto_round.utils.device import parse_available_devices
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import device_manager, get_ar_device
 
 
 @register_calibrator("llm")
@@ -107,7 +107,10 @@ class LLMCalibrator(Calibrator):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     dispatch_model(self.model, device_map=self.model.hf_device_map)
                 else:
-                    if str(self.model.device) == "cpu" and (not device_manager.device.startswith("hpu")):
+                    if (
+                        str(self.model.device) == "cpu"
+                        and get_ar_device(device_manager.device).supports_device_map_dispatch
+                    ):
                         no_split_modules = list(getattr(self.model, "_no_split_modules", []))
                         devices = parse_available_devices(device_manager.device_map)
 
@@ -569,6 +572,10 @@ class LLMCalibrator(Calibrator):
         The returned function expects to be bound as ``module.forward = partial(fn, module)``.
         """
 
+        from auto_round.modeling.deepseek_v4 import is_deepseek_v4
+
+        native_v4 = is_deepseek_v4(getattr(self, "model", None))
+
         def post_process_cache_data(batch_size, data, data_name):
             new_data = data
             if data_name in self.shared_cache_keys:
@@ -606,7 +613,11 @@ class LLMCalibrator(Calibrator):
 
             for key, value in kwargs.items():
                 value = self.parallel.replicated(value)
-                if isinstance(value, (torch.Tensor, list, tuple)):
+                # V4 supplies RoPE as a dict of main/compress tensor tuples.
+                # Shared structured kwargs must survive capture just like tuples.
+                if isinstance(value, (torch.Tensor, list, tuple)) or (
+                    native_v4 and key in self.shared_cache_keys and isinstance(value, dict)
+                ):
                     if (
                         self.has_variable_block_shape
                         and name not in self.blocks_requiring_input_ids

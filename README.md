@@ -53,6 +53,19 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 * [2026/11] For weight quantization at 4 bits and above, LLMs and MLLMs quantizing only text modules (`quant_nontext_module=False`) now default to 75% UltraChat with 25% OpenCode when `dataset` is omitted. UltraChat uses the model's chat template, with a fallback to `NeelNanda/pile-10k` when no usable template is available. W2/W3 and full multimodal quantization retain their previous defaults; code models retain their dedicated calibration recipe. We recommend this mix for quantization at 4 bits and above to improve reasoning capabilities and agent compatibility. To select it explicitly, use `--dataset "HuggingFaceH4/ultrachat_200k:apply_chat_template=true:ratio=0.75,nvidia/OpenCodeInstruct:ratio=0.25"`; sample counts scale automatically with `nsamples`. See the [doc](./docs/calibration_acc.md) for details.
 
+* [2026/11] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+  ```bash
+  # Quantize: produces both base/ and residual/ in the output dir
+  python -m auto_round.cli.main \
+      --model Qwen/Qwen3-0.6B --scheme W2A16 \
+      --backend_format auto_round:rrq --dump_config
+
+  # Load with 4-bit active (first residual plane on top of the base)
+  from auto_round import load_rrq_model
+  model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
+  ```
+  Note: this is an experimental feature and production-level deployments are not yet supported.
+
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
@@ -321,7 +334,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 # Change iters to 200 for non-GGUF schemes
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,

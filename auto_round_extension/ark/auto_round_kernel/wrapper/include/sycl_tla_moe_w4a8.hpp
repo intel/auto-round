@@ -957,7 +957,7 @@ struct W4A8GrfBudget<128> {
 // properties, the grid, and (through `KernelName`) the kernel identity; `body`
 // is the same device code either way and receives the SLM slot pair.
 template <int GrfSize, class KernelName, class Body>
-sycl::event moe_w4a8_submit_grf(sycl::queue& stream, sycl::event fill, int sm_count, int threads_per_wg, Body body) {
+void moe_w4a8_submit_grf(sycl::queue& stream, sycl::event fill, int sm_count, int threads_per_wg, Body body) {
   using Budget = W4A8GrfBudget<GrfSize>;
 
   static constexpr int MaxThreadsPerSM = Budget::kMaxThreadsPerSM;
@@ -970,7 +970,7 @@ sycl::event moe_w4a8_submit_grf(sycl::queue& stream, sycl::event fill, int sm_co
 
   auto kernel_props = Budget::props();
 
-  return stream.submit([&](sycl::handler& cgh) {
+  stream.submit([&](sycl::handler& cgh) {
     cgh.depends_on(fill);
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(2), cgh);
     cgh.parallel_for<KernelName>(sycl::nd_range<3>{global * local, local}, kernel_props,
@@ -1025,22 +1025,18 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
   // live fragment and takes even a 64-register tile to the full 128. The
   // `if constexpr` keeps the second kernel out of the 256-wide-N translation
   // units entirely rather than leaving it dead.
-  sycl::event event;
   bool launched = false;
   if constexpr (Policy::kSmallGrfOk) {
     if (small_grf && blks == 1) {
-      event = moe_w4a8_submit_grf<128, MoEW4A8GemmName<Policy, ElementD, 128>>(stream, fill, sm_count, threads_per_wg,
-                                                                               body);
+      moe_w4a8_submit_grf<128, MoEW4A8GemmName<Policy, ElementD, 128>>(
+          stream, fill, sm_count, threads_per_wg, body);
       launched = true;
     }
   }
   if (!launched) {
-    event = moe_w4a8_submit_grf<256, MoEW4A8GemmName<Policy, ElementD, 256>>(stream, fill, sm_count, threads_per_wg,
-                                                                             body);
+    moe_w4a8_submit_grf<256, MoEW4A8GemmName<Policy, ElementD, 256>>(
+        stream, fill, sm_count, threads_per_wg, body);
   }
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
 // ---------------------------------------------------------------------------

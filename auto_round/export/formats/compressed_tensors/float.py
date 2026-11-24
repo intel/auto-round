@@ -24,6 +24,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.data_type.nvfp import calculate_gparam_by_dtype, validate_nvfp_global_scale
 from auto_round.export.common.artifacts import save_artifacts
 from auto_round.export.common.packing import pack_layers, prepare_model, release_layer_safely
 from auto_round.export.common.serialization import (
@@ -36,8 +37,10 @@ from auto_round.export.formats.compressed_tensors.config import initialize_quant
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
     add_routed_experts_if_moe,
+    assign_config_group_targets,
     finalize_llmcompressor_config_names,
     generate_ignore_regex_list,
+    select_fallback_group,
 )
 from auto_round.logger import logger
 from auto_round.schemes import is_nvfp4_e5m3_family, is_nvfp4_e5m3_gs, needs_nvfp_global_scale
@@ -71,6 +74,23 @@ __all__ = [
 ]
 
 
+def _set_input_global_scale(layer, name, act_data_type=None, device="cpu"):
+    input_global_scale = getattr(layer, "input_global_scale", None)
+    if input_global_scale is None:
+        if getattr(layer, "act_max", None) is None:
+            raise ValueError(f"Missing activation statistics for '{name}.input_global_scale'.")
+        layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
+        try:
+            input_global_scale = calculate_gparam_by_dtype(layer.act_max, layer_act_data_type, layer.group_size, device)
+        except ValueError as e:
+            raise ValueError(f"Cannot generate '{name}.input_global_scale': {e}") from e
+        validate_nvfp_global_scale(input_global_scale, f"{name}.input_global_scale")
+        layer.input_global_scale = input_global_scale
+        delattr(layer, "act_max")
+    else:
+        validate_nvfp_global_scale(input_global_scale, f"{name}.input_global_scale")
+
+
 def pack_layer(name, model, device=None):
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
@@ -92,14 +112,9 @@ def pack_layer(name, model, device=None):
     sym = layer.sym
 
     if needs_nvfp_global_scale(act_data_type) and act_bits <= 8:
-        input_global_scale = getattr(layer, "input_global_scale", None)
-        if input_global_scale is None:
-            assert hasattr(layer, "act_max")
-            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
-
-            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size)
-            layer.input_global_scale = input_global_scale
-            delattr(layer, "act_max")
+        _set_input_global_scale(layer, name)
+    if needs_nvfp_global_scale(data_type):
+        validate_nvfp_global_scale(getattr(layer, "weight_global_scale", None), f"{name}.weight_global_scale")
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
@@ -221,12 +236,17 @@ def _build_mixed_fp_quantization_config(
         quantization_config dict
     """
     global_key = (global_bits, global_data_type, global_act_bits)
+    # The ignore list is only trusted to complete a ["Linear"] target when a default group exists.
+    fallback_key = select_fallback_group(scheme_groups, global_key) if global_key in scheme_groups else None
+    group_targets = assign_config_group_targets(
+        scheme_groups, ["Linear"] if fallback_key is not None else None, fallback_key
+    )
 
-    # Override groups first, default group last
+    # Override groups first, fallback group last
     override_groups = []
     default_group = None
     for key, layer_names in scheme_groups.items():
-        if key == global_key:
+        if key == fallback_key:
             default_group = (key, layer_names)
         else:
             override_groups.append((key, layer_names))
@@ -241,10 +261,7 @@ def _build_mixed_fp_quantization_config(
             raise ValueError(f"Unsupported layer scheme: data_type={ldata_type}, bits={lbits}, act_bits={lact_bits}.")
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
-        is_default = (lbits, ldata_type, lact_bits) == global_key
-        tmp_quantization_config.targets = (
-            ["Linear"] if is_default else add_routed_experts_if_moe(list(layer_names), layer_names)
-        )
+        tmp_quantization_config.targets = group_targets[(lbits, ldata_type, lact_bits)]
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
@@ -364,16 +381,8 @@ def save_checkpoint(
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
-                if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
-                    assert hasattr(layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
-
-                    layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
-                    input_global_scale = calculate_gparam_by_dtype(
-                        layer.act_max, layer_act_data_type, layer.group_size, model.device
-                    )
-                    layer.input_global_scale = input_global_scale
-                    delattr(layer, "act_max")
+                if hasattr(layer, "act_bits") and layer.act_bits < 8:
+                    _set_input_global_scale(layer, n, act_data_type, model.device)
         # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
 
