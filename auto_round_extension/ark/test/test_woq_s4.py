@@ -395,14 +395,37 @@ def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
 
 @pytest.mark.parametrize(
     "in_features,out_features,selected",
-    [(4096, 8064, False), (4096, 8192, True), (4096, 8320, True), (4096, 16384, True), (4608, 8192, False)],
+    [
+        (2048, 2048, False),
+        (3584, 8192, False),
+        (4096, 1024, False),
+        (4096, 3968, False),
+        (4096, 4096, True),
+        (4096, 8064, True),
+        (4096, 8192, True),
+        (4096, 8256, False),
+        (4096, 8320, True),
+        (4096, 10240, True),
+        (4096, 11008, True),
+        (4096, 12288, True),
+        (4096, 14336, True),
+        (4096, 15360, True),
+        (4096, 16256, True),
+        (4096, 16384, True),
+        (4096, 16512, False),
+        (4224, 8192, False),
+        (4608, 8192, True),
+        (8192, 4096, True),
+        (8192, 8192, True),
+        (14336, 4096, True),
+    ],
 )
 def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_features, selected):
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
         raise unittest.SkipTest("No XPU Device")
 
     monkeypatch.delenv(M1_SPLIT4_SWITCH, raising=False)
-    at_threshold = (in_features, out_features) == (4096, 8192)
+    at_threshold = (in_features, out_features) == (4096, 4096)
     group_size = 128
     activation, packw, bias, reference = _ark_case(
         2 if at_threshold else 1, n=out_features, k=in_features, blocksize=group_size, with_bias=False
@@ -410,29 +433,29 @@ def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_feature
     options = (out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
     rows = activation[:1]
     default = ark.woqgemm(rows, packw, bias, *options).cpu()
+    bf16_rows = rows.bfloat16()
+    bf16_default = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
     if at_threshold:
         two_row_default = ark.woqgemm(activation, packw, bias, *options).cpu()
         scale_bytes = in_features // group_size * out_features * activation.element_size()
         legacy_packw = packw[:-scale_bytes]
         legacy_default = ark.woqgemm(rows, legacy_packw, bias, *options).cpu()
-        bf16_rows = rows.bfloat16()
-        bf16_default = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
 
     monkeypatch.setenv(M1_SPLIT4_SWITCH, "1")
     actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
     assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not selected)
     torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
+    bf16_actual = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
+    bf16_expected = ark.woqgemm(bf16_rows.half(), packw, bias, *options).cpu().bfloat16()
+    assert bf16_actual.dtype == torch.bfloat16
+    assert torch.equal(bf16_actual.view(torch.int16), bf16_expected.view(torch.int16))
+    assert torch.equal(bf16_actual.view(torch.int16), bf16_default.view(torch.int16)) == (not selected)
 
     if at_threshold:
         two_row_actual = ark.woqgemm(activation, packw, bias, *options).cpu()
         assert torch.equal(two_row_actual.view(torch.int16), two_row_default.view(torch.int16))
         legacy_actual = ark.woqgemm(rows, legacy_packw, bias, *options).cpu()
         assert torch.equal(legacy_actual.view(torch.int16), legacy_default.view(torch.int16))
-        bf16_actual = ark.woqgemm_linear(bf16_rows, packw, None, *options).cpu()
-        bf16_expected = ark.woqgemm(bf16_rows.half(), packw, bias, *options).cpu().bfloat16()
-        assert bf16_actual.dtype == torch.bfloat16
-        assert torch.equal(bf16_actual.view(torch.int16), bf16_expected.view(torch.int16))
-        assert not torch.equal(bf16_actual.view(torch.int16), bf16_default.view(torch.int16))
 
 
 if __name__ == "__main__":

@@ -46,11 +46,11 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` to opt in to K64 split-K4 for `M=1, K=4096, 8192 <= N <= 16384` with `N` divisible by 128. This is the only single-row DPAS rule; it does not use a device ID or a shape table.
+Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` to opt in to K64 split-K4 for `M=1, K >= 4096, 4096 <= N <= 16384`. `N` must be divisible by 128, and each quarter of `K` must be aligned to both the K64 tile and the quantization group size.
 
 The route requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 256 KiB of FP32 scratch per queue, adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
 
-By default and outside the rule, single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and BF16 conversion are unchanged. Measure whole-call latency on the target device before enabling the rule; FP16 and BF16 inputs share it, and BF16 gains are not guaranteed near the lower boundary.
+By default and outside the rule, single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and dtype conversion are unchanged. The selector checks the kernel dtype, so BF16 inputs already converted to FP16 can also select split-K4. Measure whole-call latency on the target device before enabling the rule.
 
 ### M=1 W4A16 Benchmark
 

@@ -587,9 +587,10 @@ class XpuWrapper {
                                     void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
     using namespace dense_woq_s4_dpas;
     const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_M1");
-    if (!setting || std::strcmp(setting, "1") != 0 || params->k != 4096 || params->n < 8192 ||
+    if (!setting || std::strcmp(setting, "1") != 0 || params->k < 4096 || params->n < 4096 ||
         params->n > kWoqS4SplitK4MaxN || params->n % woq_s4_dpas_tile_n(1, params) != 0 ||
-        outt != BTLA_DTYPE::F16 || !has_dpas_scale_layout(params, blob_count)) {
+        outt != BTLA_DTYPE::F16 || !has_dpas_scale_layout(params, blob_count) ||
+        params->k % (kSplitK4Parts * std::max(64, params->blocksize)) != 0) {
       return false;
     }
     if (!queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {
@@ -703,6 +704,9 @@ class XpuWrapper {
       return 0;
     }
     if (p->weight_type == BTLA_DTYPE::S4) {
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+      if (m == 1 && woq_try_s4_dpas_split4(q, p, matA, blobB, matC, bias, outt, blob_count)) return 0;
+#endif
       if (p->scale_type == BTLA_DTYPE::F32) {
         using ST = float;
         using T = float;
@@ -854,9 +858,6 @@ class XpuWrapper {
                                  ") less than expected (" + std::to_string(expected) + ")");
       }
     }
-#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-  if (m == 1 && woq_try_s4_dpas_split4(q, p, a, b, c, bias, acdt, blob_count)) return;
-#endif
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {
 
