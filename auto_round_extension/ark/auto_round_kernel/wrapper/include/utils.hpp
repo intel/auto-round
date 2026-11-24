@@ -18,7 +18,6 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -149,19 +148,13 @@ class DeviceMemoryPool {
     if (buf_loc >= MaxLocNum) return 0;
     auto key = get_device_key(q);
     std::lock_guard<std::mutex> lock(scratch_mutex_);
-    auto it = scratch_buffers_[buf_loc].find(key);
-    if (it == scratch_buffers_[buf_loc].end()) return 0;
-#if ARK_XPU
-    if (q != nullptr && is_recording(*q) && it->second.captured.ptr != nullptr) {
-      return it->second.captured.size;
-    }
-#endif
-    return it->second.eager.size;
+    auto it = dev_mem_size_map[buf_loc].find(key);
+    return it == dev_mem_size_map[buf_loc].end() ? 0 : it->second;
   }
 
   // Detach the slab held for ``buf_loc`` on ``q``'s device+context+queue and hand ownership to
   // the caller, which becomes responsible for synchronizing and freeing it.
-  // Only eager scratch is detached; captured scratch must remain valid for replay.
+  // Returns nullptr when no slab is held.
   //
   // Detaching rather than freeing in place lets a caller drop the entry while
   // holding its own lock and then perform the (unbounded) `wait()` and
@@ -171,69 +164,48 @@ class DeviceMemoryPool {
     if (buf_loc >= MaxLocNum) return nullptr;
     auto key = get_device_key(q);
     std::lock_guard<std::mutex> lock(scratch_mutex_);
-    auto& buffers = scratch_buffers_[buf_loc];
-    auto it = buffers.find(key);
-    if (it == buffers.end()) return nullptr;
-    auto* ptr = it->second.eager.ptr;
-#if ARK_XPU
-    if (it->second.captured.ptr != nullptr) {
-      it->second.eager = {};
-      return ptr;
-    }
-#endif
-    buffers.erase(it);
+    auto it = dev_mem_ptr_map[buf_loc].find(key);
+    if (it == dev_mem_ptr_map[buf_loc].end()) return nullptr;
+    int8_t* ptr = it->second;
+    dev_mem_ptr_map[buf_loc].erase(it);
+    dev_mem_size_map[buf_loc].erase(key);
     return ptr;
   }
 
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
-    if (buf_loc >= MaxLocNum) {
-      throw std::invalid_argument("DeviceMemoryPool: invalid scratch slot " + std::to_string(buf_loc));
-    }
-    if (size == 0) return nullptr;
-#if ARK_XPU
-    if (q == nullptr) {
-      throw std::invalid_argument("DeviceMemoryPool: XPU allocation requires a non-null SYCL queue");
-    }
-#endif
+    if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
     std::lock_guard<std::mutex> lock(scratch_mutex_);
-#if ARK_XPU
-    const bool recording = is_recording(*q);
-    if (!recording) reclaim_retired_scratch(*q);
-#endif
-    auto& buffers = scratch_buffers_[buf_loc];
-    auto [it, inserted] = buffers.try_emplace(key);
-    auto& slot = it->second;
-#if ARK_XPU
-    if (recording && slot.captured.ptr == nullptr && slot.eager.size >= size) {
-      slot.captured = slot.eager;
-      slot.eager = {};
-    }
-    auto& buffer = recording ? slot.captured : slot.eager;
-    if (recording && buffer.ptr != nullptr && buffer.size < size) {
-      throw std::runtime_error("ARK XPU cannot grow graph-captured scratch slot " + std::to_string(buf_loc) +
-                               " from " + std::to_string(buffer.size) + " to " + std::to_string(size) +
-                               " bytes; warm up the largest shape on a fresh queue before capture");
-    }
-#else
-    auto& buffer = slot.eager;
-#endif
-    if (buffer.size >= size) return buffer.ptr;
 
-    int8_t* ptr = nullptr;
-    try {
-      ptr = allocate(size, buf_loc, q);
-#if ARK_XPU
-      if (buffer.ptr != nullptr) retire_scratch(buffer.ptr, *q);
-#else
-      release(buffer.ptr, q);
-#endif
-    } catch (...) {
-      if (inserted) buffers.erase(it);
-      release(ptr, q);
-      throw;
+    auto it = dev_mem_ptr_map[buf_loc].find(key);
+    if (it == dev_mem_ptr_map[buf_loc].end()) {
+      auto newptr = allocate(size, q);
+      dev_mem_size_map[buf_loc][key] = size;
+      dev_mem_ptr_map[buf_loc][key] = newptr;
+      return newptr;
     }
-    buffer = {size, ptr};
-    return ptr;
+
+    auto old_size = dev_mem_size_map[buf_loc][key];
+    if (old_size < size) {
+#if ARK_XPU
+      if (q == nullptr) {
+        throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
+      }
+      // Do not host-wait here: a blocking wait is illegal while the queue is
+      // recording to a torch.xpu command graph (see issue #2206).
+#endif
+      release(it->second, q);
+      try {
+        it->second = allocate(size, q);
+      } catch (...) {
+        dev_mem_ptr_map[buf_loc].erase(it);
+        dev_mem_size_map[buf_loc].erase(key);
+        throw;
+      }
+      dev_mem_size_map[buf_loc][key] = size;
+      return it->second;
+    }
+
+    return it->second;
   }
 
  private:
@@ -250,50 +222,10 @@ class DeviceMemoryPool {
   // (`moe_w4a8::kW4A8QactScratchLoc` / `kW4A8ExpertMapScratchLoc`).
   static constexpr int MaxLocNum = 15;
 
-  struct ScratchBuffer {
-    size_t size = 0;
-    int8_t* ptr = nullptr;
-  };
-
-  struct ScratchSlot {
-    ScratchBuffer eager;
-#if ARK_XPU
-    ScratchBuffer captured;
-#endif
-  };
+  using SizeMap = std::unordered_map<size_t, size_t>;
+  using PtrMap = std::unordered_map<size_t, int8_t*>;
 
 #if ARK_XPU
-  struct RetiredScratch {
-    int8_t* ptr;
-    sycl::queue queue;
-    sycl::event last_use;
-  };
-
-  static bool is_recording(const sycl::queue& queue) {
-#if defined(SYCL_EXT_ONEAPI_GRAPH)
-    return queue.ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording;
-#else
-    return false;
-#endif
-  }
-
-  void retire_scratch(int8_t* ptr, sycl::queue& queue) {
-    // Python entry points hold the GIL from acquisition through submission.
-    retired_scratch_.push_back({ptr, queue, queue.ext_oneapi_submit_barrier()});
-  }
-
-  void reclaim_retired_scratch(const sycl::queue& queue) {
-    for (auto it = retired_scratch_.begin(); it != retired_scratch_.end();) {
-      if (it->queue == queue && it->last_use.get_info<sycl::info::event::command_execution_status>() ==
-                                    sycl::info::event_command_status::complete) {
-        release(it->ptr, &it->queue);
-        it = retired_scratch_.erase(it);
-      } else {
-        ++it;
-      }
-    }
-  }
-
   struct DeviceContextKey {
     UUIDArray device_uuid;
     size_t context_id;
@@ -378,12 +310,14 @@ class DeviceMemoryPool {
   };
 #endif
 
-  int8_t* allocate(size_t size, size_t buf_loc, sycl::queue* q) {
+  int8_t* allocate(size_t size, sycl::queue* q) {
 #if ARK_XPU
+    if (q == nullptr) {
+      throw std::invalid_argument("DeviceMemoryPool: XPU allocation requires a non-null SYCL queue");
+    }
     auto error = [&](const char* cause) {
       return XpuScratchOutOfMemory("ARK XPU scratch allocation failed for " + std::to_string(size) +
-                                   " bytes (slot " + std::to_string(buf_loc) + ", device " +
-                                   q->get_device().get_info<sycl::info::device::name>() + "): " + cause);
+                                   " bytes: " + cause);
     };
     int8_t* ptr;
     try {
@@ -393,11 +327,10 @@ class DeviceMemoryPool {
       throw error(err.what());
     }
     if (ptr == nullptr) throw error("device allocator returned null");
-#else
-    auto* ptr = static_cast<int8_t*>(std::malloc(size));
-    if (ptr == nullptr) throw std::bad_alloc();
-#endif
     return ptr;
+#else
+    return static_cast<int8_t*>(std::malloc(size));
+#endif
   }
 
   void release(void* ptr, sycl::queue* q) {
@@ -412,10 +345,10 @@ class DeviceMemoryPool {
 #endif
   }
 
-  std::array<std::unordered_map<size_t, ScratchSlot>, MaxLocNum> scratch_buffers_;
+  std::array<SizeMap, MaxLocNum> dev_mem_size_map;
+  std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
   std::mutex scratch_mutex_;
 #if ARK_XPU
-  std::vector<RetiredScratch> retired_scratch_;
   std::mutex key_mutex_;
   std::vector<ContextEntry> context_ids_;
   std::vector<QueueEntry> queue_ids_;

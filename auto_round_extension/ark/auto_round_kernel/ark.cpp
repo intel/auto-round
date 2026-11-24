@@ -93,11 +93,8 @@ static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, 
 static void woqgemm_s8(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr B, torch_ptr C,
                        torch_ptr bias, bool BT, torch_ptr scaleb) {
 #if ARK_XPU
-  if (m == 0) return;
-  auto* queue = reinterpret_cast<sycl::queue*>(stream);
-  auto scratch = ark::SyclS8Wrapper::acquire_activation_scratch(queue, m, k);
-  ark::SyclS8Wrapper::woq_s8(queue, m, n, k, (void*)A, (void*)B, BT, (void*)C, (BTLA_DTYPE)ACdt, (void*)scaleb,
-                             (void*)bias, k, scratch);
+  ark::SyclS8Wrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
+                             (BTLA_DTYPE)ACdt, (void*)scaleb, (void*)bias, k);
 #elif ARK_DNNL
   auto dt = ark::to_dt((BTLA_DTYPE)ACdt);
   ark::DnnlWrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C, dt, (void*)scaleb,

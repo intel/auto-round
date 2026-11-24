@@ -52,20 +52,35 @@ ScratchState& state() {
   return *s;
 }
 
-// Acquire a slab from the shared pool and report whether it needs initialization.
+// Acquire a slab from the shared pool, synchronizing first when the request
+// grows it. `DeviceMemoryPool` frees the old pointer in place when it grows a
+// slot, and in-flight kernels may still be reading the old slab, so the wait
+// has to happen before the call rather than after. Returns the pointer and
+// reports whether the slab was reallocated (its previous contents are gone).
 //
 // The caller must hold `ScratchState::mu`.
 void* acquire_slab(sycl::queue* q, size_t bytes, size_t buf_loc, bool* reallocated) {
   auto* pool = DeviceMemoryPool::Instance();
   const size_t held = pool->get_scratch_size(buf_loc, q);
-  if (held != 0 && held < bytes &&
-      q->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {
-    throw std::runtime_error(
-        "moe_gemm_decode: cannot grow device scratch during XPU graph capture; "
-        "warm up the required shapes on the capture queue before capture");
+  const bool grows = held < bytes;
+  if (held != 0 && grows) {
+    if (q->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {
+      throw std::runtime_error(
+          "moe_gemm_decode: cannot grow device scratch during XPU graph capture; "
+          "warm up the required shapes on the capture queue before capture");
+    }
+    q->wait();
   }
   void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
-  if (reallocated != nullptr) *reallocated = held < bytes;
+  if (ptr == nullptr) {
+    // The pool records the slot before checking the result, so a failed
+    // allocation leaves a {bytes, nullptr} entry behind that would satisfy
+    // every later request of this size or smaller without ever retrying.
+    // Drop it so the next call allocates again.
+    pool->detach_scratch_mem(buf_loc, q);
+    throw std::runtime_error("moe_gemm_decode: failed to allocate device scratch buffer");
+  }
+  if (reallocated != nullptr) *reallocated = grows;
   return ptr;
 }
 
@@ -100,8 +115,8 @@ uint8_t* acquire_int4_repack_scratch(sycl::queue* q, size_t bytes, const void* t
   const size_t key = DeviceMemoryPool::Instance()->get_device_key(q);
   remember_queue(st, key, q);
 
-  // Captured and eager scratch may differ, and captured writes have not executed yet.
-  use_tag &= q->ext_oneapi_get_state() != sycl::ext::oneapi::experimental::queue_state::recording;
+  // A reallocated slab holds undefined bytes, so it can never be a cache hit
+  // however well the tag matches.
   RepackTag& tag = st.repack_tags[key];
   const bool hit = use_tag && !reallocated && tag.tagged && tag.tag_ptr == tag_ptr && tag.tag_key == tag_key;
   if (tag_hit != nullptr) *tag_hit = hit;

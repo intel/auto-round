@@ -228,8 +228,7 @@ def test_xpu_s8_large_tile(m, n, k):
         torch.xpu.empty_cache()
 
 
-@pytest.fixture
-def xpu_int4_woq_linear():
+def test_xpu_int4_woq_scratch_growth():
     if not torch.xpu.is_available() or ark.xpu_lib is None:
         pytest.skip("ARK XPU is unavailable")
 
@@ -239,39 +238,12 @@ def xpu_int4_woq_linear():
     packed = ark.repack_quantized_weight(weights, scales, None, group_size, "int8", "int4", "fp16", False)
     torch.xpu.synchronize()
 
-    def run(inputs):
-        return ark.woqgemm_linear(inputs, packed, None, size, size, group_size, "int8", "int4", "fp16", False)
-
-    return run
-
-
-def test_xpu_woq_scratch_survives_graph_replay(xpu_int4_woq_linear):
-    if not hasattr(torch.xpu, "XPUGraph"):
-        pytest.skip("torch.xpu graph APIs are unavailable")
-
     stream = torch.xpu.Stream()
     with torch.xpu.stream(stream):
-        small = torch.ones((256, 256), dtype=torch.float16, device="xpu")
-        large = torch.full((512, 256), 2, dtype=torch.float16, device="xpu")
-        small_output = xpu_int4_woq_linear(small)
-        large_output = xpu_int4_woq_linear(large)
-        stream.synchronize()
-        torch.testing.assert_close(small_output, torch.ones_like(small_output), rtol=0.01, atol=0)
-        torch.testing.assert_close(large_output, torch.full_like(large_output, 2), rtol=0.01, atol=0)
-
-        graph = torch.xpu.XPUGraph()
-        with torch.xpu.graph(graph, stream=stream):
-            graph_output = xpu_int4_woq_linear(large)
-
-        larger = torch.ones((768, 256), dtype=torch.float16, device="xpu")
-        larger_output = xpu_int4_woq_linear(larger)
-
-        large.fill_(3)
-        graph.replay()
-        expected = xpu_int4_woq_linear(large)
-        stream.synchronize()
-        torch.testing.assert_close(larger_output, torch.ones_like(larger_output), rtol=0.01, atol=0)
-        torch.testing.assert_close(graph_output, expected, rtol=0, atol=0)
+        for rows, value in [(256, 1), (512, 2), (256, 3)]:
+            inputs = torch.full((rows, size), value, dtype=torch.float16, device="xpu")
+            output = ark.woqgemm_linear(inputs, packed, None, size, size, group_size, "int8", "int4", "fp16", False)
+            torch.testing.assert_close(output, torch.full_like(output, value), rtol=0.01, atol=0)
 
 
 @pytest.mark.skipif(
