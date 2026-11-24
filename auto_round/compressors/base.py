@@ -520,16 +520,9 @@ class BaseOrchestrator:
                 self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
                 logger.info("Automatically selected code calibration dataset: %s", self.dataset)
             else:
-                scheme_fields = {field.name for field in fields(QuantizationScheme)}
-                calibration_overrides = {
-                    key: getattr(config, key)
-                    for config in self._alg_configs
-                    for key in getattr(config, "_user_set_scheme_fields", set())
-                    if key in scheme_fields and getattr(config, key, None) is not None
-                }
                 _, _, calibration_scheme = parse_scheme(
                     self.scheme,
-                    calibration_overrides,
+                    self._user_scheme_overrides,
                     format=_formats_policy_string_of(getattr(self, "formats", None)),
                 )
                 if calibration_scheme["bits"] >= 4:
