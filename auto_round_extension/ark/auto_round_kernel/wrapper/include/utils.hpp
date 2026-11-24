@@ -19,7 +19,6 @@
 #include <memory>
 #include <mutex>
 #include <new>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -104,13 +103,6 @@ class DeviceMemoryPool {
     static DeviceMemoryPool instance;
     return &instance;
   }
-
-#if ARK_XPU && ARK_UT
-  static void debug_fail_next_scratch_allocation(std::optional<size_t> slot, bool throw_sycl_error) {
-    injected_failure_slot_ = slot;
-    inject_sycl_error_ = throw_sycl_error;
-  }
-#endif
 
   size_t get_device_key(sycl::queue* q) {
 #if ARK_XPU
@@ -395,18 +387,7 @@ class DeviceMemoryPool {
     };
     int8_t* ptr;
     try {
-#if ARK_UT
-      if (injected_failure_slot_ == buf_loc) {
-        injected_failure_slot_.reset();
-        if (inject_sycl_error_) {
-          throw sycl::exception(sycl::make_error_code(sycl::errc::memory_allocation), "injected USM allocation failure");
-        }
-        ptr = nullptr;
-      } else
-#endif
-      {
-        ptr = sycl::aligned_alloc_device<int8_t>(128, size, *q);
-      }
+      ptr = sycl::aligned_alloc_device<int8_t>(128, size, *q);
     } catch (const sycl::exception& err) {
       if (err.code() != sycl::make_error_code(sycl::errc::memory_allocation)) throw;
       throw error(err.what());
@@ -434,10 +415,6 @@ class DeviceMemoryPool {
   std::array<std::unordered_map<size_t, ScratchSlot>, MaxLocNum> scratch_buffers_;
   std::mutex scratch_mutex_;
 #if ARK_XPU
-#if ARK_UT
-  inline static thread_local std::optional<size_t> injected_failure_slot_;
-  inline static thread_local bool inject_sycl_error_ = false;
-#endif
   std::vector<RetiredScratch> retired_scratch_;
   std::mutex key_mutex_;
   std::vector<ContextEntry> context_ids_;

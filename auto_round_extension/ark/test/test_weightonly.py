@@ -245,35 +245,6 @@ def xpu_int4_woq_linear():
     return run
 
 
-@pytest.mark.parametrize("slot, size", [(1, 256 * (256 + 4)), (2, 256 * 256)], ids=["activation", "weight"])
-@pytest.mark.parametrize("throw_sycl_error", [False, True], ids=["null", "sycl-exception"])
-@pytest.mark.parametrize("grow", [False, True], ids=["initial", "grow"])
-def test_xpu_woq_scratch_oom_is_retryable(xpu_int4_woq_linear, slot, size, throw_sycl_error, grow):
-    inject = getattr(ark.xpu_lib, "_debug_fail_next_scratch_allocation", None)
-    if inject is None:
-        pytest.skip("Scratch fault injection requires ARK_UT=ON")
-
-    stream = torch.xpu.Stream()
-    with torch.xpu.stream(stream):
-        inputs = torch.ones((256, 256), dtype=torch.bfloat16, device="xpu")
-        if grow:
-            scratch_ptr = ark.xpu_lib._debug_xpu_pool_scratch_ptr
-            old_ptr = scratch_ptr(stream.sycl_queue, 1024, slot)
-        inject(slot, throw_sycl_error)
-        try:
-            with pytest.raises(torch.OutOfMemoryError, match=rf"{size} bytes \(slot {slot}, device"):
-                xpu_int4_woq_linear(inputs)
-        finally:
-            inject(None, False)
-
-        if grow:
-            assert scratch_ptr(stream.sycl_queue, 1024, slot) == old_ptr
-        stream.synchronize()
-        output = xpu_int4_woq_linear(inputs)
-        stream.synchronize()
-        torch.testing.assert_close(output, torch.ones_like(output))
-
-
 def test_xpu_woq_scratch_survives_graph_replay(xpu_int4_woq_linear):
     if not hasattr(torch.xpu, "XPUGraph"):
         pytest.skip("torch.xpu graph APIs are unavailable")

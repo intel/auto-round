@@ -210,7 +210,6 @@ endif()
 target_link_libraries(${PY_NAME} PRIVATE ${libs})
 
 if(ARK_UT)
-  target_compile_definitions(${PY_NAME} PRIVATE ARK_UT=1)
     set(TEST_NAME test_${ARK_TYPE})
     set(TEST_SRCS wrapper/test/test_main.cpp)
     if(ARK_XPU AND ARK_SYCL_TLA)

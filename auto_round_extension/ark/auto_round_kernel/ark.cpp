@@ -1624,9 +1624,6 @@ PYBIND11_MODULE(PY_NAME, m) {
 #if defined(ARK_XPU)
   pybind11::register_local_exception<ark::XpuScratchOutOfMemory>(
       m, "_XpuScratchOutOfMemory", pybind11::module_::import("torch").attr("OutOfMemoryError"));
-#if ARK_UT
-  m.def("_debug_fail_next_scratch_allocation", &ark::DeviceMemoryPool::debug_fail_next_scratch_allocation);
-#endif
   m.def("_debug_xpu_device_context_key", &ark::debug_xpu_device_context_key);
   m.def("_debug_xpu_device_queue_key", &ark::debug_xpu_device_queue_key);
   m.def("_debug_xpu_pool_scratch_ptr", &ark::debug_xpu_pool_scratch_ptr);
