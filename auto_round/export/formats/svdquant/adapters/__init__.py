@@ -20,7 +20,7 @@ from collections.abc import Mapping
 
 import torch
 
-from auto_round.export.formats.svdquant.nunchaku import IdentitySVDQuantModelAdapter
+from auto_round.export.formats.svdquant.common import IdentitySVDQuantModelAdapter
 
 from auto_round.export.formats.svdquant.adapters.flux import (
     FLUX_TOP_LEVEL_TENSOR_KEYS,

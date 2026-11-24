@@ -73,7 +73,7 @@ All syntax, formatting, licensing, spelling, and linting checks are enforced via
 
 - **Auto-fixing hooks**: `black` (line length 120), `isort` (imports), `ruff` (lint fixes), `insert-license` (Apache 2.0 header), `codespell` (typos), `mixed-line-ending` (LF).
 - **Check-only hooks**: `bandit` (security issues under `auto_round/`), `typos`, `check-yaml`/`check-json`, `markdown-link-check`.
-- *Note*: `auto_round/export/export_to_gguf/conversion/` is intentionally excluded from most hooks.
+- *Note*: `auto_round/export/formats/gguf/conversion/` is intentionally excluded from most hooks.
 
 ## Commit & PR Conventions
 

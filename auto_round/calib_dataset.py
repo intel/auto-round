@@ -2170,10 +2170,16 @@ def _get_dataset_impl(
             calib_name = name
             if name not in CALIB_DATASETS:
                 calib_name = name.split("/")[-1]
-                for key in CALIB_DATASETS:
-                    if calib_name in key:
-                        calib_name = key
-                        break
+                # Only a bare short name may be matched as a substring of a
+                # registered key. "org/name" is a real dataset id: if neither it
+                # nor its last part is registered, use the generic loader rather
+                # than e.g. loading "HuggingFaceFW/fineweb-edu" for
+                # "HuggingFaceFW/fineweb".
+                if calib_name not in CALIB_DATASETS and "/" not in name:
+                    for key in CALIB_DATASETS:
+                        if calib_name in key:
+                            calib_name = key
+                            break
             get_dataset = CALIB_DATASETS.get(calib_name)
             if get_dataset is None:
                 # Fallback: use generic loader for any HuggingFace dataset

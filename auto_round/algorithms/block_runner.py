@@ -147,6 +147,7 @@ class BlockForwardRunner:
         output_config: list[str] | None = None,
         enable_torch_compile: bool = True,
         parallel_execution=None,
+        shared_cache_selector=None,
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -159,6 +160,7 @@ class BlockForwardRunner:
         self.output_config = output_config if output_config is not None else ["hidden_states"]
         self.enable_torch_compile = enable_torch_compile
         self.parallel_execution = parallel_execution
+        self.shared_cache_selector = shared_cache_selector
         self.last_output_dict = None
         self.block_forward = block_forward
         # Keep the uncompiled function available for calibration passes that
@@ -180,6 +182,9 @@ class BlockForwardRunner:
         model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
         output_config = getattr(model_ctx, "output_config", None) if model_ctx else None
+        from auto_round.modeling.deepseek_v4 import is_deepseek_v4, select_shared_rope
+
+        shared_selector = select_shared_rope if is_deepseek_v4(getattr(model_ctx, "model", None)) else None
 
         return cls(
             batch_dim=getattr(orchestrator, "batch_dim", 0),
@@ -193,6 +198,7 @@ class BlockForwardRunner:
             output_config=output_config,
             enable_torch_compile=enable_torch_compile,
             parallel_execution=getattr(orchestrator, "parallel_execution", None),
+            shared_cache_selector=shared_selector,
         )
 
     # ── Core forward ─────────────────────────────────────────────────────────
@@ -543,7 +549,13 @@ class BlockForwardRunner:
             if "positional_inputs" in key:
                 continue
             if key in shared_cache_keys:
-                if isinstance(val, list) and len(val) == 1:
+                if self.shared_cache_selector is not None and (
+                    isinstance(val, dict) or (isinstance(val, list) and val and isinstance(val[0], dict))
+                ):
+                    selected_others[key] = self.shared_cache_selector(
+                        val, idx_list, self._count_samples(inputs), batch_dim
+                    )
+                elif isinstance(val, list) and len(val) == 1:
                     selected_others[key] = val[0]
                 elif isinstance(val, list) and len(val) > 1 and inputs is not None and len(indices) >= 1:
                     # Two cached-list layouts exist: per-SAMPLE (len == pool size)

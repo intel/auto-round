@@ -44,6 +44,9 @@ using KernelLauncher = int (*)(detail::Options const& options);
 
 KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override,
                                                    bool is_causal, bool has_mask) {
+#if defined(ARK_SPARSE_BF16_ONLY)
+  return nullptr;
+#else
   if (is_causal && has_mask) {
     return nullptr;
   }
@@ -63,6 +66,7 @@ KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head
     default:
       return nullptr;
   }
+#endif
 }
 
 #undef ARK_SPARSE_SAGE_LAUNCHER

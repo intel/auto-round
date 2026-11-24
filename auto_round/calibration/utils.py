@@ -62,6 +62,12 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         raise RuntimeError(
             "hidden_states arg mismatch error," "please raise an issue in https://github.com/intel/auto-round/issues"
         )
+    # ``input_ids`` below is the historical name for the hidden-state pool.
+    # Preserve real token IDs used by token-dependent routers (DeepSeek V4).
+    from auto_round.modeling.deepseek_v4 import is_deepseek_v4
+
+    if is_deepseek_v4(getattr(model_context, "model", None)) and "input_ids" in inputs:
+        inputs["_ar_block_token_ids"] = inputs.pop("input_ids")
     inputs["input_ids"] = inputs.pop(input_id_str[0], None)
     if q_inputs is not None:
         q_inputs = q_inputs.pop(input_id_str[0], None)
