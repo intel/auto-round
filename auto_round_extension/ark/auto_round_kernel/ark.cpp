@@ -93,8 +93,11 @@ static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, 
 static void woqgemm_s8(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr B, torch_ptr C,
                        torch_ptr bias, bool BT, torch_ptr scaleb) {
 #if ARK_XPU
-  ark::SyclS8Wrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
-                             (BTLA_DTYPE)ACdt, (void*)scaleb, (void*)bias, k);
+  if (m == 0) return;
+  auto* queue = reinterpret_cast<sycl::queue*>(stream);
+  auto scratch = ark::SyclS8Wrapper::acquire_activation_scratch(queue, m, k);
+  ark::SyclS8Wrapper::woq_s8(queue, m, n, k, (void*)A, (void*)B, BT, (void*)C, (BTLA_DTYPE)ACdt, (void*)scaleb,
+                             (void*)bias, k, scratch);
 #elif ARK_DNNL
   auto dt = ark::to_dt((BTLA_DTYPE)ACdt);
   ark::DnnlWrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C, dt, (void*)scaleb,
@@ -1619,6 +1622,11 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("repack_quantized_weight", &ark::repack_quantized_weight);
   m.def("unpack_weight", &ark::unpack_weight);
 #if defined(ARK_XPU)
+  pybind11::register_local_exception<ark::XpuScratchOutOfMemory>(
+      m, "_XpuScratchOutOfMemory", pybind11::module_::import("torch").attr("OutOfMemoryError"));
+#if ARK_UT
+  m.def("_debug_fail_next_scratch_allocation", &ark::DeviceMemoryPool::debug_fail_next_scratch_allocation);
+#endif
   m.def("_debug_xpu_device_context_key", &ark::debug_xpu_device_context_key);
   m.def("_debug_xpu_device_queue_key", &ark::debug_xpu_device_queue_key);
   m.def("_debug_xpu_pool_scratch_ptr", &ark::debug_xpu_pool_scratch_ptr);

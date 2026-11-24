@@ -20,27 +20,12 @@ namespace moe_w4a8 {
 
 namespace {
 
-// Acquire a slab from the shared pool.
-//
-// Growth goes through `DeviceMemoryPool::get_scratch_mem`, which already uses
-// the pool's non-blocking per-queue replacement path: it must not host-wait
-// here because that breaks XPU graph capture (see `utils.hpp`).
 void* acquire_w4a8_slab(sycl::queue* q, size_t bytes, size_t buf_loc) {
   if (q == nullptr) {
     throw std::invalid_argument("moe_gemm_w4a8: device scratch requires a non-null SYCL queue");
   }
   if (bytes == 0) return nullptr;
-  auto* pool = DeviceMemoryPool::Instance();
-  void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
-  if (ptr == nullptr) {
-    // The pool records the slot before checking the result, so a failed
-    // allocation leaves a {bytes, nullptr} entry behind that would satisfy
-    // every later request of this size or smaller without ever retrying.
-    // Drop it so the next call allocates again.
-    pool->detach_scratch_mem(buf_loc, q);
-    throw std::runtime_error("moe_gemm_w4a8: failed to allocate device scratch buffer");
-  }
-  return ptr;
+  return DeviceMemoryPool::Instance()->get_scratch_mem(bytes, buf_loc, q);
 }
 
 }  // namespace

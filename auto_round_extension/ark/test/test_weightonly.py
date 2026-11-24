@@ -228,6 +228,81 @@ def test_xpu_s8_large_tile(m, n, k):
         torch.xpu.empty_cache()
 
 
+@pytest.fixture
+def xpu_int4_woq_linear():
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    size, group_size = 256, 128
+    weights = torch.ones((size, size), dtype=torch.int8, device="xpu")
+    scales = torch.full((size // group_size, size), 1 / size, dtype=torch.float16, device="xpu")
+    packed = ark.repack_quantized_weight(weights, scales, None, group_size, "int8", "int4", "fp16", False)
+    torch.xpu.synchronize()
+
+    def run(inputs):
+        return ark.woqgemm_linear(inputs, packed, None, size, size, group_size, "int8", "int4", "fp16", False)
+
+    return run
+
+
+@pytest.mark.parametrize("slot, size", [(1, 256 * (256 + 4)), (2, 256 * 256)], ids=["activation", "weight"])
+@pytest.mark.parametrize("throw_sycl_error", [False, True], ids=["null", "sycl-exception"])
+@pytest.mark.parametrize("grow", [False, True], ids=["initial", "grow"])
+def test_xpu_woq_scratch_oom_is_retryable(xpu_int4_woq_linear, slot, size, throw_sycl_error, grow):
+    inject = getattr(ark.xpu_lib, "_debug_fail_next_scratch_allocation", None)
+    if inject is None:
+        pytest.skip("Scratch fault injection requires ARK_UT=ON")
+
+    stream = torch.xpu.Stream()
+    with torch.xpu.stream(stream):
+        inputs = torch.ones((256, 256), dtype=torch.bfloat16, device="xpu")
+        if grow:
+            scratch_ptr = ark.xpu_lib._debug_xpu_pool_scratch_ptr
+            old_ptr = scratch_ptr(stream.sycl_queue, 1024, slot)
+        inject(slot, throw_sycl_error)
+        try:
+            with pytest.raises(torch.OutOfMemoryError, match=rf"{size} bytes \(slot {slot}, device"):
+                xpu_int4_woq_linear(inputs)
+        finally:
+            inject(None, False)
+
+        if grow:
+            assert scratch_ptr(stream.sycl_queue, 1024, slot) == old_ptr
+        stream.synchronize()
+        output = xpu_int4_woq_linear(inputs)
+        stream.synchronize()
+        torch.testing.assert_close(output, torch.ones_like(output))
+
+
+def test_xpu_woq_scratch_survives_graph_replay(xpu_int4_woq_linear):
+    if not hasattr(torch.xpu, "XPUGraph"):
+        pytest.skip("torch.xpu graph APIs are unavailable")
+
+    stream = torch.xpu.Stream()
+    with torch.xpu.stream(stream):
+        small = torch.ones((256, 256), dtype=torch.float16, device="xpu")
+        large = torch.full((512, 256), 2, dtype=torch.float16, device="xpu")
+        small_output = xpu_int4_woq_linear(small)
+        large_output = xpu_int4_woq_linear(large)
+        stream.synchronize()
+        torch.testing.assert_close(small_output, torch.ones_like(small_output), rtol=0.01, atol=0)
+        torch.testing.assert_close(large_output, torch.full_like(large_output, 2), rtol=0.01, atol=0)
+
+        graph = torch.xpu.XPUGraph()
+        with torch.xpu.graph(graph, stream=stream):
+            graph_output = xpu_int4_woq_linear(large)
+
+        larger = torch.ones((768, 256), dtype=torch.float16, device="xpu")
+        larger_output = xpu_int4_woq_linear(larger)
+
+        large.fill_(3)
+        graph.replay()
+        expected = xpu_int4_woq_linear(large)
+        stream.synchronize()
+        torch.testing.assert_close(larger_output, torch.ones_like(larger_output), rtol=0.01, atol=0)
+        torch.testing.assert_close(graph_output, expected, rtol=0, atol=0)
+
+
 @pytest.mark.skipif(
     os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
     reason="Skipped because ARK_DNNL is not enabled in environment variables",

@@ -822,6 +822,7 @@ class XpuWrapper {
                                  ") less than expected (" + std::to_string(expected) + ")");
       }
     }
+    if (m == 0) return;
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {
 
@@ -839,19 +840,20 @@ class XpuWrapper {
 #endif
       } else {
         auto bptr = (int8_t*)b;
-        bool _rescale = rescale(p);
         auto scaleb_ptr = (int8_t*)b + get_scale_offset(p);
-        if (p->weight_type == BTLA_DTYPE::S8) {
-          scaleb_ptr = (int8_t*)b + get_scale_offset(p);
-        } else {
-          size_t elesize = 1;
-          size_t total_size = elesize * p->k * p->n;
+        const bool unpack_weights = p->weight_type != BTLA_DTYPE::S8;
+        if (unpack_weights) {
+          const size_t total_size = size_t(p->k) * p->n;
           bptr = (int8_t*)DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 2, q);
+          if (rescale(p)) scaleb_ptr = (int8_t*)b + get_scalext_offset(p);
+        }
+        auto activation_scratch = ark::SyclS8Wrapper::acquire_activation_scratch(q, m, p->k);
+        if (unpack_weights) {
           unpackq(BTLA_DTYPE::S8, (int8_t*)b, bptr, p, q);
-          scaleb_ptr = _rescale ? (int8_t*)b + get_scalext_offset(p) : (int8_t*)b + get_scale_offset(p);
         }
         auto blocksize = rescale_blocksize(p);
-        ark::SyclS8Wrapper::woq_s8(q, m, p->n, p->k, a, bptr, true, c, acdt, scaleb_ptr, (void*)bias, blocksize);
+        ark::SyclS8Wrapper::woq_s8(q, m, p->n, p->k, a, bptr, true, c, acdt, scaleb_ptr, (void*)bias, blocksize,
+                                   activation_scratch);
       }
     }
   }

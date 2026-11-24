@@ -23,17 +23,21 @@ namespace ark {
 
 class SyclS8Wrapper {
  public:
-   static inline void prepare_qa_and_quantize(sycl::queue* q, int m, int k, const void* a, BTLA_DTYPE act, 
-                                             int8_t*& qa_ptr, int8_t*& scalea_ptr) {
+  struct ActivationScratch {
+    int8_t* quantized;
+    int8_t* scales;
+  };
+
+  static ActivationScratch acquire_activation_scratch(sycl::queue* q, int m, int k) {
+    if (m <= 0 || k <= 0) {
+      throw std::invalid_argument("SyclS8Wrapper: activation dimensions must be positive");
+    }
     size_t qa_size = size_t(m) * size_t(k);
     size_t scalea_offset = (qa_size + alignof(float) - 1) & ~(size_t(alignof(float)) - 1);
     size_t tmp_size = scalea_offset + size_t(m) * sizeof(float);
 
     auto tmp_ptr = static_cast<int8_t*>(DeviceMemoryPool::Instance()->get_scratch_mem(tmp_size, 1, q));
-    qa_ptr = tmp_ptr;
-    scalea_ptr = tmp_ptr + scalea_offset;
-
-    dyn_quant_s8(q, m, k, a, act, qa_ptr, scalea_ptr, 0);
+    return {tmp_ptr, tmp_ptr + scalea_offset};
   }
   
   static void dyn_quant_s8(sycl::queue* q, int m, int k, const void* a, BTLA_DTYPE adt, int8_t* qa, void* scalea,
@@ -125,11 +129,9 @@ class SyclS8Wrapper {
 #endif  // ARK_JOINT_MATRIX
 
   static void woq_s8(sycl::queue* q, int m, int n, int k, const void* a, const void* b, bool BT, void* c,
-                     BTLA_DTYPE act, void* scale_b, void* bias, int blocksize) {
-
-    int8_t *qa_ptr, *scalea_ptr;
-    prepare_qa_and_quantize(q, m, k, a, act, qa_ptr, scalea_ptr);
-    igemm_s8s8(q, m, n, k, qa_ptr, b, BT, c, act, scalea_ptr, scale_b, bias, blocksize);
+                     BTLA_DTYPE act, void* scale_b, void* bias, int blocksize, ActivationScratch scratch) {
+    dyn_quant_s8(q, m, k, a, act, scratch.quantized, scratch.scales, 0);
+    igemm_s8s8(q, m, n, k, scratch.quantized, b, BT, c, act, scratch.scales, scale_b, bias, blocksize);
   }
 
 };
