@@ -24,6 +24,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.data_type.nvfp import calculate_gparam_by_dtype, validate_nvfp_global_scale
 from auto_round.export.common.artifacts import save_artifacts
 from auto_round.export.common.packing import pack_layers, prepare_model, release_layer_safely
 from auto_round.export.common.serialization import (
@@ -71,6 +72,23 @@ __all__ = [
 ]
 
 
+def _set_input_global_scale(layer, name, act_data_type=None, device="cpu"):
+    input_global_scale = getattr(layer, "input_global_scale", None)
+    if input_global_scale is None:
+        if getattr(layer, "act_max", None) is None:
+            raise ValueError(f"Missing activation statistics for '{name}.input_global_scale'.")
+        layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
+        try:
+            input_global_scale = calculate_gparam_by_dtype(layer.act_max, layer_act_data_type, layer.group_size, device)
+        except ValueError as e:
+            raise ValueError(f"Cannot generate '{name}.input_global_scale': {e}") from e
+        validate_nvfp_global_scale(input_global_scale, f"{name}.input_global_scale")
+        layer.input_global_scale = input_global_scale
+        delattr(layer, "act_max")
+    else:
+        validate_nvfp_global_scale(input_global_scale, f"{name}.input_global_scale")
+
+
 def pack_layer(name, model, device=None):
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
@@ -92,14 +110,9 @@ def pack_layer(name, model, device=None):
     sym = layer.sym
 
     if needs_nvfp_global_scale(act_data_type) and act_bits <= 8:
-        input_global_scale = getattr(layer, "input_global_scale", None)
-        if input_global_scale is None:
-            assert hasattr(layer, "act_max")
-            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
-
-            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size)
-            layer.input_global_scale = input_global_scale
-            delattr(layer, "act_max")
+        _set_input_global_scale(layer, name)
+    if needs_nvfp_global_scale(data_type):
+        validate_nvfp_global_scale(getattr(layer, "weight_global_scale", None), f"{name}.weight_global_scale")
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
@@ -364,16 +377,8 @@ def save_checkpoint(
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
-                if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
-                    assert hasattr(layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
-
-                    layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
-                    input_global_scale = calculate_gparam_by_dtype(
-                        layer.act_max, layer_act_data_type, layer.group_size, model.device
-                    )
-                    layer.input_global_scale = input_global_scale
-                    delattr(layer, "act_max")
+                if hasattr(layer, "act_bits") and layer.act_bits < 8:
+                    _set_input_global_scale(layer, n, act_data_type, model.device)
         # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
 
