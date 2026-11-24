@@ -54,36 +54,18 @@ By default and outside the rule, single-row calls retain GEMV. Dispatch for `M>1
 
 ### M=1 W4A16 Benchmark
 
-[bench_woq_s4.py](test/bench_woq_s4.py) reuses the [test_woq_s4.py](test/test_woq_s4.py) fixture and compares GEMV against K64 split-K4 at ten K/N shapes, including `4096x16384`, with group32/128, optional bias, and FP16/BF16 input. All cases within the wide-N rule use the integrated route. Split-K4 outside the rule uses a standalone probe and is labeled `path=probe`, not a production route.
-
-Run from the ARK directory with the newly built ARK XPU runtime importable in Python 3.11 or newer. Set `ZE_AFFINITY_MASK` to select one idle GPU. To verify production kernels without building the probe or timing them:
+From the ARK directory, make the newly built ARK XPU runtime importable and select one idle GPU with `ZE_AFFINITY_MASK`. Use [test_woq_s4.py](test/test_woq_s4.py) to compare GEMV and production split-K4 at `M=1, K=4096, N=16384`, with FP16 input, group32 weights, bias, and preallocated output:
 
 ```bash
-PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
-  python -P test/bench_woq_s4.py --routes-only --shape 4096x8192 --shape 4096x16384
+export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
+for split_k4 in 0 1; do
+  printf 'split-K4 switch=%s\n' "$split_k4"
+  ARK_VERBOSE=2 ARK_WOQ_S4_DPAS_SPLIT_K4_M1="$split_k4" \
+    python -P -c 'import test_woq_s4 as bench; bench.M_VALUES = [1]; bench.run_ark_woqgemm()'
+done
 ```
 
-For the full sweep, set `SYCL_TLA_SRC` and `PYBIND11_SRC` to the dependency source roots used for the ARK build. Build the standalone probe for the target GPU; this example uses CRI (`bmg-g31` for B70):
-
-```bash
-source /opt/intel/oneapi/setvars.sh --force
-icpx --version
-kernel="$PWD/auto_round_kernel"
-probe_dir=$(mktemp -d)
-icpx -std=c++17 -O3 -DNDEBUG -shared -fPIC -fsycl -fno-sycl-instrument-device-code \
-  -fsycl-targets=spir64 -Xs "-device cri" \
-  -Xspirv-translator "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate" \
-  -DARK_XPU=1 -DARK_SYCL_TLA=1 -DBTLA_SYCL -DCUTLASS_ENABLE_SYCL=1 -DSYCL_INTEL_TARGET=1 \
-  -I"$kernel/wrapper/include" -I"$kernel" -I"$kernel/bestla" \
-  -isystem "$SYCL_TLA_SRC/include" -isystem "$SYCL_TLA_SRC/tools/util/include" \
-  -isystem "$SYCL_TLA_SRC/examples/common" -isystem "$PYBIND11_SRC/include" \
-  -isystem "$(python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
-  test/ark_2673_dpas_probe.cpp -o "$probe_dir/ark_2673_dpas_probe.so"
-ARK_VERBOSE=2 PYTHONPATH="$probe_dir:$PWD/test${PYTHONPATH:+:$PYTHONPATH}" \
-  python -P test/bench_woq_s4.py
-```
-
-Use repeated `--shape KxN` arguments for a subset, `--routes-only` for correctness and kernel checks without timing, or `--io-buffer-ab=split --shape 4096x8192` for the BF16 input/output buffer experiment. The script prints loaded library hashes and verifies the device; `--expect-sha256`, `--expect-probe-sha256` and `--device-uuid` can pin a replay. Timings require more than 90% free device memory and include allocation/zeroing, dtype casts and reduction unless explicitly varied in an A/B.
+Use `python -P -m pytest -q test/test_woq_s4.py` for correctness checks. The timing script's route labels are predictions; verify actual launches separately with `ARK_VERBOSE=1`, without using those runs for timing.
 
 ### Supported Data Types
 
