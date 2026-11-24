@@ -36,6 +36,26 @@ if deepspeed_exists:
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
 
 
+# Inductor knobs that keep compiled QDQ bit-identical to eager (verified for every EXP act dtype).
+_EAGER_EXACT_COMPILE_OPTIONS = {"emulate_precision_casts": True, "eager_numerics.division_rounding": True}
+
+
+def _is_exp_act_data_type(data_type) -> bool:
+    name = str(data_type or "").removeprefix("rtn_")
+    return name.startswith("exp_") or name == "nvfp4_v2"
+
+
+def _compile_exp_act_quant_func(func, device):
+    from auto_round.utils.device import _bump_dynamo_cache_limit, get_ar_device
+    from auto_round.utils.device_manager import _engaged_cache_limit
+
+    if get_ar_device(device).type != "cuda":
+        return func
+    _bump_dynamo_cache_limit(_engaged_cache_limit())
+    # dynamic=True would make `bits` symbolic and perturb qmax; keep dynamo's automatic dynamic shapes.
+    return torch.compile(func, options=_EAGER_EXACT_COMPILE_OPTIONS)
+
+
 def get_scale_shape(weight, group_size):
     """Computes the shape of the scale tensor for quantization based on the weight tensor and group size.
 
@@ -718,6 +738,10 @@ class WrapperWALayer(torch.nn.Module):
         self.act_quant_func = self.orig_layer.act_quant_func
         if self.enable_torch_compile:
             self.act_quant_func = compile_func(self.act_quant_func, self.device)
+        # EXP act QDQ runs per layer per decode step, so compile it for inference even when RTN disabled compile.
+        self._infer_act_quant_func = self.orig_layer.act_quant_func
+        if _is_exp_act_data_type(self.act_data_type):
+            self._infer_act_quant_func = _compile_exp_act_quant_func(self._infer_act_quant_func, self.device)
         self.extra_repr_org = orig_layer.extra_repr
 
         # Steal forward_pre_hooks from orig_layer (e.g., Hadamard transform hooks)
@@ -755,7 +779,7 @@ class WrapperWALayer(torch.nn.Module):
         if hasattr(self.orig_layer, "input_global_scale"):
             quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
         if act_max is None:
-            x, _, _ = self.orig_layer.act_quant_func(
+            x, _, _ = self._infer_act_quant_func(
                 x,
                 bits=self.orig_layer.act_bits,
                 group_size=self.orig_layer.act_group_size,
@@ -767,7 +791,7 @@ class WrapperWALayer(torch.nn.Module):
                 **quant_kwargs,
             )
         else:
-            x, _, _ = self.orig_layer.act_quant_func(
+            x, _, _ = self._infer_act_quant_func(
                 x,
                 bits=self.orig_layer.act_bits,
                 group_size=self.orig_layer.act_group_size,

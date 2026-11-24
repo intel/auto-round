@@ -6,17 +6,19 @@
 
 | CLI scheme | 格式 | 说明 |
 | --- | --- | --- |
-| `exp-fp4` | FP4 | 使用 `NVFP4_E5M3` preset |
-| `exp-nvsint4` | INT4 | 有符号 INT4，scale 使用 E4M3 |
-| `exp-nvint4` | INT4 | 有符号 INT4，不使用 zero-point，scale 使用 E5M3 |
-| `exp-nvint4-zp` | INT4-ZP | 旧版非对称 INT4，使用逐组 zero-point 和 E5M3 scale |
-| `EXP-FP4-BF16S` / `EXP-FP4-FP16S` | FP4 | FP4 权重 scale 使用 BF16 / FP16 |
-| `EXP-INT4-BF16S` / `EXP-INT4-FP16S` | INT4 | 无 zero-point 的对称 INT4（`[-7, 7]`），权重 scale 使用 BF16 / FP16 |
-| `EXP-INT4-ZP-BF16S` / `EXP-INT4-ZP-FP16S` | INT4-ZP | 带 zero-point 的非对称 INT4，权重 scale 使用 BF16 / FP16；用于保留早期 EXP-INT4 实验结果 |
-| `EXP-SINT4-BF16S` / `EXP-SINT4-FP16S` | INT4 | 有符号 INT4 权重 scale 使用 BF16 / FP16 |
+| `EXP-FP4-UE5M3` | FP4 | `NVFP4_E5M3` preset：E2M1、UE5M3 scale、无 global scale |
+| `EXP-INT4-E4M3` | INT4 | 码值 `[-8, 7]`，signed E4M3 scale；绝对值较大的一侧映射到 -8 |
+| `EXP-INT4-UE5M3` | INT4 | 码值 `[-7, 7]`，非负 UE5M3 scale |
+| `EXP-UINT4-ZP-UE5M3` | UINT4-ZP | 无符号码 `[0, 15]`，使用逐组 zero-point 和 UE5M3 scale；反量化权重仍可为负 |
+| `EXP-FP4-BF16` / `EXP-FP4-FP16` | FP4 | FP4，scale 使用 BF16 / FP16 |
+| `EXP-INT4-UBF16` / `EXP-INT4-UFP16` | INT4 | 码值 `[-7, 7]`，非负 BF16 / FP16 scale |
+| `EXP-UINT4-ZP-BF16` / `EXP-UINT4-ZP-FP16` | UINT4-ZP | 无符号码 `[0, 15]`，带 zero-point，scale 使用 BF16 / FP16 |
+| `EXP-INT4-BF16` / `EXP-INT4-FP16` | INT4 | 码值 `[-8, 7]`，带符号 BF16 / FP16 scale；绝对值较大的一侧映射到 -8 |
 
-六个 scale 变体使用独立量化器，只改变权重 scale 精度，供 fake 格式实验和模型精度对比使用。
-现有 FP8 scale 基线继续使用上面的 `exp-*` 名称；它们不同于早期笔记中的 `exp-sint4` 和 `exp-int4`。
+所有 EXP 方案的激活都用与权重相同的格式量化（W4A4，group size 16）。BF16/FP16 scale 变体使用独立量化器，供 fake 格式实验和模型精度对比使用。`UBF16` / `UFP16` 表示对称 INT4 方案的 scale 为非负值；BF16 和 FP16 仍是浮点 dtype。
+旧 CLI 名称仍可使用：`EXP-FP4` 映射到 `EXP-FP4-UE5M3`，`EXP-NVSINT4` 映射到 `EXP-INT4-E4M3`，`EXP-NVINT4` 映射到 `EXP-INT4-UE5M3`，`EXP-NVINT4-ZP` 映射到 `EXP-UINT4-ZP-UE5M3`。末尾带 `S` 的 scale 方案名也仍作为对应新名称的别名。已有日志和输出目录保留原名，查看时按此映射理解。
+
+实验脚本会在新日志开头记录 `canonical_scheme`、`cli_scheme`、旧名映射、运行阶段和模型信息；成功完成标记中记录 canonical scheme 和对应日志路径。已有日志及结果目录不会重写或移动。
 
 ## 运行
 
@@ -25,7 +27,7 @@
 ```bash
 MODEL_PATH=/models/Llama-3.1-8B-Instruct
 GPU_ID=0
-SCHEME=exp-nvint4
+SCHEME=EXP-INT4-UE5M3
 MODE=tuned
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 OUTPUT_ROOT="/data0/xinhe/autoround-exp-hellaswag/runs/${RUN_ID}"
@@ -77,11 +79,13 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m auto_round "${MODEL_PATH}" \
 
 | Scheme | RTN acc / acc_norm | opt-RTN acc / acc_norm | tuned acc / acc_norm |
 | --- | ---: | ---: | ---: |
-| `exp-fp4` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
-| `exp-nvsint4` | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
-| `exp-nvint4-zp` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
+| `EXP-FP4-UE5M3` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
+| `EXP-INT4-E4M3`† | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
+| `EXP-UINT4-ZP-UE5M3`† | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
 
 在这次实验中，tuned 没有稳定优于 RTN 或 opt-RTN。考虑到评测误差，这些小幅差异不应过度解读；仅凭单次实验不足以确定可靠的排序。
+
+`†` 这些历史结果是在激活按权重格式量化之前测得的只量化权重结果（W4A16），不代表当前 W4A4 preset。详见 `exp.md` 及其 W4A4 复测。
 
 ## 建议验证矩阵
 

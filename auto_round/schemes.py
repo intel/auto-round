@@ -377,8 +377,13 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     """Get a QuantizationScheme instance from a preset scheme name."""
     name = name.upper()
 
+    name = LEGACY_PRESET_SCHEME_ALIASES.get(name, name)
+
     if name not in PRESET_SCHEMES:
-        raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
+        raise KeyError(
+            f"Unknown preset scheme name {name}, "
+            f"available names: {list(CANONICAL_PRESET_SCHEMES.keys())}"
+        )
 
     if name == "INT8_W8A8":
         logger.warning_once(
@@ -394,9 +399,10 @@ def scheme_to_preset_name(scheme: str | QuantizationScheme) -> str:
     """Get preset scheme name from a QuantizationScheme instance."""
     if isinstance(scheme, str):
         name = scheme.upper()
-        return name if name in PRESET_SCHEMES else ""
+        name = LEGACY_PRESET_SCHEME_ALIASES.get(name, name)
+        return name if name in CANONICAL_PRESET_SCHEMES else ""
 
-    for key, val in PRESET_SCHEMES.items():
+    for key, val in CANONICAL_PRESET_SCHEMES.items():
         if val == scheme:
             return key
     return ""
@@ -461,6 +467,7 @@ def _override_scheme_with_user_specify(
         scheme_dict = asdict(scheme)
     elif isinstance(scheme, str):
         normalized_name = scheme.strip("'\" ").upper()
+        normalized_name = LEGACY_PRESET_SCHEME_ALIASES.get(normalized_name, normalized_name)
         if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
             logger.warning_once(
                 "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
@@ -800,65 +807,45 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     }
 )
 
-EXP_NVSINT4 = QuantizationScheme.from_dict(
-    {
-        "bits": 4,
-        "group_size": 16,
-        "data_type": "exp_nvsint4",
-        "sym": True,
-        "act_bits": 16,
-    }
-)
-
-EXP_NVINT4 = QuantizationScheme.from_dict(
-    {
-        "bits": 4,
-        "group_size": 16,
-        "data_type": "exp_nvint4",
-        "sym": True,
-        "act_bits": 16,
-    }
-)
-
-EXP_NVINT4_ZP = QuantizationScheme.from_dict(
-    {
-        "bits": 4,
-        "group_size": 16,
-        "data_type": "exp_nvint4_zp",
-        "sym": False,
-        "act_bits": 16,
-    }
-)
-
-
-def _make_exp_scale_scheme(kind: str, scale: str) -> QuantizationScheme:
-    is_fp4 = kind == "FP4"
-    data_type_kind = kind.lower().replace("-", "_")
-    has_zero_point = kind == "INT4-ZP"
+def _make_exp_weight_act_scheme(data_type: str, sym: bool = True) -> QuantizationScheme:
     return QuantizationScheme.from_dict(
         {
             "bits": 4,
             "group_size": 16,
-            "data_type": f"exp_{data_type_kind}_{scale.lower()}s",
-            "sym": not has_zero_point,
-            "act_bits": 4 if is_fp4 else 16,
-            **(
-                {
-                    "act_group_size": 16,
-                    "act_data_type": "nvfp4_v2",
-                    "act_sym": True,
-                }
-                if is_fp4
-                else {}
-            ),
+            "data_type": data_type,
+            "sym": sym,
+            "act_bits": 4,
+            "act_group_size": 16,
+            "act_data_type": data_type,
+            "act_sym": sym,
         }
     )
 
 
+EXP_NVSINT4 = _make_exp_weight_act_scheme("exp_nvsint4")
+EXP_NVINT4 = _make_exp_weight_act_scheme("exp_nvint4")
+EXP_NVINT4_ZP = _make_exp_weight_act_scheme("exp_nvint4_zp", sym=False)
+
+
+def _make_exp_scale_scheme(kind: str, scale: str) -> QuantizationScheme:
+    data_type_kind = kind.lower().replace("-", "_")
+    return _make_exp_weight_act_scheme(f"exp_{data_type_kind}_{scale.lower()}s", sym=kind != "INT4-ZP")
+
+
+EXP_SCALE_SCHEME_NAMES = {
+    ("FP4", "BF16"): "EXP-FP4-BF16",
+    ("FP4", "FP16"): "EXP-FP4-FP16",
+    ("INT4", "BF16"): "EXP-INT4-UBF16",
+    ("INT4", "FP16"): "EXP-INT4-UFP16",
+    ("INT4-ZP", "BF16"): "EXP-UINT4-ZP-BF16",
+    ("INT4-ZP", "FP16"): "EXP-UINT4-ZP-FP16",
+    ("SINT4", "BF16"): "EXP-INT4-BF16",
+    ("SINT4", "FP16"): "EXP-INT4-FP16",
+}
+
 EXP_SCALE_SCHEMES = {
-    f"EXP-{kind}-{scale}S": _make_exp_scale_scheme(kind, scale)
-    for kind in ("FP4", "INT4", "INT4-ZP", "SINT4")
-    for scale in ("BF16", "FP16")
+    scheme_name: _make_exp_scale_scheme(kind, scale)
+    for (kind, scale), scheme_name in EXP_SCALE_SCHEME_NAMES.items()
 }
 
 NVFP4_E5M3_GS = QuantizationScheme.from_dict(
@@ -984,10 +971,10 @@ PRESET_SCHEMES = {
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
-    "EXP-FP4": NVFP4_E5M3,
-    "EXP-NVSINT4": EXP_NVSINT4,
-    "EXP-NVINT4": EXP_NVINT4,
-    "EXP-NVINT4-ZP": EXP_NVINT4_ZP,
+    "EXP-FP4-UE5M3": NVFP4_E5M3,
+    "EXP-INT4-E4M3": EXP_NVSINT4,
+    "EXP-INT4-UE5M3": EXP_NVINT4,
+    "EXP-UINT4-ZP-UE5M3": EXP_NVINT4_ZP,
     **EXP_SCALE_SCHEMES,
     "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
@@ -1011,6 +998,24 @@ PRESET_SCHEMES = {
 
 for alias_key, facts_key in GGUF_PRESET_ALIASES.items():
     PRESET_SCHEMES[alias_key.upper()] = QuantizationScheme.from_dict(GGUF_SCHEME_FACTS[facts_key])
+
+CANONICAL_PRESET_SCHEMES = dict(PRESET_SCHEMES)
+
+LEGACY_PRESET_SCHEME_ALIASES = {
+    "EXP-FP4": "EXP-FP4-UE5M3",
+    "EXP-UINT4-ZP-E5M3": "EXP-UINT4-ZP-UE5M3",
+    "EXP-NVSINT4": "EXP-INT4-E4M3",
+    "EXP-NVINT4": "EXP-INT4-UE5M3",
+    "EXP-NVINT4-ZP": "EXP-UINT4-ZP-UE5M3",
+    **{
+        f"EXP-{kind}-{scale}S": EXP_SCALE_SCHEME_NAMES[(kind, scale)]
+        for kind in ("FP4", "INT4", "INT4-ZP", "SINT4")
+        for scale in ("BF16", "FP16")
+    },
+}
+
+for alias_name, canonical_name in LEGACY_PRESET_SCHEME_ALIASES.items():
+    PRESET_SCHEMES[alias_name] = CANONICAL_PRESET_SCHEMES[canonical_name]
 
 
 def _handle_special_schemes(

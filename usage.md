@@ -6,17 +6,19 @@ This note records the reproducible Llama-3.1-8B-Instruct HellaSwag comparison fo
 
 | CLI scheme | Format | Description |
 | --- | --- | --- |
-| `exp-fp4` | FP4 | Uses the `NVFP4_E5M3` preset |
-| `exp-nvsint4` | INT4 | Signed INT4 with E4M3 scale |
-| `exp-nvint4` | INT4 | Signed INT4 without zero-point, with E5M3 scale |
-| `exp-nvint4-zp` | INT4-ZP | Legacy asymmetric INT4 with per-group zero-points and E5M3 scale |
-| `EXP-FP4-BF16S` / `EXP-FP4-FP16S` | FP4 | FP4 with BF16 / FP16 weight scales |
-| `EXP-INT4-BF16S` / `EXP-INT4-FP16S` | INT4 | Symmetric, zero-point-free INT4 (`[-7, 7]`) with BF16 / FP16 weight scales |
-| `EXP-INT4-ZP-BF16S` / `EXP-INT4-ZP-FP16S` | INT4-ZP | Asymmetric INT4 with zero-point and BF16 / FP16 weight scales; preserves results from the earlier EXP-INT4 implementation |
-| `EXP-SINT4-BF16S` / `EXP-SINT4-FP16S` | INT4 | Signed INT4 with BF16 / FP16 weight scales |
+| `EXP-FP4-UE5M3` | FP4 | `NVFP4_E5M3` preset: E2M1 with UE5M3 scale, no global scale |
+| `EXP-INT4-E4M3` | INT4 | Codes `[-8, 7]`, signed E4M3 scale; the larger-magnitude side maps to -8 |
+| `EXP-INT4-UE5M3` | INT4 | Codes `[-7, 7]`, nonnegative UE5M3 scale |
+| `EXP-UINT4-ZP-UE5M3` | UINT4-ZP | Unsigned codes `[0, 15]` with per-group zero-points and UE5M3 scale; dequantized weights may be negative |
+| `EXP-FP4-BF16` / `EXP-FP4-FP16` | FP4 | FP4 with BF16 / FP16 scales |
+| `EXP-INT4-UBF16` / `EXP-INT4-UFP16` | INT4 | Codes `[-7, 7]` with nonnegative BF16 / FP16 scales |
+| `EXP-UINT4-ZP-BF16` / `EXP-UINT4-ZP-FP16` | UINT4-ZP | Unsigned codes `[0, 15]` with zero-point and BF16 / FP16 scales |
+| `EXP-INT4-BF16` / `EXP-INT4-FP16` | INT4 | Codes `[-8, 7]` with signed BF16 / FP16 scales; the larger-magnitude side maps to -8 |
 
-The six scale variants use independent quantizers; only weight scale precision changes. They are intended for fake-format experiments and model accuracy comparisons.
-Use the lowercase `exp-*` names above for the existing FP8-scale baselines. They are distinct from the older `exp-sint4` and `exp-int4` names in earlier notes.
+All EXP schemes quantize activations with the same format as the weights (W4A4, group size 16). The BF16/FP16 scale variants use independent quantizers and are intended for fake-format experiments and model accuracy comparisons. `UBF16` / `UFP16` marks the symmetric INT4 variant's nonnegative scales; BF16 and FP16 remain floating-point dtypes.
+Legacy CLI names remain accepted: `EXP-FP4` maps to `EXP-FP4-UE5M3`, `EXP-NVSINT4` to `EXP-INT4-E4M3`, `EXP-NVINT4` to `EXP-INT4-UE5M3`, and `EXP-NVINT4-ZP` to `EXP-UINT4-ZP-UE5M3`. Scale variants ending in `S` are aliases for the corresponding names above. Existing logs and output folders keep their historical names; use this mapping when interpreting them.
+
+The experiment scripts write `canonical_scheme`, `cli_scheme`, the legacy-name mapping, run stage, and model metadata at the start of each new log. Successful completion markers record the canonical scheme and corresponding log path. Existing logs and result directories are not rewritten or moved.
 
 ## Run
 
@@ -25,7 +27,7 @@ Set `SCHEME` to one of the schemes above and `MODE` to `rtn`, `opt-rtn`, or `tun
 ```bash
 MODEL_PATH=/models/Llama-3.1-8B-Instruct
 GPU_ID=0
-SCHEME=exp-nvint4
+SCHEME=EXP-INT4-UE5M3
 MODE=tuned
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 OUTPUT_ROOT="/data0/xinhe/autoround-exp-hellaswag/runs/${RUN_ID}"
@@ -77,11 +79,13 @@ Llama-3.1-8B-Instruct, HellaSwag:
 
 | Scheme | RTN acc / acc_norm | opt-RTN acc / acc_norm | tuned acc / acc_norm |
 | --- | ---: | ---: | ---: |
-| `exp-fp4` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
-| `exp-nvsint4` | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
-| `exp-nvint4-zp` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
+| `EXP-FP4-UE5M3` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
+| `EXP-INT4-E4M3`† | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
+| `EXP-UINT4-ZP-UE5M3`† | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
 
 In this run, tuned did not consistently outperform RTN or opt-RTN. The small differences should be interpreted in light of the evaluation uncertainty; this single run is not sufficient to establish a reliable ranking.
+
+`†` These historical rows were measured with weight-only quantization (W4A16), before activations were quantized with the weight format; they do not represent the current W4A4 presets. See `exp.md` for details and the W4A4 re-test.
 
 ## Recommended Validation Matrix
 

@@ -27,14 +27,9 @@ def cast_to_fp4(x):
     sign = torch.sign(x)
     x = torch.abs(x)
 
-    step1 = round_ste(2.0 * x) / 2.0
-    step2 = round_ste(x)
-    step3 = 2.0 * round_ste(x / 2.0)
-
-    mask1 = x < 2.0
-    mask2 = x < 4.0
-    x = step1 * mask1 + step2 * (~mask1) * mask2 + step3 * (~mask1) * (~mask2)
-    x = x.clamp(-6, 6)
+    # E2M1 grid spacing is 0.5 / 1 / 2 below 2 / 4 / 6; power-of-two steps keep the scaling exact.
+    step = torch.where(x < 2.0, 0.5, torch.where(x < 4.0, 1.0, 2.0)).to(x.dtype)
+    x = (round_ste(x / step) * step).clamp(-6, 6)
 
     return x * sign
 
@@ -146,36 +141,25 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
 def e5m3_to_float_tensor(e5m3: torch.Tensor) -> torch.Tensor:
     assert e5m3.dtype == torch.uint8
 
-    x = torch.zeros_like(e5m3, dtype=torch.float32)
-    mask_nonzero = e5m3 != 0
-    e = ((e5m3[mask_nonzero] >> 3) & 0x1F).to(torch.int32)
-    m = (e5m3[mask_nonzero] & 0x07).to(torch.int32)
+    # Elementwise selects avoid boolean-mask indexing, which forces a device sync on CUDA.
+    e = ((e5m3 >> 3) & 0x1F).to(torch.int32)
+    m = (e5m3 & 0x07).to(torch.float32)
 
-    is_nan = (e == 31) & (m == 7)
-    is_subnormal = e == 0
-    is_normal = (e > 0) & (~is_nan)
-
-    out = torch.zeros_like(e, dtype=torch.float32)
-
-    # subnormal: exponent = -14, no implicit leading 1
-    out[is_subnormal] = (m[is_subnormal].float() / 8.0) * (2**-14)
-
-    # normal: exponent = e - 15, implicit leading 1
-    mant = 1.0 + m[is_normal].float() / 8.0
-    exp = e[is_normal] - 15
-    out[is_normal] = torch.ldexp(mant, exp)
-
-    out[is_nan] = float("nan")
-    x[mask_nonzero] = out
-    return x
+    subnormal = (m / 8.0) * (2**-14)
+    normal = torch.ldexp(1.0 + m / 8.0, e - 15)
+    out = torch.where(e == 0, subnormal, normal)
+    return torch.where((e == 31) & (m == 7), torch.full_like(out, float("nan")), out)
 
 
 def cast_to_ue5m3(tensor):
+    # Rounds directly in float (RNE on a 3-bit mantissa); matches the encode/decode round trip bit-for-bit.
     orig_dtype = tensor.dtype
-    encoded = float_to_e5m3_frexp(tensor)
-    res = e5m3_to_float_tensor(encoded)
-    res = res.to(orig_dtype)
-    return res
+    x = tensor.to(torch.float32)
+    finite = torch.nan_to_num(x, nan=0.0, posinf=FLOAT8_UE5M3_MAX, neginf=0.0).clamp_(0.0, FLOAT8_UE5M3_MAX)
+    _, exponent = torch.frexp(finite)
+    quantum = torch.ldexp(torch.ones_like(finite), exponent.clamp_min(-13) - 4)
+    res = (torch.round(finite / quantum) * quantum).masked_fill_(torch.isnan(x), float("nan"))
+    return res.to(orig_dtype)
 
 
 def cast_to_ue5m3_ste(x):

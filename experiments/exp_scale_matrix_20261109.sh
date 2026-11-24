@@ -8,7 +8,31 @@ MODEL_ROOT=/data/xinhe/autoround-rtn-matrix/runs/20261102-152238/model-sources
 LLAMA=/data/xinhe/.cache/huggingface/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659
 MODEL_KEYS=(llama31-8b phi-4 qwen2.5-7b qwen3-32b)
 MODEL_PATHS=("$LLAMA" "$MODEL_ROOT/phi-4" "$MODEL_ROOT/qwen2.5-7b" "$MODEL_ROOT/qwen3-32b")
-SCHEMES=(EXP-FP4-BF16S EXP-FP4-FP16S EXP-INT4-BF16S EXP-INT4-FP16S EXP-SINT4-BF16S EXP-SINT4-FP16S)
+SCHEMES=(EXP-FP4-BF16 EXP-FP4-FP16 EXP-INT4-UBF16 EXP-INT4-UFP16 EXP-INT4-BF16 EXP-INT4-FP16)
+
+write_run_metadata() {
+    local log_path="$1"
+    local model_key="$2"
+    local model_path="$3"
+    local scheme="$4"
+    local stage="$5"
+    {
+        printf 'canonical_scheme=%s\n' "$scheme"
+        printf 'cli_scheme=%s\n' "$scheme"
+        printf 'legacy_scheme_mapping=EXP-FP4-BF16S/FP16S->EXP-FP4-BF16/FP16;EXP-INT4-BF16S/FP16S->EXP-INT4-UBF16/UFP16;EXP-INT4-ZP-BF16S/FP16S->EXP-UINT4-ZP-BF16/FP16;EXP-SINT4-BF16S/FP16S->EXP-INT4-BF16/FP16\n'
+        printf 'model_key=%s\nmodel_path=%s\nstage=%s\nscript=%s\nrun_root=%s\n' \
+            "$model_key" "$model_path" "$stage" "${BASH_SOURCE[0]}" "$RUN_ROOT"
+        printf 'quantization=RTN,group_size=16,seed=42\n\n'
+    } > "$log_path"
+}
+
+write_completion_marker() {
+    local marker="$1"
+    local scheme="$2"
+    local model_key="$3"
+    local log_path="$4"
+    printf 'canonical_scheme=%s\nmodel_key=%s\nlog_path=%s\n' "$scheme" "$model_key" "$log_path" > "$marker"
+}
 
 run_one() {
     local gpu="$1"
@@ -31,6 +55,8 @@ run_one() {
     fi
     mkdir -p "$combo_dir" "$RUN_ROOT/logs" "$RUN_ROOT/tmp"
     if [[ ! -f "$model_out/config.json" ]]; then
+        local quant_log="$RUN_ROOT/logs/$model_key-$scheme-quant.log"
+        write_run_metadata "$quant_log" "$model_key" "$model_path" "$scheme" quantize
         "$PYTHON" -m auto_round "$model_path" \
             --scheme "$scheme" \
             --format fake \
@@ -44,7 +70,7 @@ run_one() {
             --disable_opt_rtn \
             --iters 0 \
             --output_dir "$model_out" \
-            > "$RUN_ROOT/logs/$model_key-$scheme-quant.log" 2>&1 || return 1
+            >> "$quant_log" 2>&1 || return 1
     fi
     quant_model="$(find "$model_out" -maxdepth 3 -type f -name config.json -printf '%h\n' -quit)"
     if [[ -z "$quant_model" ]] || { [[ ! -f "$quant_model/model.safetensors" ]] && [[ ! -f "$quant_model/model.safetensors.index.json" ]]; }; then
@@ -52,6 +78,8 @@ run_one() {
         return 1
     fi
     if [[ ! -f "$combo_dir/LIKELIHOOD_COMPLETE" ]]; then
+        local likelihood_log="$RUN_ROOT/logs/$model_key-$scheme-likelihood.log"
+        write_run_metadata "$likelihood_log" "$model_key" "$model_path" "$scheme" likelihood
         auto-round eval "$quant_model" \
             --tasks mmlu,hellaswag,piqa \
             --device_map 0 \
@@ -59,10 +87,12 @@ run_one() {
             --eval_bs "$eval_bs" \
             --eval_model_dtype bfloat16 \
             --eval_task_by_task \
-            > "$RUN_ROOT/logs/$model_key-$scheme-likelihood.log" 2>&1 || return 1
-        touch "$combo_dir/LIKELIHOOD_COMPLETE"
+            >> "$likelihood_log" 2>&1 || return 1
+        write_completion_marker "$combo_dir/LIKELIHOOD_COMPLETE" "$scheme" "$model_key" "$likelihood_log"
     fi
     if [[ ! -f "$combo_dir/GSM8K_COMPLETE" ]]; then
+        local gsm8k_log="$RUN_ROOT/logs/$model_key-$scheme-gsm8k.log"
+        write_run_metadata "$gsm8k_log" "$model_key" "$model_path" "$scheme" gsm8k
         auto-round eval "$quant_model" \
             --tasks gsm8k \
             --device_map 0 \
@@ -71,10 +101,12 @@ run_one() {
             --num_fewshot 5 \
             --eval_model_dtype bfloat16 \
             --eval_gen_kwargs max_gen_toks=1024,do_sample=False \
-            > "$RUN_ROOT/logs/$model_key-$scheme-gsm8k.log" 2>&1 || return 1
-        touch "$combo_dir/GSM8K_COMPLETE"
+            >> "$gsm8k_log" 2>&1 || return 1
+        write_completion_marker "$combo_dir/GSM8K_COMPLETE" "$scheme" "$model_key" "$gsm8k_log"
     fi
-    touch "$combo_dir/COMPLETE"
+    printf 'canonical_scheme=%s\nmodel_key=%s\nlikelihood_log=%s\ngsm8k_log=%s\n' \
+        "$scheme" "$model_key" "$RUN_ROOT/logs/$model_key-$scheme-likelihood.log" \
+        "$RUN_ROOT/logs/$model_key-$scheme-gsm8k.log" > "$combo_dir/COMPLETE"
     printf 'complete: %s/%s on gpu=%s\n' "$model_key" "$scheme" "$gpu"
 }
 

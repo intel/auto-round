@@ -47,6 +47,27 @@ def _reshape_imatrix(imatrix, tensor: torch.Tensor, group_size: int, bits: int):
     return _imatrix_handle_zero(grouped_imatrix, tensor, bits, group_size)
 
 
+def _search_symmetric_scales(data: torch.Tensor, qmax: int, qw=None, ratios=None) -> torch.Tensor:
+    """Grid-search nonnegative per-group scales for symmetric codes in [-qmax, qmax]."""
+    data = data.to(torch.float32)
+    amax = data.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12)
+    if ratios is None:
+        ratios = torch.linspace(0.5, 1.0, 51, device=data.device)
+    weight = 1.0 if qw is None else qw.to(torch.float32)
+    best_scale = best_loss = None
+    for ratio in ratios:
+        scale = amax * ratio / qmax
+        qdq = torch.round(data / scale).clamp(-qmax, qmax) * scale
+        loss = ((qdq - data).square() * weight).sum(dim=-1, keepdim=True)
+        if best_loss is None:
+            best_scale, best_loss = scale, loss
+        else:
+            better = loss < best_loss
+            best_loss = torch.where(better, loss, best_loss)
+            best_scale = torch.where(better, scale, best_scale)
+    return best_scale
+
+
 @register_dtype("exp_nvsint4")
 def quant_tensor_exp_nvsint4(
     tensor,
@@ -131,11 +152,12 @@ def quant_tensor_exp_nvint4(
     init_scale=None,
     **kwargs,
 ):
-    """Symmetric signed INT4 QDQ with unsigned E5M3 per-group scales."""
+    """Symmetric signed INT4 QDQ in [-7, 7] with unsigned E5M3 per-group scales."""
     if group_size != 16:
         raise ValueError(f"exp_nvint4 only supports group_size=16, got {group_size}")
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = int(2.0 ** (bits - 1))
+    qmax = maxq - 1
 
     if init_scale is not None:
         if isinstance(max_scale, torch.Tensor):
@@ -150,11 +172,11 @@ def quant_tensor_exp_nvint4(
             wmin = tensor_min.to(tensor.device) if isinstance(tensor_min, torch.Tensor) else tensor_min
             wmax = tensor_max.to(tensor.device) if isinstance(tensor_max, torch.Tensor) else tensor_max
         max_v = torch.maximum(-(wmin * min_scale), wmax * max_scale)
-        scale = max_v / maxq
+        scale = max_v / qmax
 
     scale = _cast_scale(scale, signed=False, q_scale_thresh=q_scale_thresh)
     scale = scale.unsqueeze(-1) if scale.ndim == tensor.ndim - 1 else scale
-    quantized = round_ste(tensor / scale + v).clamp(-maxq, maxq - 1)
+    quantized = round_ste(tensor / scale + v).clamp(-qmax, qmax)
     qdq = (scale * quantized).to(tensor.dtype)
     qdq = revert_tensor_by_pad(qdq, orig_shape=orig_shape, pad_len=pad_len)
     return qdq, scale, maxq
@@ -218,7 +240,7 @@ def opt_rtn_exp_nvint4(tensor, bits=4, group_size=16, v=0, imatrix=None, q_scale
     kwargs.pop("init_scale", None)
     grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
     qw = _reshape_imatrix(imatrix, grouped, group_size, bits)
-    init_scale = search_scales(grouped, bits, qw=qw).abs().clamp(min=q_scale_thresh)
+    init_scale = _search_symmetric_scales(grouped, 2 ** (bits - 1) - 1, qw=qw).clamp(min=q_scale_thresh)
     return quant_tensor_exp_nvint4(
         tensor,
         bits=bits,

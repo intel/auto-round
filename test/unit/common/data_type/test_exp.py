@@ -22,16 +22,16 @@ from auto_round.data_type.utils import (
     resolve_optimized_init_scale_fn,
     resolve_optimized_init_scale_zero_fn,
 )
-from auto_round.schemes import preset_name_to_scheme
+from auto_round.schemes import preset_name_to_scheme, scheme_to_preset_name
 
 
 @pytest.mark.parametrize(
     ("name", "expected_dtype", "expected_sym"),
     [
-        ("EXP-FP4", "nvfp4_v2", True),
-        ("EXP-NVSINT4", "exp_nvsint4", True),
-        ("EXP-NVINT4", "exp_nvint4", True),
-        ("EXP-NVINT4-ZP", "exp_nvint4_zp", False),
+        ("EXP-FP4-UE5M3", "nvfp4_v2", True),
+        ("EXP-INT4-E4M3", "exp_nvsint4", True),
+        ("EXP-INT4-UE5M3", "exp_nvint4", True),
+        ("EXP-UINT4-ZP-UE5M3", "exp_nvint4_zp", False),
     ],
 )
 def test_exp_scheme_presets(name, expected_dtype, expected_sym):
@@ -40,6 +40,24 @@ def test_exp_scheme_presets(name, expected_dtype, expected_sym):
     assert scheme.group_size == 16
     assert scheme.data_type == expected_dtype
     assert scheme.sym is expected_sym
+    if name != "EXP-FP4-UE5M3":
+        assert scheme_to_preset_name(scheme) == name
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "canonical_name"),
+    [
+        ("EXP-NVSINT4", "EXP-INT4-E4M3"),
+        ("EXP-NVINT4", "EXP-INT4-UE5M3"),
+        ("EXP-NVINT4-ZP", "EXP-UINT4-ZP-UE5M3"),
+    ],
+)
+def test_exp_scheme_legacy_aliases_resolve_to_canonical_names(legacy_name, canonical_name):
+    legacy_scheme = preset_name_to_scheme(legacy_name)
+    canonical_scheme = preset_name_to_scheme(canonical_name)
+
+    assert legacy_scheme == canonical_scheme
+    assert scheme_to_preset_name(legacy_scheme) == canonical_name
 
 
 @pytest.mark.parametrize(

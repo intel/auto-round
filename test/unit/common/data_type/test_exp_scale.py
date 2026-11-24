@@ -2,20 +2,20 @@ import pytest
 import torch
 
 from auto_round.data_type.utils import get_quant_func
-from auto_round.schemes import preset_name_to_scheme
+from auto_round.schemes import parse_scheme, preset_name_to_scheme, scheme_to_preset_name
 
 
 @pytest.mark.parametrize(
     ("name", "kind", "dtype", "symmetric", "scale_dtype"),
     [
-        ("EXP-FP4-BF16S", "fp4", "exp_fp4_bf16s", True, torch.bfloat16),
-        ("EXP-FP4-FP16S", "fp4", "exp_fp4_fp16s", True, torch.float16),
-        ("EXP-INT4-BF16S", "int4", "exp_int4_bf16s", True, torch.bfloat16),
-        ("EXP-INT4-FP16S", "int4", "exp_int4_fp16s", True, torch.float16),
-        ("EXP-INT4-ZP-BF16S", "int4_zp", "exp_int4_zp_bf16s", False, torch.bfloat16),
-        ("EXP-INT4-ZP-FP16S", "int4_zp", "exp_int4_zp_fp16s", False, torch.float16),
-        ("EXP-SINT4-BF16S", "sint4", "exp_sint4_bf16s", True, torch.bfloat16),
-        ("EXP-SINT4-FP16S", "sint4", "exp_sint4_fp16s", True, torch.float16),
+        ("EXP-FP4-BF16", "fp4", "exp_fp4_bf16s", True, torch.bfloat16),
+        ("EXP-FP4-FP16", "fp4", "exp_fp4_fp16s", True, torch.float16),
+        ("EXP-INT4-UBF16", "int4", "exp_int4_bf16s", True, torch.bfloat16),
+        ("EXP-INT4-UFP16", "int4", "exp_int4_fp16s", True, torch.float16),
+        ("EXP-UINT4-ZP-BF16", "int4_zp", "exp_int4_zp_bf16s", False, torch.bfloat16),
+        ("EXP-UINT4-ZP-FP16", "int4_zp", "exp_int4_zp_fp16s", False, torch.float16),
+        ("EXP-INT4-BF16", "sint4", "exp_sint4_bf16s", True, torch.bfloat16),
+        ("EXP-INT4-FP16", "sint4", "exp_sint4_fp16s", True, torch.float16),
     ],
 )
 def test_exp_scale_presets_and_rtn(name, kind, dtype, symmetric, scale_dtype):
@@ -24,6 +24,7 @@ def test_exp_scale_presets_and_rtn(name, kind, dtype, symmetric, scale_dtype):
     assert scheme.group_size == 16
     assert scheme.data_type == dtype
     assert scheme.sym is symmetric
+    assert scheme_to_preset_name(scheme) == name
 
     quant_func, selected = get_quant_func(
         dtype=dtype, bits=4, sym=symmetric, group_size=16, iters=0
@@ -45,8 +46,66 @@ def test_exp_scale_presets_and_rtn(name, kind, dtype, symmetric, scale_dtype):
 
 
 @pytest.mark.parametrize(
+    "name",
+    [
+        "EXP-FP4-UE5M3",
+        "EXP-INT4-E4M3",
+        "EXP-INT4-UE5M3",
+        "EXP-UINT4-ZP-UE5M3",
+        "EXP-FP4-BF16",
+        "EXP-FP4-FP16",
+        "EXP-INT4-UBF16",
+        "EXP-INT4-UFP16",
+        "EXP-UINT4-ZP-BF16",
+        "EXP-UINT4-ZP-FP16",
+        "EXP-INT4-BF16",
+        "EXP-INT4-FP16",
+    ],
+)
+@pytest.mark.parametrize("case", [str.lower, str.swapcase])
+def test_exp_scheme_names_are_case_insensitive(name, case):
+    expected = preset_name_to_scheme(name)
+    actual = preset_name_to_scheme(case(name))
+    assert actual == expected
+
+    parsed, is_auto_scheme, attrs = parse_scheme(case(name), {})
+    assert parsed == name
+    assert is_auto_scheme is False
+    assert attrs["data_type"] == expected.data_type
+
+
+@pytest.mark.parametrize(
+    ("legacy_name", "canonical_name"),
+    [
+        ("EXP-FP4", "EXP-FP4-UE5M3"),
+        ("EXP-UINT4-ZP-E5M3", "EXP-UINT4-ZP-UE5M3"),
+        ("EXP-NVSINT4", "EXP-INT4-E4M3"),
+        ("EXP-NVINT4", "EXP-INT4-UE5M3"),
+        ("EXP-NVINT4-ZP", "EXP-UINT4-ZP-UE5M3"),
+        ("EXP-FP4-BF16S", "EXP-FP4-BF16"),
+        ("EXP-FP4-FP16S", "EXP-FP4-FP16"),
+        ("EXP-INT4-BF16S", "EXP-INT4-UBF16"),
+        ("EXP-INT4-FP16S", "EXP-INT4-UFP16"),
+        ("EXP-INT4-ZP-BF16S", "EXP-UINT4-ZP-BF16"),
+        ("EXP-INT4-ZP-FP16S", "EXP-UINT4-ZP-FP16"),
+        ("EXP-SINT4-BF16S", "EXP-INT4-BF16"),
+        ("EXP-SINT4-FP16S", "EXP-INT4-FP16"),
+    ],
+)
+def test_exp_scale_legacy_aliases_resolve_to_canonical_names(legacy_name, canonical_name):
+    legacy_scheme = preset_name_to_scheme(legacy_name)
+    canonical_scheme = preset_name_to_scheme(canonical_name)
+
+    assert legacy_scheme == canonical_scheme
+    # EXP-FP4-UE5M3 shares its config with NVFP4_E5M3, which reverse lookup returns first.
+    if canonical_name != "EXP-FP4-UE5M3":
+        assert scheme_to_preset_name(legacy_scheme) == canonical_name
+    assert parse_scheme(legacy_name.lower(), {})[0] == canonical_name
+
+
+@pytest.mark.parametrize(
     ("name", "scale_dtype"),
-    [("EXP-INT4-BF16S", torch.bfloat16), ("EXP-INT4-FP16S", torch.float16)],
+    [("EXP-INT4-UBF16", torch.bfloat16), ("EXP-INT4-UFP16", torch.float16)],
 )
 def test_exp_int4_uses_signed_levels_without_zero_point(name, scale_dtype):
     scheme = preset_name_to_scheme(name)
@@ -65,18 +124,39 @@ def test_exp_int4_uses_signed_levels_without_zero_point(name, scale_dtype):
     torch.testing.assert_close(qdq[0, :2], expected, atol=1e-6, rtol=0)
 
 
-def test_exp_scale_presets_keep_fake_activation_config_isolated():
-    fp4 = preset_name_to_scheme("EXP-FP4-BF16S")
-    assert fp4.act_data_type == "nvfp4_v2"
-    assert fp4.act_bits == 4
+@pytest.mark.parametrize(
+    "name",
+    [
+        "EXP-INT4-E4M3",
+        "EXP-INT4-UE5M3",
+        "EXP-UINT4-ZP-UE5M3",
+        "EXP-FP4-BF16",
+        "EXP-FP4-FP16",
+        "EXP-INT4-UBF16",
+        "EXP-INT4-UFP16",
+        "EXP-UINT4-ZP-BF16",
+        "EXP-UINT4-ZP-FP16",
+        "EXP-INT4-BF16",
+        "EXP-INT4-FP16",
+    ],
+)
+def test_exp_presets_quantize_activations_like_weights(name):
+    scheme = preset_name_to_scheme(name)
+    assert scheme.act_bits == 4
+    assert scheme.act_group_size == scheme.group_size == 16
+    assert scheme.act_data_type == scheme.data_type
+    assert scheme.act_sym is scheme.sym
 
-    int4 = preset_name_to_scheme("EXP-INT4-BF16S")
-    int4_zp = preset_name_to_scheme("EXP-INT4-ZP-BF16S")
-    sint4 = preset_name_to_scheme("EXP-SINT4-BF16S")
-    assert int4.act_bits == sint4.act_bits == 16
-    assert int4.sym is True
-    assert int4_zp.sym is False
-    assert int4.data_type != sint4.data_type
+
+def test_exp_nvint4_uses_symmetric_seven_levels():
+    from auto_round.data_type.exp import quant_tensor_exp_nvint4
+
+    weight = torch.zeros(2, 16)
+    weight[0, 0], weight[0, 1] = 1.0, -0.5
+    weight[1, 0], weight[1, 1] = -1.0, 0.5
+    qdq, scale, _ = quant_tensor_exp_nvint4(weight, bits=4, group_size=16)
+    codes = torch.round(qdq / scale)
+    assert codes.max() == 7 and codes.min() == -7
 
 
 def test_exp_fp4_fake_backend_small_model_forward():
@@ -87,7 +167,7 @@ def test_exp_fp4_fake_backend_small_model_forward():
     from auto_round.experimental.qmodules.fake import FakeActQuantLinear
     from auto_round.inference.convert_model import convert_hf_model
 
-    scheme = preset_name_to_scheme("EXP-FP4-BF16S")
+    scheme = preset_name_to_scheme("EXP-FP4-BF16")
     config = LlamaConfig(
         hidden_size=32,
         intermediate_size=64,
