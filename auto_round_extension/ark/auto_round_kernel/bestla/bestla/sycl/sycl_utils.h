@@ -12,6 +12,8 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 #pragma once
+#include <new>
+
 #include "sycl_device.h"
 #include "bestla/bestla_utils.h"
 
@@ -38,9 +40,10 @@ struct sycl_vector {
   }
 
   void resize(uint64_t _size, sycl::queue* _q) {
-    size_ = _size;
     _T* tmp = sycl::malloc_device<_T>(_size, *_q);
+    if (_size != 0 && tmp == nullptr) throw std::bad_alloc();
     ptr_ = std::shared_ptr<_T>(tmp, sycl_deleter(_q));
+    size_ = _size;
   }
 
   inline uint64_t size() { return size_; }

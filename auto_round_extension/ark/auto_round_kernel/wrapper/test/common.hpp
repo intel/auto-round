@@ -1,5 +1,6 @@
 #pragma once
 
+#include <new>
 #include <string>
 #include <vector>
 #include "../include/dnnl_wrapper.hpp"
@@ -25,10 +26,12 @@ struct Context {
 
   void* allocate(size_t size) {
 #if ARK_XPU
-    return sycl::aligned_alloc_device<int8_t>(128, size, *q);
+    auto* ptr = sycl::aligned_alloc_device<int8_t>(128, size, *q);
 #else
-    return malloc(size);
+    auto* ptr = malloc(size);
 #endif
+    if (size != 0 && ptr == nullptr) throw std::bad_alloc();
+    return ptr;
   }
 
   void deallocate(void* ptr) {

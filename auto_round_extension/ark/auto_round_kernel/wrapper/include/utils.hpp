@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -329,7 +330,9 @@ class DeviceMemoryPool {
     if (ptr == nullptr) throw error("device allocator returned null");
     return ptr;
 #else
-    return static_cast<int8_t*>(std::malloc(size));
+    auto* ptr = static_cast<int8_t*>(std::malloc(size));
+    if (ptr == nullptr) throw std::bad_alloc();
+    return ptr;
 #endif
   }
 
