@@ -19,6 +19,6 @@ Fixes or relates to #
 - [ ] My code has been tested locally.
 - [ ] Documentation has been updated as needed.
 - [ ] New or updated tests are included where applicable.
-- [ ] The CUDA CI has passed. You can trigger it by commenting `/azp run Unit-Test-CUDA-AutoRound`.
+- [ ] The CUDA CI has passed. It runs automatically after the CPU unit tests pass; you can also trigger it manually by commenting `/azp run Unit-Test-CUDA-AutoRound`.
 
 <!-- Optional: Tag reviewers or add extra notes below -->

@@ -41,6 +41,39 @@ parameters:
         PART: 2
 
 stages:
+  # Automatic PR builds wait for the CPU unit tests of the same commit and skip
+  # the GPU tests when they fail; the gate then fails so the CUDA check shows the
+  # reason as failed. Manual runs and "/azp run" comments pass directly.
+  - stage: Wait_CPU_UT
+    displayName: "Wait CPU UT"
+    dependsOn: []
+    pool:
+      vmImage: "ubuntu-latest"
+    variables:
+      - group: auto-round-bot-secrets
+    jobs:
+      - job: Gate
+        displayName: "Wait for CPU unit test result"
+        timeoutInMinutes: 180
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: Bash@3
+            name: gate
+            displayName: "Check CPU UT result"
+            env:
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+              PYTHONUNBUFFERED: '1'
+            inputs:
+              targetType: "inline"
+              script: |
+                python3 .azure-pipelines/scripts/cuda_unit_test/wait_cpu_ut.py \
+                  --cpu-pipeline "Unit-Test-AutoRound" \
+                  --appear-timeout 600 \
+                  --interval 30
+
   - ${{ each pair in parameters.matrix }}:
       # Pod creation, GPU tests and cleanup live in ONE stage as three jobs so a
       # "Rerun failed stage" reruns every job (including Start_Pod_Job) and thus
@@ -48,7 +81,8 @@ stages:
       # succeeded Start_Pod stage un-rerun, so the retry would find no agent.
       - stage: GPU_Test_${{ pair.key }}
         displayName: "GPU Test ${{ pair.value.PART }}"
-        dependsOn: []
+        dependsOn: Wait_CPU_UT
+        condition: and(succeeded(), eq(dependencies.Wait_CPU_UT.outputs['Gate.gate.RUN_GPU'], 'true'))
         jobs:
           - job: Start_Pod_Job
             displayName: "Launch Pod ${{ pair.value.PART }}"
