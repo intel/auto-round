@@ -847,6 +847,21 @@ class TestBuildMxfpConfig:
         assert cfg["config_groups"]["group_0"]["format"] == expected_format
 
     @require_compressed_tensors
+    def test_bf16_default_nvfp4_override_llmc_group_format(self):
+        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
+        layer = "model.layers.0.self_attn.q_proj"
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={layer: {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}},
+            quantized_layers=[layer],
+            ignored_layers=[],
+            format="llm_compressor",
+        )
+
+        assert cfg["format"] == "nvfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["format"] == "nvfp4-pack-quantized"
+
+    @require_compressed_tensors
     def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
         default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
         layer_config = {

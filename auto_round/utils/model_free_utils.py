@@ -3674,6 +3674,7 @@ def _build_quantization_config(
             qconfig = qconfig_obj.to_dict()
             qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = "nvfp4-pack-quantized"
+            qconfig["config_groups"]["group_0"]["format"] = qconfig["format"]
         qconfig.update(_get_llm_compressor_metadata())
         return _normalize_expert_groups(_ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers))
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
