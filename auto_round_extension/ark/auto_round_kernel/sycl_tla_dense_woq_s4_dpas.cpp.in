@@ -53,7 +53,9 @@ void run_m4_n128_k64_split4(sycl::queue* queue, const void* activations, const v
   const sycl::range<3> groups(gemm_n / 128, 1, splits);
   const sycl::ext::oneapi::experimental::properties props{
       sycl::ext::oneapi::experimental::sub_group_size<16>, sycl::ext::intel::experimental::grf_size<256>};
-  compat::set_default_queue(*queue);
+  if (compat::get_default_queue() != *queue) {
+    compat::set_default_queue(*queue);
+  }
   const auto submit_partials = [&](auto group) {
     constexpr int group_k = decltype(group)::value;
     queue->submit([&](sycl::handler& handler) {

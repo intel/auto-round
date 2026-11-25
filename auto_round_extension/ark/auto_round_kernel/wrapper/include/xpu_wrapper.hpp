@@ -562,7 +562,7 @@ class XpuWrapper {
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   static constexpr size_t kWoqS4DpasMaxM = 128;
-  static constexpr int kWoqS4SplitK4MaxN = 16384;
+  static constexpr int kWoqS4SplitK4MaxN = 65536;
   static constexpr size_t kWoqS4SplitK4ScratchLoc = 15;
 
   static inline bool woq_s4_dpas_group_size_ok(int group_size) {

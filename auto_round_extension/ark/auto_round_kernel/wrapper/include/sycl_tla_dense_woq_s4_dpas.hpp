@@ -646,7 +646,9 @@ void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
                                  const int gemm_m,
                                  const int gemm_n,
                                  const int gemm_k) {
-  compat::set_default_queue(stream);
+  if (compat::get_default_queue() != stream) {
+    compat::set_default_queue(stream);
+  }
 
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
   auto op = XE_DPAS_TT<8, float, ElementA_non_CV, ElementA_non_CV>{};
