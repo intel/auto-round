@@ -5,6 +5,7 @@ from collections.abc import Mapping
 import pytest
 
 from .fixtures import *
+from .helpers import noop_torch_compile
 
 # Easy debugging without installing auto-round.
 sys.path.insert(0, "..")
@@ -145,4 +146,4 @@ def disable_torch_compile_by_default(request, monkeypatch):
     except Exception:
         return
 
-    monkeypatch.setattr(torch, "compile", lambda function, *args, **kwargs: function, raising=False)
+    monkeypatch.setattr(torch, "compile", noop_torch_compile, raising=False)
