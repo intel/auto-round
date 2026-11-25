@@ -148,7 +148,12 @@ def finalize_llmcompressor_config_names(
     ignored = list(qconfig.get("ignore") or []) + [
         revert(n) for n in ignored_layers + collect_fused_expert_modules(model) if not n.startswith("re:")
     ]
-    return ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+    qconfig = ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+    top_format = qconfig.get("format")
+    for group in (qconfig.get("config_groups") or {}).values():
+        if isinstance(group, dict) and group.get("format") is None and top_format != "mixed-precision":
+            group["format"] = top_format
+    return qconfig
 
 
 def collect_fused_expert_modules(model: torch.nn.Module) -> list[str]:
