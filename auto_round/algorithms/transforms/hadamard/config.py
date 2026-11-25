@@ -138,8 +138,7 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self, **data: Any) -> None:
-        """Initialize the config after rejecting quantization scheme arguments
-        """
+        """Initialize the config after rejecting quantization scheme arguments"""
         from auto_round.algorithms.quantization.config import QuantizationConfig
 
         QuantizationConfig.reject_scheme_arguments(data)
