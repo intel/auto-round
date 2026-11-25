@@ -40,6 +40,17 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_NVFP_ACT_AMAX_ALPHA
+- **Description**: Multiplier applied to the NVFP static activation amax when it is collected during calibration; the activation global scale is then derived directly from that amax (`global_scale = scale_max * FLOAT4_E2M1_MAX / amax`). A larger alpha lowers the global scale so that outliers stay representable in the block scales. Weight amax and the KV-cache amax are not affected.
+- **Default**: `1`
+- **Valid Values**: A positive finite float (for example `1.5`、`2`、`2.5`). Values such as `0`, negative numbers, `nan`, `inf`, `auto`, an empty value, or non-numeric strings raise `ValueError`.
+- **Usage**: Applies only to input/activation global scales; weight global scales are unchanged. Increasing alpha lowers the global scale and narrows the effective range available to the FP8 block scales. For the NVFP4 E4M3FN scale, alpha=2 lowers the maximum scale from 448 to about 224. Scale encodings above this limit remain representable, but that range is reserved for outliers and may waste capacity that could otherwise represent other scales. In NVFP4 quantization tests on DeepSeek-V3.2 MoE, alpha=2 significantly improved AIME25 accuracy, while at alpha=4 GPQA accuracy began to decline. For standard NVFP4, start with alpha=2 and validate against the target datasets; NVFP4_E5M3_GS uses the wider dynamic range of UE5M3 block scales, so larger values can be explored after validation.
+
+```bash
+export AR_NVFP_ACT_AMAX_ALPHA=1     # default
+export AR_NVFP_ACT_AMAX_ALPHA=2     # increase activation amax headroom
+```
+
 ### AR_DISABLE_DEFAULT_SHARED_LAYERS
 - **Description**: Disables AutoScheme's default sharing of one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, MLA `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). A fused kernel can only apply one scheme, so sharing is enabled by default. Equivalent to `AutoScheme(default_shared_layers=False)` and the CLI flag `--disable_default_shared_layers`.
 - **Default**: `False` (equivalent to `"0"`)
