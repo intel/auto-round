@@ -20,6 +20,7 @@ from .helpers import (
     gptj_name_or_path,
     lamini_name_or_path,
     make_tiny_qwen3_omni_moe_config,
+    noop_torch_compile,
     opt_name_or_path,
     phi2_name_or_path,
     qwen2_5_omni_name_or_path,
@@ -528,7 +529,7 @@ def mock_fp8_capable_device():
     from unittest.mock import patch
 
     with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch(
-        "torch.compile", side_effect=lambda function, *args, **kwargs: function
+        "torch.compile", side_effect=noop_torch_compile
     ):
         yield
 

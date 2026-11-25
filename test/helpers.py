@@ -15,6 +15,19 @@ from auto_round.utils import diffusion_load_model, get_attr, get_major_device, l
 transformers_version = version.parse(transformers.__version__)
 
 
+def noop_torch_compile(model=None, *args, **kwargs):
+    """Stand-in for ``torch.compile`` that returns the callable unchanged.
+
+    Mirrors the real signature, which is both a decorator and a decorator
+    factory. Supporting the factory form (``@torch.compile(dynamic=True)``)
+    matters for third-party modules that use it at import time and would
+    otherwise fail with a ``TypeError`` while the no-op patch is active.
+    """
+    if model is None:
+        return lambda fn: fn
+    return model
+
+
 def _raise_threaded_packing(*args, **kwargs):
     raise AssertionError("Packing should not create a thread pool or call threadpoolctl.")
 

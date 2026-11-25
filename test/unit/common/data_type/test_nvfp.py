@@ -46,6 +46,7 @@ from auto_round.data_type.nvfp import (
     opt_rtn_nvfp4_v2_gs,
     ref_fp4_quant,
     ref_nvfp4_quant,
+    rtn_nv_fp4_with_static_gs,
     search_nvfp4_scale,
     search_nvfp4_v2_scale,
 )
@@ -194,6 +195,42 @@ class TestCalculateGparam:
         g = calculate_gparam(t)
         expected = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / 4.0
         assert g.item() == pytest.approx(expected, rel=1e-5)
+
+    @pytest.mark.parametrize("amax", [0.0, 1e-40, 1e-37, 1e-36])
+    @pytest.mark.parametrize("scale_max", [FLOAT8_E4M3_MAX, FLOAT8_UE5M3_MAX])
+    def test_degenerate_amax_keeps_global_scale_invertible(self, amax, scale_max):
+        tensor = torch.tensor([amax], requires_grad=True)
+        scale = calculate_gparam(tensor, scale_max=scale_max)
+        assert scale.item() == 1.0
+        assert torch.isfinite(scale.reciprocal()).all()
+        scale.backward()
+        assert torch.equal(tensor.grad, torch.zeros_like(tensor))
+
+    @pytest.mark.parametrize("amax", [float("nan"), float("inf"), -float("inf")])
+    def test_nonfinite_statistics_are_rejected(self, amax):
+        with pytest.raises(ValueError, match="finite amax"):
+            calculate_gparam(amax)
+
+    def test_regular_amax_preserves_original_rounding(self):
+        for amax in torch.tensor([1e-30, 0.001, 0.37, 5.78125, 16.0, 1000.0]):
+            expected = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(amax)
+            assert torch.equal(calculate_gparam(amax), expected)
+
+    @pytest.mark.parametrize("quantizer", [nv_fp4, nv_fp4_rtn, nv_fp4_with_static_gs, rtn_nv_fp4_with_static_gs])
+    @pytest.mark.parametrize("amax", [0.0, 1e-40])
+    def test_degenerate_qdq_stays_finite(self, quantizer, amax):
+        tensor = torch.full((2, 16), amax, dtype=torch.float32)
+        quantized, scale, _ = quantizer(tensor)
+        assert torch.isfinite(quantized).all()
+        assert torch.isfinite(scale).all()
+        assert torch.equal(quantized, torch.zeros_like(quantized))
+
+    @pytest.mark.enable_torch_compile
+    def test_global_scale_supports_fullgraph_compile(self):
+        compiled = torch.compile(calculate_gparam, backend="eager", fullgraph=True)
+        for value in (0.0, 1e-40, 0.37):
+            tensor = torch.tensor([value])
+            torch.testing.assert_close(compiled(tensor), calculate_gparam(tensor), rtol=0, atol=0)
 
 
 # ---------------------------------------------------------------------------

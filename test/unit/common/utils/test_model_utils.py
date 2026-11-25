@@ -267,6 +267,12 @@ class TestGetExpertLinearNames:
         result = get_expert_linear_names(mock_module)
         assert result == ["gate_proj", "down_proj", "up_proj"]
 
+    @pytest.mark.parametrize("name", ["Qwen3_5MoeSparseMoeBlock", "LinearQwen3_5MoeSparseMoeBlock"])
+    def test_qwen35_expert_linear_names(self, name):
+        from auto_round.utils.model import get_expert_linear_names
+
+        assert get_expert_linear_names(type(name, (torch.nn.Module,), {})()) == ["gate_proj", "down_proj", "up_proj"]
+
     def test_mixtral_moe_expert_linear_names(self):
         """Test get_expert_linear_names with Mixtral MoE module."""
         from auto_round.utils.model import get_expert_linear_names
@@ -315,6 +321,12 @@ class TestGetExpertInputProjNames:
         mock_module.__class__.__name__ = "Qwen3MoeSparseMoeBlock"
         result = get_expert_input_proj_names(mock_module)
         assert result == ["gate_proj", "up_proj"]
+
+    @pytest.mark.parametrize("name", ["Qwen3_5MoeSparseMoeBlock", "LinearQwen3_5MoeSparseMoeBlock"])
+    def test_qwen35_input_proj_names(self, name):
+        from auto_round.utils.model import get_expert_input_proj_names
+
+        assert get_expert_input_proj_names(type(name, (torch.nn.Module,), {})()) == ["gate_proj", "up_proj"]
 
     def test_mixtral_moe_input_proj_names(self):
         """Test get_expert_input_proj_names with Mixtral MoE module."""

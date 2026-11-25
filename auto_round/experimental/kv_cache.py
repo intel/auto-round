@@ -17,6 +17,7 @@
 
 
 import contextlib
+import inspect
 from enum import Enum
 from functools import partial
 from typing import Any
@@ -139,6 +140,7 @@ class QuantizedKVParameterCache(DynamicCache):
         value_states: torch.Tensor,
         layer_idx: int,
         cache_kwargs: dict[str, Any] | None = None,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
@@ -336,12 +338,12 @@ def calibrate_kv_cache_input_hook(
     kv_cache to singleton QuantizedKVParameterCache.
     """
     kv_cache = module.kv_cache
-    #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
-    # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
-    if "past_key_values" in kwargs:
-        kwargs["past_key_values"] = kv_cache
-    else:
-        kwargs["past_key_value"] = kv_cache
+    # transformers renamed `past_key_value` -> `past_key_values` (4.55.2) -> `cache` (5.24).
+    cache_key = next((key for key in ("cache", "past_key_values") if key in kwargs), None)
+    if cache_key is None:
+        params = inspect.signature(module.forward).parameters
+        cache_key = next((key for key in ("cache", "past_key_values") if key in params), "past_key_value")
+    kwargs[cache_key] = kv_cache
     kwargs["use_cache"] = False
     return args, kwargs
 

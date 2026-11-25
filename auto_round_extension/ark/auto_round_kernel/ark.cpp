@@ -33,6 +33,7 @@ typedef uintptr_t torch_ptr;
 #include "xpu_mxfp4_hadamard_xmx.hpp"
 // Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
+#include "sparse_execution_schedule.hpp"
 #endif
 #else
 #include "ark/cpu/sdpa.h"
@@ -539,7 +540,8 @@ static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_
                               int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
                               int o_stride_h, int o_stride_b, int q_dtype, int batch, int num_heads_q,
                               int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-                              bool is_causal) {
+                              bool is_causal, torch_ptr execution_schedule, torch_ptr execution_schedule_rounds,
+                              int execution_schedule_max_rounds, torch_ptr k_block_valid) {
   if (q_dtype != (int)FlashAttnDtype::FP16 && q_dtype != (int)FlashAttnDtype::BF16) {
     throw std::invalid_argument("ark::block_sparse_sdpa: q_dtype must be FP16 or BF16");
   }
@@ -552,11 +554,22 @@ static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_
   auto matches_block_size = [](int seq_len, int num_blocks, int block_size) {
     return block_size > 0 && num_blocks == ((seq_len + block_size - 1) / block_size);
   };
-  const bool key_block_is_64 = matches_block_size(seq_len_kv, num_k_blocks, 64);
-  if (!key_block_is_64) {
-    throw std::invalid_argument("ark::block_sparse_sdpa: only key block size 64 is supported");
-  }
   const bool is_bf16 = (q_dtype == (int)FlashAttnDtype::BF16);
+  const bool query_block_is_128 = head_dim == 128 && is_bf16 && !is_causal && !mask &&
+                                  q_tile_override == 128 && matches_block_size(seq_len_q, num_q_blocks, 128);
+  const bool key_block_is_64 = matches_block_size(seq_len_kv, num_k_blocks, 64);
+  if (!key_block_is_64 &&
+      !(query_block_is_128 && matches_block_size(seq_len_kv, num_k_blocks, 128))) {
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: key block size must be 64, or 128 with non-causal, unmasked BF16 Q128 routing");
+  }
+  if (k_block_valid && !key_block_is_64) {
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: k_block_valid requires a 64-token key block grid");
+  }
+  if ((execution_schedule || execution_schedule_rounds) && !is_bf16) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: execution schedules are currently BF16-only");
+  }
   if (head_dim == 64) {
     if (!matches_block_size(seq_len_q, num_q_blocks, 64)) {
       throw std::invalid_argument("ark::block_sparse_sdpa: head_dim=64 requires query block size 64");
@@ -567,18 +580,30 @@ static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_
           (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
           q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
           v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-          seq_len_kv, head_dim, softmax_scale, is_causal);
+          seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
     } else {
       ark::sdpa_impl_fp16_sparse_sdpa_d64(
           (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
           (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
           q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
           v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-          seq_len_kv, head_dim, softmax_scale, is_causal);
+          seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
     }
     return;
   }
   if (head_dim == 128) {
+    if (query_block_is_128) {
+      if (execution_schedule || execution_schedule_rounds) {
+        throw std::invalid_argument("ark::block_sparse_sdpa: Q128 routing does not support execution schedules");
+      }
+      ark::sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, nullptr, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, false, 128, (void*)k_block_valid);
+      return;
+    }
     if (matches_block_size(seq_len_q, num_q_blocks, 256)) {
       if (q_tile_override != 256) {
         throw std::invalid_argument(
@@ -590,36 +615,91 @@ static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_
             (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
             q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
             v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-            seq_len_kv, head_dim, softmax_scale, is_causal);
+            seq_len_kv, head_dim, softmax_scale, is_causal, 256, (int const*)execution_schedule,
+            (int const*)execution_schedule_rounds, execution_schedule_max_rounds, (void*)k_block_valid);
       } else {
         ark::sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
             (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
             (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
             q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
             v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-            seq_len_kv, head_dim, softmax_scale, is_causal);
+            seq_len_kv, head_dim, softmax_scale, is_causal, 256, (void*)k_block_valid);
       }
       return;
     }
     if (matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      if (q_tile_override == 512) {
+        if (!is_bf16) {
+          throw std::invalid_argument("ark::block_sparse_sdpa: q_tile_override=512 is BF16-only");
+        }
+        ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+            q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+            v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+            num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64,
+            (int const*)execution_schedule, (int const*)execution_schedule_rounds,
+            execution_schedule_max_rounds, (void*)k_block_valid);
+        return;
+      }
+      if (q_tile_override == 256) {
+        if (is_bf16) {
+          ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64,
+              (int const*)execution_schedule, (int const*)execution_schedule_rounds,
+              execution_schedule_max_rounds, (void*)k_block_valid);
+        } else {
+          ark::sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        }
+        return;
+      }
+      if (q_tile_override == 128) {
+        if (is_bf16) {
+          ark::sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        } else {
+          ark::sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        }
+        return;
+      }
       if (is_bf16) {
         ark::sdpa_impl_bf16_sparse_sdpa_row_linear(
             (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
             (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
             q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
             v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-            seq_len_kv, head_dim, softmax_scale, is_causal);
+            seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
       } else {
         ark::sdpa_impl_fp16_sparse_sdpa_row_linear(
             (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
             (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
             q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
             v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
-            seq_len_kv, head_dim, softmax_scale, is_causal);
+            seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
       }
       return;
     }
-    throw std::invalid_argument("ark::block_sparse_sdpa: head_dim=128 supports query block sizes 64 and 256 only");
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: head_dim=128 supports query block sizes 64 and 256, "
+        "or 128 for non-causal, unmasked BF16");
   }
   throw std::invalid_argument("ark::block_sparse_sdpa: unsupported head_dim; supported values are 64 and 128");
 }
@@ -1678,7 +1758,33 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
-  m.def("block_sparse_sdpa", &ark::block_sparse_sdpa);
+  m.def("block_sparse_sdpa", &ark::block_sparse_sdpa, pybind11::arg("stream"), pybind11::arg("Q"),
+        pybind11::arg("K"), pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("lut"), pybind11::arg("valid_block_num"), pybind11::arg("num_q_blocks"),
+        pybind11::arg("num_k_blocks"), pybind11::arg("q_tile_override"), pybind11::arg("q_stride_s"),
+        pybind11::arg("q_stride_d"), pybind11::arg("q_stride_h"), pybind11::arg("q_stride_b"),
+        pybind11::arg("k_stride_s"), pybind11::arg("k_stride_d"), pybind11::arg("k_stride_h"),
+        pybind11::arg("k_stride_b"), pybind11::arg("v_stride_d"), pybind11::arg("v_stride_s"),
+        pybind11::arg("v_stride_h"), pybind11::arg("v_stride_b"), pybind11::arg("o_stride_s"),
+        pybind11::arg("o_stride_d"), pybind11::arg("o_stride_h"), pybind11::arg("o_stride_b"),
+        pybind11::arg("q_dtype"), pybind11::arg("batch"), pybind11::arg("num_heads_q"),
+        pybind11::arg("num_heads_kv"), pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("execution_schedule") = 0, pybind11::arg("execution_schedule_rounds") = 0,
+        pybind11::arg("execution_schedule_max_rounds") = 0, pybind11::arg("k_block_valid") = 0);
+  // Capability flags so Python can tell what this compiled extension supports
+  // without relying on private helpers or docstring parsing.
+  m.attr("ARK_BLOCK_SPARSE_K_BLOCK_VALID") = pybind11::bool_(true);
+  m.attr("ARK_BLOCK_SPARSE_Q256_MULTIROW") = pybind11::bool_(true);
+  m.def("build_sparse_execution_schedule", &ark::build_sparse_execution_schedule,
+        "Build a round-based multirow execution schedule.\n\n"
+        "execution_schedule must be [batch, heads, q_groups, rows_per_group, max_rounds]. "
+        "A negative entry in execution_schedule_rounds means the routing row needed more than "
+        "max_rounds rounds; callers must treat that as a build failure.", pybind11::arg("stream"),
+        pybind11::arg("lut"), pybind11::arg("valid_block_num"), pybind11::arg("execution_schedule"),
+        pybind11::arg("execution_schedule_rounds"), pybind11::arg("batch"), pybind11::arg("num_heads"),
+        pybind11::arg("num_q_blocks"), pybind11::arg("num_k_blocks"), pybind11::arg("rows_per_group"),
+        pybind11::arg("max_rounds"));
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
