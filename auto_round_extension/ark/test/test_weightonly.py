@@ -256,7 +256,7 @@ def test_xpu_scratch_allocation_raises_oom(slot, warmup_bytes):
     if warmup_bytes:
         assert allocate_scratch(stream.sycl_queue, warmup_bytes, slot) != 0
 
-    with pytest.raises(torch.OutOfMemoryError):
+    with pytest.raises(torch.OutOfMemoryError, match="ARK XPU scratch allocation failed"):
         allocate_scratch(stream.sycl_queue, 1 << 60, slot)
 
 
@@ -270,7 +270,7 @@ def test_xpu_scratch_retry_after_growth_oom():
     slot = 1
     assert allocate_scratch(queue, 128, slot) != 0
 
-    with pytest.raises(torch.OutOfMemoryError):
+    with pytest.raises(torch.OutOfMemoryError, match="ARK XPU scratch allocation failed"):
         allocate_scratch(queue, 1 << 60, slot)
 
     assert allocate_scratch(queue, 256, slot) != 0
