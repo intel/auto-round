@@ -26,6 +26,7 @@ repos:
         args:
           [
             --license-filepath=.github/license_template.txt,
+            --comment-style=#,
             --use-current-year,
             --detect-license-in-X-top-lines=40,
             --skip-license-insertion-comment=Copyright,
