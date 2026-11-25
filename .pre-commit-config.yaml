@@ -30,6 +30,17 @@ repos:
             --detect-license-in-X-top-lines=40,
             --skip-license-insertion-comment=Copyright,
           ]
+      - id: insert-license
+        name: insert-license (c/c++)
+        files: ^(auto_round|auto_round_extension)/.*\.(c|cc|cpp|cxx|h|hh|hpp|cu|cuh)$
+        args:
+          [
+            --license-filepath=.github/license_template.txt,
+            --comment-style=//,
+            --use-current-year,
+            --detect-license-in-X-top-lines=40,
+            --skip-license-insertion-comment=Copyright,
+          ]
 
   - repo: https://github.com/psf/black-pre-commit-mirror
     rev: 26.10.0
