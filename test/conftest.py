@@ -5,7 +5,6 @@ from collections.abc import Mapping
 import pytest
 
 from .fixtures import *
-from .helpers import noop_torch_compile
 
 # Easy debugging without installing auto-round.
 sys.path.insert(0, "..")
