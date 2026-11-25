@@ -13,18 +13,21 @@
 # limitations under the License.
 """Tests for ``AR_NVFP_ACT_AMAX_ALPHA``, which scales the collected NVFP activation amax."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
 import torch
+from safetensors import safe_open
 
-from auto_round import envs
+from auto_round import AutoRound, envs
 from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.quantization.utils import register_act_max_hooks as register_alternate_act_max_hooks
 from auto_round.data_type.utils import register_act_max_hooks
 from auto_round.experimental.kv_cache import QuantizedKVParameterCache
 
 ENV_NAME = "AR_NVFP_ACT_AMAX_ALPHA"
+LAYER_PREFIX = "model.decoder.layers.0.self_attn.q_proj"
 
 
 @pytest.fixture(autouse=True)
@@ -134,3 +137,43 @@ def test_kv_amax_is_not_scaled(monkeypatch):
     assert cache.k_amax[0].item() == pytest.approx(3.0)
     assert cache.v_amax[0].item() == pytest.approx(5.0)
     cache.reset()
+
+
+def _read_exported_scales(model_dir):
+    names = {f"{LAYER_PREFIX}.input_global_scale", f"{LAYER_PREFIX}.weight_global_scale"}
+    tensors = {}
+    for file_name in os.listdir(model_dir):
+        if not file_name.endswith(".safetensors"):
+            continue
+        with safe_open(os.path.join(model_dir, file_name), framework="pt") as model_file:
+            for name in names.intersection(model_file.keys()):
+                tensors[name] = model_file.get_tensor(name)
+    assert set(tensors) == names
+    return tensors
+
+
+def test_nvfp_act_amax_alpha_scales_exported_input_global_scale_only(
+    tiny_opt_model_path, dataloader, tmp_path, monkeypatch
+):
+    def quantize_and_export(output_dir):
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            scheme="NVFP4_E5M3_GS",
+            iters=0,
+            seqlen=8,
+            nsamples=2,
+            dataset=dataloader,
+        )
+        _, model_dir = autoround.quantize_and_save(str(output_dir), format="auto_round")
+        return _read_exported_scales(model_dir)
+
+    monkeypatch.setenv(ENV_NAME, "1")
+    default_scales = quantize_and_export(tmp_path / "default")
+
+    monkeypatch.setenv(ENV_NAME, "2")
+    alpha_two_scales = quantize_and_export(tmp_path / "alpha_two")
+
+    input_scale_key = f"{LAYER_PREFIX}.input_global_scale"
+    weight_scale_key = f"{LAYER_PREFIX}.weight_global_scale"
+    torch.testing.assert_close(alpha_two_scales[input_scale_key], default_scales[input_scale_key] / 2)
+    torch.testing.assert_close(alpha_two_scales[weight_scale_key], default_scales[weight_scale_key])
