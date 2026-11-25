@@ -246,6 +246,36 @@ def test_xpu_int4_woq_scratch_growth():
             torch.testing.assert_close(output, torch.full_like(output, value), rtol=0.01, atol=0)
 
 
+@pytest.mark.parametrize("slot, warmup_bytes", [(2, 0), (1, 128)], ids=["initial", "growth"])
+def test_xpu_scratch_allocation_raises_oom(slot, warmup_bytes):
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    stream = torch.xpu.Stream()
+    allocate_scratch = ark.xpu_lib._debug_xpu_pool_scratch_ptr
+    if warmup_bytes:
+        assert allocate_scratch(stream.sycl_queue, warmup_bytes, slot) != 0
+
+    with pytest.raises(torch.OutOfMemoryError):
+        allocate_scratch(stream.sycl_queue, 1 << 60, slot)
+
+
+def test_xpu_scratch_retry_after_growth_oom():
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    stream = torch.xpu.Stream()
+    queue = stream.sycl_queue
+    allocate_scratch = ark.xpu_lib._debug_xpu_pool_scratch_ptr
+    slot = 1
+    assert allocate_scratch(queue, 128, slot) != 0
+
+    with pytest.raises(torch.OutOfMemoryError):
+        allocate_scratch(queue, 1 << 60, slot)
+
+    assert allocate_scratch(queue, 256, slot) != 0
+
+
 @pytest.mark.skipif(
     os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
     reason="Skipped because ARK_DNNL is not enabled in environment variables",
