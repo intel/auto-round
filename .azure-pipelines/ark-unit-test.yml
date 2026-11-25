@@ -11,6 +11,7 @@ pr:
     include:
       - auto_round_extension/ark/**
       - .azure-pipelines/template/lib-build-template.yml
+      - .azure-pipelines/scripts/ut/run_ark_ut.sh
     exclude:
       - "*.md"
       - "**/*.md"
@@ -78,7 +79,6 @@ stages:
                   script: |
                     source ${HOME}/miniforge3/etc/profile.d/conda.sh
                     set -eo pipefail
-                    cd auto_round_extension/ark
                     CONDA_ENV="$(condaName)"
                     PYTHON_VERSION="${{ trim(pythonVersion) }}"
                     TORCH_VERSION="${{ trim(torchVersion) }}"
@@ -88,18 +88,11 @@ stages:
                     conda install pip -y
                     pip install uv
                     uv pip install torch=="${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/xpu
-                    uv pip install $(Build.SourcesDirectory)/ark_wheel/*.whl
-                    uv pip install pytest pandas
                     export LD_LIBRARY_PATH=${CONDA_PREFIX}/lib:$LD_LIBRARY_PATH
                     export ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK}
 
-                    echo -e "[pytest]\ntestpaths = .\n" > ./test/pytest.ini
-                    cat ./test/pytest.ini
-                    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" pytest -v ./test | tee kernel_ut.log 2>&1
-                    if [ $(grep -c "ERROR" kernel_ut.log) != 0 ];then
-                        echo "Find errors in UT test, please check the output..."
-                        exit 1
-                    fi
+                    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+                      bash .azure-pipelines/scripts/ut/run_ark_ut.sh
 
   - stage: PublishDist
     displayName: Publish dist (${{ parameters.publishTarget }})

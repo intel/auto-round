@@ -1,24 +1,31 @@
 #!/bin/bash
 set -e
 
-source /auto-round/.azure-pipelines/scripts/change_color.sh
+REPO_DIR=${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
+ARK_DIR=${REPO_DIR}/auto_round_extension/ark
+
+source ${REPO_DIR}/.azure-pipelines/scripts/change_color.sh
 
 function setup_environment() {
     echo "##[group]set up ARK UT env..."
-    cd /auto-round/auto_round_extension/ark
+    cd ${ARK_DIR}
     uv pip install -r requirements.txt
-    uv pip install /auto-round/ark_wheel/*.whl --no-deps
+    uv pip install ${REPO_DIR}/ark_wheel/*.whl --no-deps
     uv pip install pytest pytest-timeout pandas
     uv pip list
     echo "##[endgroup]"
 
-    LOG_DIR=/auto-round/log_dir
+    # Isolate from the repo-level pytest config.
+    echo -e "[pytest]\ntestpaths = .\n" > ./test/pytest.ini
+
+    LOG_DIR=${REPO_DIR}/log_dir
     mkdir -p ${LOG_DIR}
+    rm -f ${LOG_DIR}/unittest_ark_*.log
     SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 }
 
 function run_unit_test() {
-    cd /auto-round/auto_round_extension/ark
+    cd ${ARK_DIR}
 
     for test_file in $(find ./test -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
