@@ -13,20 +13,23 @@
 # limitations under the License.
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache, wraps
+from types import SimpleNamespace
 from typing import Any
 
 import torch
 import transformers
 from packaging import version
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
+from auto_round.utils.regex import matches_any_regex, to_standard_regex  # noqa: F401
 
 
 def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "<idx>") -> str:
@@ -100,8 +103,8 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    # Prefer AR_WORKSPACE environment variable for cache location when provided.
-    ar_workspace = os.environ.get("AR_WORKSPACE")
+    # Prefer the documented AR_WORK_SPACE (or the legacy AR_WORKSPACE) for the cache location when set.
+    ar_workspace = os.environ.get("AR_WORK_SPACE") or os.environ.get("AR_WORKSPACE")
     if ar_workspace:
         cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
     else:
@@ -124,7 +127,7 @@ def download_audiocaps_csv():
         logger.info(f"AudioCaps dataset cached at: {cache_file}")
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to download AudioCaps from {url}: {e}") from e
-    except IOError as e:
+    except OSError as e:
         raise RuntimeError(f"Failed to write AudioCaps cache to {cache_file}: {e}") from e
 
     return cache_file
@@ -144,7 +147,7 @@ TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
-class LazyImport(object):
+class LazyImport:
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
@@ -405,7 +408,7 @@ def monkey_patch_transformers():
     if parsed_version >= version.parse("5.0.0"):
         from transformers.initialization import no_init_weights
 
-        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+        transformers.modeling_utils.no_init_weights = no_init_weights
     if parsed_version >= version.parse("5.2.0"):
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
@@ -417,10 +420,25 @@ def monkey_patch_transformers():
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
     _patch_nvfp4_e5m3_compressed_tensors_quantizer()
+    _patch_qwen4_exp_qsa_indexer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_qwen4_exp_qsa_indexer():
+    """Vectorize the Qwen4-Exp / Qwen3.8-Flash-Next QSA indexer.
+
+    The upstream indexer walks every (batch, query) pair in Python and issues a
+    handful of tiny kernels per token, so the full-attention blocks of
+    Qwen3.8-Flash-Next take minutes each during tuning. See
+    ``auto_round/modeling/qwen4_exp_qsa.py`` and intel/auto-round#2323.
+    """
+    from auto_round.modeling.qwen4_exp_qsa import patch_qwen4_exp_indexer
+
+    if patch_qwen4_exp_indexer():
+        logger.debug("Applied vectorized QSA indexer patch for Qwen4-Exp.")
 
 
 def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
@@ -437,7 +455,10 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
 
     def is_nvfp4_e5m3(self):
         compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
-        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+        return getattr(compression_config, "format", None) in (
+            "nvfp4-e5m3-pack-quantized",
+            "nvfp4-e5m3-gs-pack-quantized",
+        )
 
     def patched_before(self, model, **kwargs):
         if not is_nvfp4_e5m3(self):
@@ -445,7 +466,9 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
         from auto_round.inference.convert_model import convert_hf_model
 
         model.config.quantization_config = self.compressor.quantization_config
-        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        from auto_round.utils.device_manager import get_major_device
+
+        target_device = get_major_device()
         model, _ = convert_hf_model(model, target_device=target_device)
         self.run_compressed = True
         return model
@@ -704,36 +727,22 @@ htcore = LazyImport("habana_frameworks.torch.core")
 
 
 class SupportedFormats:
+    """Live view of public registered formats and GGUF configuration aliases."""
 
-    def __init__(self):
-        self._support_format = (
-            "auto_round",
-            "auto_gptq",
-            "auto_awq",
-            "auto_round:auto_gptq",
-            "auto_round:gptqmodel",
-            "auto_round:auto_awq",
-            "auto_round:llm_compressor",
-            "fake",
-            "llm_compressor",
-            "fp8",
-            "auto_round:fp8",
-            "mlx",
-            "auto_round:mlx",
-            "svdquant_nunchaku",
-        )
-        self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
-        self._support_list = self._support_format + self._gguf_format
+    @staticmethod
+    def _names():
+        from auto_round.export.registry import public_format_names
+
+        return public_format_names()
 
     def __contains__(self, key):
-        return True if key in self._support_list else False
+        return key in self._names()
 
     def __str__(self):
-        # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-        return "(%s)" % ", ".join(self._support_list)
+        return f"({', '.join(self._names())})"
 
     def __getitem__(self, key):
-        return self._support_list[key]
+        return self._names()[key]
 
 
 SHARED_CACHE_KEYS = ("position_ids", "cache_position", "position_embeddings", "cu_seqlens")
@@ -873,89 +882,6 @@ def flatten_list(nested_list):
     return flattened
 
 
-def to_standard_regex(pattern: str) -> str:
-    """
-    Convert a user-specified string into a standardized regex for layer matching.
-
-    Rules:
-    - If the pattern already contains regex tokens ('.*', '^', '$', etc.),
-      keep them as-is.
-    - Otherwise, wrap the pattern with `.*` on both sides to allow substring matching.
-    - Always ensure the returned regex is valid (compilable by re).
-
-    Examples:
-    >>> to_standard_regex("model.embed_tokens")
-    '.*model\\.embed_tokens.*'
-    >>> to_standard_regex("mlp.gate")
-    '.*mlp\\.gate.*'
-    >>> to_standard_regex("mlp.gate$")
-    '.*mlp\\.gate$'
-    >>> to_standard_regex("mlp.*gate")
-    '.*mlp.*gate.*'
-    """
-    # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
-    has_regex = any(tok in pattern for tok in meta_chars)
-    if not has_regex:
-        # Escape literal dots, etc., and wrap with .* for substring matching
-        pattern = re.escape(pattern)
-        regex = f".*{pattern}.*"
-    else:
-        # Only escape bare dots that are not already part of regex constructs
-        # Avoid double escaping .* sequences
-        tmp = []
-        i = 0
-        while i < len(pattern):
-            if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                    tmp.append(".*")  # keep regex token
-                    i += 2
-                    continue
-                else:
-                    tmp.append("\\.")  # escape bare dot
-            else:
-                tmp.append(pattern[i])
-            i += 1
-        regex = "".join(tmp)
-        # If no anchors are provided, allow substring matching
-        if not regex.startswith("^") and not regex.startswith(".*"):
-            regex = ".*" + regex
-        if not regex.endswith("$") and not regex.endswith(".*"):
-            regex = regex + ".*"
-    # Validate regex
-    try:
-        re.compile(regex)
-    except re.error as e:
-        raise ValueError(f"Invalid regex generated from pattern '{pattern}': {e}")
-    return regex
-
-
-def matches_any_regex(layer_name: str, regex_config: dict[str, dict]) -> bool:
-    """
-    Check whether `layer_name` matches any regex pattern key in `regex_config`.
-    Args:
-        layer_name (str): The layer name to test.
-        regex_config (dict[str, dict]): A mapping of regex patterns to configs.
-    Returns:
-        bool: True if any pattern matches `layer_name`, otherwise False.
-    """
-    if not regex_config:
-        return False
-
-    for pattern in regex_config:
-        # Strip dynamic prefixes (e.g., "+:" or "-:")
-        raw_pattern = pattern[2:] if pattern.startswith(("+:", "-:")) else pattern
-
-        try:
-            if re.search(raw_pattern, layer_name):
-                return True
-        except re.error as e:
-            logger.warning("Skipping invalid regex pattern %r: %s", pattern, e)
-            continue
-
-    return False
-
-
 def json_serialize(obj: Any):
     """Convert non-JSON-serializable objects into JSON-friendly formats."""
     if isinstance(obj, torch.dtype):
@@ -1080,6 +1006,8 @@ def parse_layer_config_arg(s: str) -> dict:
                 in_string = False
             escaped.append(ch)
             index += 1
+
+        return "".join(escaped)
 
     s = strip_matching_quotes(s)
 
@@ -1533,6 +1461,21 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
             preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.language_model.") and reverted_part.startswith(
+            "thinker.model.layers"
+        ):
+            # Qwen-Omni checkpoints use ``thinker.model.layers`` while newer
+            # Transformers exposes them as ``thinker.model.language_model.layers``.
+            # Keep both so runtimes can match either layout.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.") and reverted_part == original_part.replace(
+            "thinker.model.", "thinker.", 1
+        ):
+            # Vision/audio towers move between ``thinker.<tower>`` and
+            # ``thinker.model.<tower>`` across Transformers releases.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
         else:
             preserved_parts.append(reverted_part)
 
@@ -1550,7 +1493,57 @@ def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) 
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             name, n_replace = re.subn(source_pattern, target_pattern, name)
-            # Early exit of the loop
             if n_replace > 0:
-                return name
+                break
     return name
+
+
+def expand_layer_config_for_weight_renames(
+    layer_config: dict | None,
+    *,
+    model=None,
+    model_type: str | None = None,
+    to_model_names: bool,
+) -> dict:
+    """Add layer-config aliases across Transformers checkpoint renames.
+
+    Existing keys always win over generated aliases. Regular model workflows
+    use ``to_model_names=True`` because matching happens against
+    ``model.named_modules()``; model-free workflows use checkpoint-side names
+    from the source shards and therefore set it to ``False``.
+    """
+    expanded = copy.deepcopy(layer_config) if layer_config else {}
+    if not expanded:
+        return expanded
+
+    if model is None:
+        model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+
+    if to_model_names and getattr(getattr(model, "config", None), "model_type", None) == "deepseek_v4":
+        from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+        return expand_layer_config(expanded)
+
+    if to_model_names:
+        # get_reverse_checkpoint_conversion_mapping is intended.
+        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
+        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        key_mapping = {}
+        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+            if isinstance(target_patterns, str):
+                target_patterns = [target_patterns]
+            for target_pattern in target_patterns:
+                key_mapping.setdefault(target_pattern, []).append(source_pattern)
+        convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
+    else:
+        key_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)
+
+    if not key_mapping:
+        return expanded
+
+    for name, config in list(expanded.items()):
+        converted_name = convert_name(name)
+        if converted_name != name:
+            expanded.setdefault(converted_name, copy.deepcopy(config))
+    return expanded

@@ -15,7 +15,6 @@
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
-from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
@@ -31,7 +30,7 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=True,
-            help="Force plain RTN (disable optimized path).",
+            help="Force plain RTN (disable optimized path). Equivalent to `--algorithm rtn`.",
         )
         mutex.add_argument(
             "--enable_opt_rtn",
@@ -39,14 +38,26 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=False,
-            help="Force optimized RTN path.",
+            help="Force optimized RTN path. Equivalent to `--algorithm opt-rtn`.",
+        )
+        registry.add_argument(
+            "--enable_neuqi",
+            field="enable_neuqi",
+            action="store_true",
+            help=(
+                "Enable the NeUQI grid search (arXiv 2505.17595): the asymmetric zero-shot "
+                "optimized-RTN path runs a joint (scale, integer zero-point) search instead of plain "
+                "min/max, symmetric layers run the two-stage scale search, and SignRound tuning "
+                "anchors its grid to the search result (frozen init)."
+            ),
         )
 
     def __init__(
         self,
         *,
-        disable_opt_rtn: bool = None,
-        enable_opt_rtn: bool = None,
+        disable_opt_rtn: bool | None = None,
+        enable_opt_rtn: bool | None = None,
+        enable_neuqi: bool = False,
         **kwargs,
     ) -> None:
         """Initialize an RTN configuration.
@@ -56,9 +67,15 @@ class RTNConfig(QuantizationConfig):
                 ``None`` keeps the default heuristic, True forces plain
                 RTN, and False forces the optimized implementation.
             enable_opt_rtn: Convenience alias for ``disable_opt_rtn=False``.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            enable_neuqi: Opt into the NeUQI grid search (arXiv 2505.17595):
+                the asymmetric zero-shot optimized-RTN path runs a joint
+                (scale, integer zero-point) search instead of plain min/max,
+                symmetric layers run the two-stage scale search, and SignRound
+                tuning (``iters > 0``) anchors its grid to the search result
+                (frozen init). Requires the optimized path (``disable_opt_rtn``
+                not forced True). The search grid sizes are tunable via
+                ``AR_NEUQI_COARSE`` and ``AR_NEUQI_FINE``.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         super().__init__(**kwargs)
 
@@ -66,25 +83,47 @@ class RTNConfig(QuantizationConfig):
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
 
-        if disable_opt_rtn is None:  # TODO wenhuach move to AR entry
-            if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
-                logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
-                disable_opt_rtn = True
-        if disable_opt_rtn is None:
-            logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+        self.disable_opt_rtn = False if disable_opt_rtn is None else disable_opt_rtn
+
+        if enable_neuqi and disable_opt_rtn:
+            # Validate explicit policy here; the entry builder validates its scheme heuristic.
+            raise ValueError(
+                "--enable_neuqi requires the optimized-RTN path: it replaces the plain min/max "
+                "initialization with a search. Drop --disable_opt_rtn. Note "
+                "that W8A16/W8A8 schemes auto-disable the optimized path for efficiency."
             )
-            disable_opt_rtn = False
-        self.disable_opt_rtn = disable_opt_rtn
+        self.enable_neuqi = enable_neuqi
 
 
 class OptimizedRTNConfig(RTNConfig):
     need_calib = True
 
 
+#: RTN variants selectable by algorithm name, mapped to the ``disable_opt_rtn``
+#: value the name forces. ``rtn`` means plain RTN and ``opt-rtn`` the optimized
+#: path; both the CLI and the entry API resolve the names through this mapping so
+#: the name means the same thing everywhere.
+RTN_VARIANT_DISABLE_OPT_RTN = {"rtn": True, "opt-rtn": False}
+
+
+def validate_rtn_variant_names(names) -> None:
+    """Reject conflicting canonical RTN variant names before constructing configs."""
+    variants = {name for name in names if isinstance(name, str) and name in RTN_VARIANT_DISABLE_OPT_RTN}
+    if len(variants) > 1:
+        raise ValueError("Cannot select both 'rtn' and 'opt-rtn'; choose one RTN variant.")
+
+
 register_algorithm(
     "rtn",
     aliases=("rtn",),
     config_factory=RTNConfig,
-    summary="Round-To-Nearest quantization.",
+    summary="Round-To-Nearest quantization (plain, no optimized initialization).",
+)
+
+
+register_algorithm(
+    "opt-rtn",
+    aliases=("opt-rtn", "opt_rtn", "optimized_rtn", "optimized-rtn"),
+    config_factory=OptimizedRTNConfig,
+    summary="Round-To-Nearest quantization with the optimized initialization path.",
 )

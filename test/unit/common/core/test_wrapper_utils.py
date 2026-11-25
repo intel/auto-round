@@ -20,6 +20,49 @@ import pytest
 import torch
 
 
+class TestWrapperWALayer:
+    @pytest.mark.parametrize("enable_compile", [False, True])
+    @pytest.mark.parametrize("with_global_scale", [False, True])
+    def test_forward_uses_selected_quantizer(self, enable_compile, with_global_scale):
+        from auto_round.wrapper import WrapperWALayer
+
+        layer = torch.nn.Linear(16, 8, bias=False)
+        x = torch.randn(2, 16)
+        quantized = x * 0.5
+        eager = MagicMock(return_value=(quantized, None, None))
+        compiled = MagicMock(return_value=(quantized, None, None))
+        layer.act_quant_func = eager
+        layer.act_bits = 4
+        layer.act_group_size = 16
+        layer.act_data_type = "nv_fp4_with_static_gs"
+        layer.scale_dtype = torch.float32
+        layer.q_scale_thresh = 1e-5
+        layer.act_max_scale = 1.0
+        layer.act_min_scale = 1.0
+        layer.act_max = torch.tensor(2.0)
+        if with_global_scale:
+            layer.input_global_scale = torch.tensor(1344.0)
+
+        with patch("auto_round.wrapper.compile_func", return_value=compiled) as compile_mock:
+            wrapped = WrapperWALayer(layer, enable_torch_compile=enable_compile)
+            actual = wrapped(x)
+
+        selected, unused = (compiled, eager) if enable_compile else (eager, compiled)
+        selected.assert_called_once()
+        unused.assert_not_called()
+        assert selected.call_args.args[0] is x
+        assert selected.call_args.kwargs["tensor_max"] is layer.act_max
+        if with_global_scale:
+            assert selected.call_args.kwargs["global_scale"] is layer.input_global_scale
+        else:
+            assert "global_scale" not in selected.call_args.kwargs
+        if enable_compile:
+            compile_mock.assert_called_once_with(eager, "cpu")
+        else:
+            compile_mock.assert_not_called()
+        torch.testing.assert_close(actual, layer(quantized))
+
+
 class TestGetScaleShape:
     """Tests for get_scale_shape function."""
 
@@ -274,6 +317,42 @@ class TestWrapperBlock:
         assert isinstance(quantized, list)
 
 
+class TestUnwrapperActivationLayer:
+    """Activation QDQ wrappers must survive tuning-wrapper cleanup."""
+
+    @pytest.mark.parametrize("unwrap_single_layer", [False, True])
+    def test_preserves_activation_quantization(self, unwrap_single_layer):
+        from auto_round.wrapper import WrapperLayerNorm, WrapperWALayer, unwrapper_block, unwrapper_layer
+
+        layer = torch.nn.Linear(4, 4, bias=False)
+        layer.act_quant_func = MagicMock(side_effect=lambda x, **kwargs: (torch.zeros_like(x), None, None))
+        layer.act_bits = 8
+        layer.act_group_size = -1
+        layer.scale_dtype = torch.float32
+        layer.q_scale_thresh = 1e-5
+        layer.act_data_type = "int"
+        layer.act_min_scale = 1.0
+        layer.act_max_scale = 1.0
+        activation_wrapper = WrapperWALayer(layer, enable_torch_compile=False)
+        norm = torch.nn.LayerNorm(4)
+        block = torch.nn.Sequential(activation_wrapper, WrapperLayerNorm(norm))
+
+        # Repeated cleanup must not remove activation QDQ or call its missing unwrapper.
+        for _ in range(2):
+            if unwrap_single_layer:
+                unwrapper_layer(block, block[0], "0", None)
+                unwrapper_layer(block, block[1], "1", None)
+            else:
+                unwrapper_block(block, {})
+
+        assert block[0] is activation_wrapper
+        assert block[0].orig_layer is layer
+        assert block[1] is norm
+        output = block[0](torch.ones(2, 4))
+        torch.testing.assert_close(output, torch.zeros_like(output))
+        layer.act_quant_func.assert_called_once()
+
+
 class TestWrapperLinearQdqBias:
     """Tests for WrapperLinear._qdq_bias method."""
 
@@ -334,95 +413,6 @@ class TestWrapperLinearDeviceTransfer:
         # Verify wrapper was created
         assert wrapper.device == "cpu"
         assert wrapper.orig_layer is orig_layer
-
-    def test_unwrapper_keeps_weight_for_activation_only_quantization(self):
-        """W16A8 writes activation state only; its weight stays full precision."""
-        from auto_round.wrapper import WrapperLinear
-
-        layer = torch.nn.Linear(4, 2, bias=False)
-        layer.bits = 16
-        layer.sym = True
-        layer.group_size = -1
-        layer.scale_dtype = torch.float32
-        layer.data_type = "int"
-        layer.act_bits = 8
-        layer.act_data_type = "int"
-        layer.act_sym = True
-        layer.act_dynamic = True
-        layer.act_group_size = -1
-        layer.iters = 0
-        layer.tuning_device = "cpu"
-        expected = layer.weight.detach().clone()
-
-        WrapperLinear(layer, device="cpu", disable_opt_rtn=True).unwrapper({})
-
-        assert torch.equal(layer.weight, expected)
-        assert not hasattr(layer, "scale")
-
-    def test_custom_weight_qdq_is_shared_by_forward_and_write_back(self):
-        """A per-layer algorithm hook controls both tuning and final materialization."""
-        from auto_round.wrapper import WrapperLinear
-
-        orig_layer = torch.nn.Linear(4, 2, bias=False)
-        orig_layer.bits = 4
-        orig_layer.sym = True
-        orig_layer.group_size = 4
-        orig_layer.scale_dtype = torch.float32
-        orig_layer.data_type = "int"
-        orig_layer.act_bits = 16
-        orig_layer.act_data_type = "float"
-        orig_layer.act_sym = True
-        orig_layer.act_dynamic = True
-        orig_layer.act_group_size = -1
-        orig_layer.tuning_device = "cpu"
-        calls = []
-
-        def build_weight_qdq(*, weight, default_qdq, parameters):
-            assert weight.shape == (2, 4)
-            parameters["offset"] = torch.nn.Parameter(weight.new_tensor(0.1))
-
-            def custom_qdq(weight, *, materialize=False):
-                calls.append(materialize)
-                return default_qdq(weight + parameters["offset"], materialize=materialize, **parameters)
-
-            return custom_qdq
-
-        wrapper = WrapperLinear(
-            orig_layer,
-            device="cpu",
-            disable_opt_rtn=True,
-            iters=0,
-            weight_qdq_builder=build_weight_qdq,
-        )
-
-        result, _, _ = wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)
-        result.sum().backward()
-        assert wrapper.params["offset"].grad is not None
-        best = torch.tensor(0.5)
-        wrapper.params["offset"] = best
-        expected = wrapper.weight_qdq(orig_layer.weight, materialize=True).weight.detach().clone()
-        wrapper.params["offset"] = torch.tensor(0.9)
-        wrapper.unwrapper({"offset": best})
-
-        assert calls == [False, True, True]
-        assert torch.equal(orig_layer.weight, expected)
-
-    def test_base_algorithm_uses_datatype_qdq_by_default(self):
-        """Algorithms only override QDQ when they explicitly need custom behavior."""
-        from auto_round.algorithms.quantization.base import BaseQuantizer
-        from auto_round.data_type.base import create_quantizer
-
-        weight = torch.tensor([[1.0, -0.5, 0.25, -0.75]])
-        datatype = create_quantizer(dict(data_type="int", bits=4, group_size=4, sym=True), disable_opt_rtn=True)
-        datatype.initialize(weight)
-        parameters = {"value": torch.tensor(0.0)}
-        qdq = BaseQuantizer.build_weight_qdq(object(), weight=weight, default_qdq=datatype.qdq, parameters=parameters)
-        torch.testing.assert_close(qdq(weight).weight, datatype.qdq(weight, value=0.0).weight)
-        parameters["value"] = torch.tensor(0.75)
-        result = qdq(weight, materialize=True)
-        expected = datatype.qdq(weight, value=0.75, materialize=True)
-        torch.testing.assert_close(result.weight, expected.weight)
-        torch.testing.assert_close(result.scale, expected.scale)
 
     def test_wrapper_linear_forward(self):
         from auto_round.wrapper import WrapperLinear

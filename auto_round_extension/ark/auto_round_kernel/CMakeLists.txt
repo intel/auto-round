@@ -4,6 +4,9 @@ project(ark LANGUAGES CXX)
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
 option(ARK_RESCALE "Experimental" OFF)
+option(ARK_SPARSE_BF16_ONLY "Temporary: build only the BF16 sparse SDPA benchmark binding" OFF)
+set(ARK_SPARSE_SCHEDULE_BARRIER_PERIOD 1 CACHE STRING
+    "Benchmark knob: synchronize the scheduled sparse mainloop every N rounds (0 disables)")
 if(ARK_XPU)
   option(ARK_DNNL "Build oneDNN-backed kernels" OFF)
   option(ARK_JOINT_MATRIX "Build BestLA joint_matrix S8 backend" OFF)
@@ -24,6 +27,14 @@ endif()
 
 if(ARK_XPU AND NOT ARK_DNNL AND NOT ARK_SYCL_TLA)
   message(FATAL_ERROR "XPU build requires ARK_SYCL_TLA=ON or ARK_DNNL=ON")
+endif()
+
+if(ARK_SPARSE_BF16_ONLY AND (NOT ARK_XPU OR NOT ARK_SYCL_TLA))
+  message(FATAL_ERROR "ARK_SPARSE_BF16_ONLY requires ARK_XPU=ON and ARK_SYCL_TLA=ON")
+endif()
+
+if(ARK_SPARSE_BF16_ONLY)
+  message(WARNING "ARK_SPARSE_BF16_ONLY is a temporary benchmark-only build: production bindings and non-BF16 sparse kernels are disabled")
 endif()
 
 if(ARK_XPU AND NOT ARK_SYCL_TLA AND NOT ARK_JOINT_MATRIX)
@@ -92,15 +103,27 @@ else()
 endif()
 list(APPEND libs bestla)
 
-file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
-if(NOT ARK_XPU)
-    list(APPEND SRCS
-        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+if(ARK_SPARSE_BF16_ONLY)
+    # Temporary fast-iteration target: do not compile the production bindings,
+    # dense SDPA, INT8 SAGE, MoE, or the generated dense GEMM families.
+    set(SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/sparse_bf16_bench.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sdpa_sparse_sdpa.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sparse_execution_schedule.cpp
     )
+else()
+    file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+    list(FILTER SRCS EXCLUDE REGEX "/sparse_bf16_bench\\.cpp$")
+    if(NOT ARK_XPU)
+        list(APPEND SRCS
+            ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+        )
+    endif()
 endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
+set(SDPA_SPARSE_KERNEL_DECLARATIONS)
 set(SYCL_TLA_GENERATED_SRCS)
 
 include_directories(wrapper/include)
@@ -162,7 +185,9 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     ${CUTLASS_DIR}/examples/12_xe20_moe_gemm_cute_interface
   )
   include(${CMAKE_CURRENT_LIST_DIR}/sdpa_generation.cmake)
-  include(${CMAKE_CURRENT_LIST_DIR}/sycl_tla_generation.cmake)
+  if(NOT ARK_SPARSE_BF16_ONLY)
+    include(${CMAKE_CURRENT_LIST_DIR}/sycl_tla_generation.cmake)
+  endif()
 endif()
 
 pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS} ${SYCL_TLA_GENERATED_SRCS})
@@ -180,10 +205,29 @@ if(ARK_RESCALE)
     target_compile_definitions(${PY_NAME} PRIVATE ARK_RESCALE=1)
 endif()
 
+if(ARK_SPARSE_BF16_ONLY)
+  target_compile_definitions(${PY_NAME} PRIVATE ARK_SPARSE_BF16_ONLY=1)
+endif()
+
+target_compile_definitions(${PY_NAME} PRIVATE
+  ARK_SPARSE_SCHEDULE_BARRIER_PERIOD=${ARK_SPARSE_SCHEDULE_BARRIER_PERIOD})
+
 if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+  # sycl-tla may provision oneMKL through an ExternalProject. Wire its staged
+  # headers into this module directly so parallel builds do not compile before
+  # oneMKL has been downloaded and installed.
+  if(TARGET onemkl_project)
+    add_dependencies(${PY_NAME} onemkl_project)
+    target_include_directories(${PY_NAME} SYSTEM PRIVATE ${CMAKE_BINARY_DIR}/deps/oneMKL/include)
+  elseif(TARGET MKL::MKL)
+    target_link_libraries(${PY_NAME} PRIVATE MKL::MKL)
+    if(DEFINED ENV{MKLROOT} AND EXISTS "$ENV{MKLROOT}/include")
+      target_include_directories(${PY_NAME} SYSTEM PRIVATE "$ENV{MKLROOT}/include")
+    endif()
+  endif()
   # Use SYSTEM include directories for sycl-tla to suppress warnings/errors from third-party headers
   # (e.g., std::common_type specialization issues in traits.hpp)
   foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
@@ -210,6 +254,15 @@ if(ARK_UT)
     if(ARK_XPU AND ARK_SYCL_TLA)
       target_compile_definitions(${TEST_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
       target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
+      if(TARGET onemkl_project)
+        add_dependencies(${TEST_NAME} onemkl_project)
+        target_include_directories(${TEST_NAME} SYSTEM PRIVATE ${CMAKE_BINARY_DIR}/deps/oneMKL/include)
+      elseif(TARGET MKL::MKL)
+        target_link_libraries(${TEST_NAME} PRIVATE MKL::MKL)
+        if(DEFINED ENV{MKLROOT} AND EXISTS "$ENV{MKLROOT}/include")
+          target_include_directories(${TEST_NAME} SYSTEM PRIVATE "$ENV{MKLROOT}/include")
+        endif()
+      endif()
       foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
         if(EXISTS "${_inc_dir}")
           target_include_directories(${TEST_NAME} SYSTEM PRIVATE "${_inc_dir}")

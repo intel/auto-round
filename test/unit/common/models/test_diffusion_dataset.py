@@ -3,7 +3,12 @@ import zipfile
 
 import pytest
 
-from auto_round.compressors.diffusion.dataset import DIFFUSION_DATASET, _load_coco_dataframe, get_diffusion_dataloader
+from auto_round.compressors.diffusion.dataset import (
+    DIFFUSION_DATASET,
+    _load_coco_dataframe,
+    _load_opens2v_dataframe,
+    get_diffusion_dataloader,
+)
 
 
 def test_text2img_dataset_rejects_missing_required_columns(tmp_path):
@@ -88,3 +93,59 @@ def test_coco_i2v_filters_cc_by_before_selecting_samples(monkeypatch, tmp_path):
     assert dataframe.iloc[0]["flickr_url"] == "https://flickr.test/102"
     assert dataframe.iloc[0]["license_url"] == "http://creativecommons.org/licenses/by/2.0/"
     assert dataframe.iloc[0]["image"].endswith("/images/102.jpg")
+
+
+def test_opens2v_t2v_loads_prompts_without_downloading_images(monkeypatch, tmp_path):
+    manifest = "id\tcaption\timage\n1\thello\timages/1.jpg\n2\tworld\timages/2.jpg\n"
+    downloaded_urls = []
+
+    def _fake_download(url, destination, timeout):
+        downloaded_urls.append(url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(manifest, encoding="utf-8")
+
+    monkeypatch.setattr("auto_round.compressors.diffusion.dataset._get_opens2v_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("auto_round.compressors.diffusion.dataset._download_to_cache", _fake_download)
+
+    dataframe = _load_opens2v_dataframe(nsamples=2, image_required=False)
+
+    assert dataframe.to_dict("records") == [{"id": 1, "caption": "hello"}, {"id": 2, "caption": "world"}]
+    assert len(downloaded_urls) == 1
+
+
+def test_opens2v_i2v_caches_only_selected_reference_images(monkeypatch, tmp_path):
+    manifest = "id\tcaption\timage\n1\thello\timages/1.jpg\n2\tworld\timages/2.jpg\n"
+    downloaded_urls = []
+
+    def _fake_download(url, destination, timeout):
+        downloaded_urls.append(url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.suffix == ".tsv":
+            destination.write_text(manifest, encoding="utf-8")
+        else:
+            destination.write_bytes(b"image")
+
+    monkeypatch.setattr("auto_round.compressors.diffusion.dataset._get_opens2v_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("auto_round.compressors.diffusion.dataset._download_to_cache", _fake_download)
+
+    dataframe = _load_opens2v_dataframe(nsamples=1, image_required=True)
+
+    assert dataframe[["id", "caption"]].to_dict("records") == [{"id": 1, "caption": "hello"}]
+    assert dataframe.iloc[0]["image"] == str(tmp_path / "images" / "1.jpg")
+    assert downloaded_urls[-1].endswith("/data/images/1.jpg")
+    assert len(downloaded_urls) == 2
+
+
+def test_get_diffusion_dataloader_defaults_to_opens2v(monkeypatch):
+    calls = []
+
+    def _fake_load(nsamples, image_required):
+        calls.append((nsamples, image_required))
+        return __import__("pandas").DataFrame({"id": [1], "caption": ["hello"]})
+
+    monkeypatch.setattr("auto_round.compressors.diffusion.dataset._load_opens2v_dataframe", _fake_load)
+
+    dataloader, _ = get_diffusion_dataloader(nsamples=1)
+
+    assert calls == [(1, False)]
+    assert dataloader.dataset.captions == ["hello"]

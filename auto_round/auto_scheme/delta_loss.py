@@ -19,9 +19,9 @@ import json
 import math
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import asdict
 from functools import wraps
-from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model
@@ -40,11 +40,17 @@ from auto_round.auto_scheme.utils import (
     build_expert_groups,
     compute_layer_bits,
     merge_lists_unionfind,
-    parse_shared_layers,
     remove_quant_scheme,
+    resolve_shared_layers,
 )
 from auto_round.calib_dataset import get_dataloader
-from auto_round.data_type.base import canonical_data_type
+from auto_round.data_type.gguf import (
+    quant_tensor_gguf_asym_dq,
+    quant_tensor_gguf_sym_dq,
+    search_gguf_scale_min_asym,
+    search_gguf_scale_min_sym,
+)
+from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import safe_to_cpu_
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
@@ -188,11 +194,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 """
                 if torch.isnan(grad).any() or torch.isnan(x_diff).any():
                     self.act_cnt -= 1
-                    return None
+                    return
 
-                self.act_score += torch.abs((grad * x_diff.to(grad.device))).sum().item()
+                self.act_score += torch.abs(grad * x_diff.to(grad.device)).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                return None
+                return
 
             if qdq_x.requires_grad:
                 qdq_x.register_hook(save_grad)
@@ -204,7 +210,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
             return
         device = self.device
         with torch.no_grad():
-            qdq_w, _, _ = super(AutoSchemeWrapperLinear, self)._qdq_weight(
+            qdq_w, _, _ = super()._qdq_weight(
                 torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
             )
         self._score_qdq_cpu = qdq_w.detach().to("cpu")
@@ -274,10 +280,278 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 w_diff = weight.to(grad.device) - self._score_qdq_cpu.to(grad.device)
                 self.weight_score += torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                return None
 
             qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
+
+
+class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
+    """GGUF-K wrapper that scores a layer using an imatrix-aware quant search (RTN, iters=0)."""
+
+    def __init__(
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        need_weight_grad=False,
+        enable_torch_compile=True,
+        **kwargs,
+    ):
+        """Wrap ``orig_layer`` and eagerly run the imatrix-aware quant search to build ``qdq_w``."""
+        super().__init__(
+            orig_layer,
+            enable_minmax_tuning,
+            enable_norm_bias_tuning,
+            device,
+            enable_round_tuning,
+            enable_torch_compile=enable_torch_compile,
+            **kwargs,
+        )
+        self.act_score = 0.0
+        self.avg_act_score = 0.0
+        self.act_cnt = 0.0
+        self.weight_score = 0.0
+        self.mix_score = 0.0
+        self.super_qdq_func = super()._qdq_weight
+        self.act_qdq_func = super()._qdq_act
+        self.max_act_value = 0
+        self.need_weight_grad = need_weight_grad
+        self.grad_mode = False
+        if self.need_weight_grad:
+            self.orig_layer.weight.requires_grad = True
+        self.weight_search_quant_func, _ = get_quant_func(
+            orig_layer.data_type,
+            orig_layer.bits,
+            orig_layer.sym,
+            disable_opt_rtn=False,
+            group_size=orig_layer.group_size,
+            iters=0,
+        )
+        self._custom_score_forward = False
+        self.post_init_qdqw(device)
+
+    @torch.no_grad()
+    def post_init_qdqw(self, device):
+        """Run the imatrix-aware quant search once and cache the result as buffer ``qdq_w``,
+        registering a backward hook on it to accumulate ``weight_score``.
+        """
+        qdq_w, _, _ = self.weight_search_quant_func(
+            self.orig_layer.weight.to(device),
+            bits=self.orig_layer.bits,
+            group_size=self.orig_layer.group_size,
+            v=torch.tensor(0, device=device),
+            min_scale=torch.tensor(1.0, device=device),
+            max_scale=torch.tensor(1.0, device=device),
+            scale_dtype=self.orig_layer.scale_dtype,
+            data_type=self.data_type,
+            q_scale_thresh=self.q_scale_thresh,
+            imatrix=self.orig_layer.imatrix.to(device) if hasattr(self.orig_layer, "imatrix") else None,
+            global_scale=getattr(self, "weight_global_scale", None),
+        )
+
+        self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+
+        def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
+            self.mix_score = self.weight_score + self.act_score
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+
+        self.qdq_w.register_hook(save_grad)
+
+    def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
+        """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
+        accumulates ``act_score`` from ``|grad * (x - qdq_x)|``.
+        """
+        if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
+            return x, 1.0, None
+
+        qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
+        if self.grad_mode:
+            with torch.no_grad():
+                max_act_value = torch.abs(x).max()
+                self.max_act_value = max_act_value
+                if max_act_value != 0:
+                    self.act_cnt += 1
+                x_diff = (x - qdq_x).to("cpu")
+
+            def save_grad(grad):
+                """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
+                if max_act_value == 0:
+                    if torch.abs(grad).max() != 0:
+                        raise ValueError
+                """
+                this ut will cause NAN issue sometimes, need to investigate
+                    @multi_card
+                    def test_multi_card(self):
+                     model_name = "/models/Qwen3-8B"
+                """
+                if torch.isnan(grad).any() or torch.isnan(x_diff).any():
+                    self.act_cnt -= 1
+                    return
+
+                self.act_score += torch.abs(grad * x_diff.to(grad.device)).sum().item()
+                self.mix_score = self.weight_score + self.act_score
+                return
+
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
+        return qdq_x, scale, zp
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
+        return self.qdq_w, 1.0, None
+
+
+class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
+    """GGUF-K wrapper (no imatrix): scores a layer using the plain GGUF K-quant search."""
+
+    def __init__(
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        need_weight_grad=False,
+        **kwargs,
+    ):
+        """Wrap ``orig_layer`` and eagerly run the GGUF K-quant search to build ``qdq_w``."""
+        super().__init__(
+            orig_layer,
+            enable_minmax_tuning,
+            enable_norm_bias_tuning,
+            device,
+            enable_round_tuning,
+            need_weight_grad,
+            **kwargs,
+        )
+        self._custom_score_forward = False
+        self.post_init_qdqw(device)
+
+    @torch.no_grad()
+    def post_init_qdqw(self, device):
+        """Run the GGUF K-quant search once and cache the result as buffer ``qdq_w``,
+        registering a backward hook on it to accumulate ``weight_score``.
+        """
+        qdq_w, scale, zp = self.super_qdq_func(
+            torch.tensor(0).to(device), torch.tensor(1.0).to(device), torch.tensor(1.0).to(device)
+        )
+        self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+
+        def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            # TODO strange, grad could be in CPU
+            self.weight_score += torch.abs(grad.to(w_diff.device).to(torch.float32) * w_diff).sum().item()
+            self.mix_score = self.weight_score + self.act_score
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+        self.qdq_w.register_hook(save_grad)
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
+        return self.qdq_w, 1.0, None
+
+
+class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
+    """GGUF-K wrapper (with imatrix): scores a layer using the imatrix-weighted GGUF K-quant
+    search (``_init_scale``).
+    """
+
+    def __init__(
+        self,
+        orig_layer,
+        enable_minmax_tuning=True,
+        enable_norm_bias_tuning=False,
+        device="cpu",
+        enable_round_tuning=True,
+        need_weight_grad=False,
+        enable_torch_compile=True,
+        **kwargs,
+    ):
+        """Wrap ``orig_layer`` and eagerly run the imatrix-weighted GGUF K-quant search to
+        build ``qdq_w``.
+        """
+        super().__init__(
+            orig_layer,
+            enable_minmax_tuning,
+            enable_norm_bias_tuning,
+            device,
+            enable_round_tuning,
+            need_weight_grad,
+            enable_torch_compile=enable_torch_compile,
+            **kwargs,
+        )
+        self._custom_score_forward = False
+        self.post_init_qdqw(device)
+
+    @torch.no_grad()
+    def post_init_qdqw(self, device):  # Could not place in qdq_w, otherwise vram is much higher
+        """Run the imatrix-weighted GGUF K-quant search once and cache the result as buffer
+        ``qdq_w``, registering a backward hook on it to accumulate ``weight_score``.
+        """
+        qdq_w = self._init_scale(device).detach()
+        self.register_buffer("qdq_w", qdq_w.detach().clone().to(self.orig_layer.weight.device))
+
+        def save_grad(grad):
+            """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
+            w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
+            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
+            self.mix_score = self.weight_score + self.act_score
+
+        self.qdq_w.requires_grad_(True)
+        self.orig_layer.weight.requires_grad_(False)
+
+        self.qdq_w.register_hook(save_grad)
+
+    @torch.no_grad()
+    def _init_scale(self, device):
+        """Compute the imatrix-weighted GGUF K-quant quant-dequant weight for ``bits`` in
+        [2,3,4,5,6], returned in the original weight dtype.
+        """
+        tensor = self.orig_layer.weight.data.to(device)
+        bits = self.orig_layer.bits
+        scale_dtype = self.orig_layer.scale_dtype
+        imatrix = self.orig_layer.imatrix.to(tensor.device)
+        orig_dtype = tensor.dtype
+        if self.orig_layer.bits in [2, 4, 5]:
+            group_size = 16 if bits == 2 else 32
+            tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+            scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(tensor, bits, scale_dtype, imatrix)
+            tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+
+            qdq_w, _, _ = quant_tensor_gguf_asym_dq(
+                tensor=tensor,
+                bits=bits,
+                scale_dtype=scale_dtype,
+                imatrix=imatrix,
+                scale=scale,
+                wmin=wmin,
+                d_scale=d_scale,
+                d_wmin=d_wmin,
+            )
+        elif bits in [3, 6]:
+            qdq_w, _, _ = quant_tensor_gguf_sym_dq(
+                tensor=tensor,
+                bits=bits,
+                scale_dtype=scale_dtype,
+                imatrix=imatrix,
+                split_num=1,
+            )
+        else:
+            raise ValueError("bits must be in [2,3,4,5,6]")
+        return qdq_w.to(orig_dtype)
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
+        return self.qdq_w, 1.0, None
 
 
 def register_imatrix_hook(model):
@@ -342,9 +616,7 @@ def cal_imatrix_low_gpu(model, dataloader, major_device):
         clear_memory(device_list=major_device)
 
     all_move_device_hooks = []
-    i = 0
     for block_name in block_names:
-        i += 1
         block_module = get_module(model, block_name)
         hook_move_gpu = block_module.register_forward_pre_hook(move_to_gpu_hook)
 
@@ -373,7 +645,7 @@ class MyCustomError(Exception):
         super().__init__(message)
 
 
-def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu", disk_index=None):
+def prepare_model_low_gpu(model, block_inputs: dict | None = None, pbar=None, major_device="cpu", disk_index=None):
     """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
     ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
     they can be replayed later, and (3) moves itself back to CPU once done.
@@ -536,13 +808,7 @@ def _replay_retain_graph(block_module) -> bool:
     """
     for _, module in block_module.named_modules():
         data_type = getattr(module, "data_type", None)
-        if not isinstance(data_type, str):
-            continue
-        try:
-            canonical_id = canonical_data_type(data_type)
-        except LookupError:
-            continue
-        if canonical_id.startswith("mx_"):
+        if isinstance(data_type, str) and data_type.startswith("mx"):
             return True
     return False
 
@@ -927,12 +1193,12 @@ def get_score_for_scheme(
     low_gpu_mem_usage=True,
     major_device="cpu",
     batch_size=1,
-    offload_context: Optional[OffloadManager] = None,
+    offload_context: OffloadManager | None = None,
     processor=None,
     is_vlm: bool = False,
     force_mllm: bool = False,
-    model_name: Optional[str] = None,
-    scheme_tag: Optional[str] = None,
+    model_name: str | None = None,
+    scheme_tag: str | None = None,
     disk_index=None,
 ):
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
@@ -951,6 +1217,15 @@ def get_score_for_scheme(
             m.weight.requires_grad = False
             if hasattr(m, "bias") and m.bias is not None:
                 m.bias.requires_grad = False
+
+    has_imatrix = False
+    for name in quant_layer_names:
+        if name in fixed_layer_scheme.keys():
+            continue
+        m = get_module(model, name)
+        if hasattr(m, "imatrix") and m.imatrix is not None:
+            has_imatrix = True
+            break
 
     for name in quant_layer_names:
         if offload_context is not None:
@@ -972,6 +1247,14 @@ def get_score_for_scheme(
             m.scale_dtype = torch.bfloat16
 
         WrapperLayer = AutoSchemeWrapperLinear
+        # if has_imatrix: # no better result
+        #     WrapperLayer = AutoSchemeWrapperLinearIMatrix
+        if hasattr(m, "super_group_size") and m.super_group_size is not None:
+            if has_imatrix:
+                WrapperLayer = AutoSchemeWrapperLinearForGGUFKImatrix
+            else:
+                WrapperLayer = AutoSchemeWrapperLinearForGGUFK
+
         with torch.no_grad():
             if low_gpu_mem_usage:
                 device = m.tuning_device if hasattr(m, "tuning_device") else major_device
@@ -1163,7 +1446,12 @@ def get_score_for_scheme(
                     batch_checkpoint=batch_checkpoint,
                 )
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -1263,7 +1551,12 @@ def get_score_for_scheme(
             try:
                 _run_forward_loop(_build_calib_dataloader())
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -1323,7 +1616,7 @@ def get_score_for_scheme(
     return scores_dict
 
 
-def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int | None = None):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
@@ -1343,7 +1636,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # the entire path on every transition, which becomes quadratic for large
     # models; linked nodes keep each transition O(1) and are expanded only once.
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
-    for layer_name, opts in layers.items():
+    for opts in layers.values():
         new_dp: dict[int, tuple[float, tuple]] = {}
         for cur_params, (cur_loss, cur_path) in dp.items():
             for opt in opts:
@@ -1386,7 +1679,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                 step = (n - 1) / (max_states - 1)
                 selected: dict[int, tuple[float, tuple]] = {}
                 for i in range(max_states):
-                    idx = int(round(i * step))
+                    idx = round(i * step)
                     if idx >= n:
                         idx = n - 1
                     k = sorted_keys[idx]
@@ -2024,7 +2317,7 @@ def _can_parallel_scheme_scoring(
     )
 
 
-def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage):
+def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage, trust_remote_code=False):
     """Load an isolated worker model without an extra full-size CPU initialization copy."""
     return load_model(
         model_name,
@@ -2032,10 +2325,11 @@ def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_us
         use_auto_mapping=False,
         use_model_replacements=use_model_replacements,
         low_cpu_mem_usage=low_cpu_mem_usage,
+        trust_remote_code=trust_remote_code,
     )
 
 
-def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False):
+def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False, trust_remote_code=False):
     """Build an isolated meta model and checkpoint index for a scoring worker."""
     from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules
     from auto_round.utils.disk_stream_util import build_meta_model
@@ -2047,12 +2341,12 @@ def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=Fal
     # here in the worker: with the custom MoE replacements disabled, the meta-skeleton
     # build no longer guarantees it, and leaving the experts fused makes the per-expert
     # quant layers unresolvable during scoring.
-    model, tokenizer, disk_index = build_meta_model(model_name)
+    model, tokenizer, disk_index = build_meta_model(model_name, trust_remote_code=trust_remote_code)
     _handle_moe_modules(model)
     if use_model_replacements:
         from auto_round.special_model_handler import _handle_special_model, update_module
 
-        model = update_module(model, formats=None, cleanup_original=False)
+        model = update_module(model, formats=None, trust_remote_code=trust_remote_code, cleanup_original=False)
         model = _handle_special_model(model)
     return model, tokenizer, disk_index
 
@@ -2093,6 +2387,7 @@ def _score_scheme_worker(args):
         progress_queue,
         disk_stream_model,
         worker_cache_path,
+        trust_remote_code,
     ) = args
 
     from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
@@ -2105,7 +2400,7 @@ def _score_scheme_worker(args):
     if disk_stream_model:
         try:
             model, tokenizer, disk_index = _load_disk_stream_scheme_worker_model(
-                model_name, use_model_replacements=use_model_replacements
+                model_name, use_model_replacements=use_model_replacements, trust_remote_code=trust_remote_code
             )
             processor = None
         except Exception as exc:  # noqa: BLE001
@@ -2123,6 +2418,7 @@ def _score_scheme_worker(args):
                 model_name,
                 use_model_replacements,
                 low_cpu_mem_usage,
+                trust_remote_code,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -2245,7 +2541,7 @@ def _score_scheme_worker(args):
 
 def _gen_layer_config(
     auto_scheme: AutoScheme,
-    model: Union[str, torch.nn.Module],
+    model: str | torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
     min_avg_bit_scheme,
@@ -2259,7 +2555,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
     disk_index=None,
-    export_format: str = None,
+    export_format: str | None = None,
 ):
     """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
     and return per-layer per-scheme losses used by the caller to pick a final bit-width
@@ -2493,7 +2789,11 @@ def _gen_layer_config(
             "AutoScheme steps expanded(full_backward): "
             f"total_steps = scheme_num * nsamples = {effective_scheme_num} * {nsamples} = {pbar_cnt}"
         )
-    shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
+    shared_layers = resolve_shared_layers(
+        model,
+        auto_scheme.shared_layers,
+        default_shared_layers=getattr(auto_scheme, "default_shared_layers", True),
+    )
 
     # Auto-group MoE expert layers so DP treats all experts in one block as a unit.
     if is_moe_model:
@@ -2829,6 +3129,7 @@ def _gen_layer_config(
                             progress_queue,
                             worker_disk_stream_model,
                             scheme_cache_meta[index][1],  # cache_path for batch checkpoints
+                            auto_scheme.trust_remote_code,
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]
@@ -3318,7 +3619,7 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
 @register_scheme_methods(("default", "DeltaLoss"))
 def gen_layer_config(
     auto_scheme: AutoScheme,
-    model: Union[str, torch.nn.Module],
+    model: str | torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
     dataset: str = "pile-10k",
@@ -3328,7 +3629,7 @@ def gen_layer_config(
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,
-    export_format: str = None,
+    export_format: str | None = None,
     **kwargs,
 ):
     """Public AutoScheme entry.
@@ -3341,6 +3642,7 @@ def gen_layer_config(
     disk_index = None
     if isinstance(model, str):
         model_name = model
+        trust_remote_code = auto_scheme.trust_remote_code
         is_vlm = is_mllm_model(model_name)
         if not is_vlm and auto_scheme.low_cpu_mem_usage and low_gpu_mem_usage:
             # Disk-streamed load (meta-device skeleton + on-demand per-block
@@ -3351,7 +3653,7 @@ def gen_layer_config(
             try:
                 from auto_round.utils.disk_stream_util import build_meta_model, materialize_non_block_params
 
-                model, tokenizer, disk_index = build_meta_model(model_name)
+                model, tokenizer, disk_index = build_meta_model(model_name, trust_remote_code=trust_remote_code)
                 block_prefixes = flatten_list(get_block_names(model, quant_vision=is_vlm))
                 materialize_non_block_params(model, block_prefixes, disk_index, device="cpu")
             except Exception as exc:  # noqa: BLE001
@@ -3361,10 +3663,12 @@ def gen_layer_config(
                 )
                 disk_index = None
                 model, tokenizer, processor, _, _, is_vlm, _ = load_model(
-                    model_name, device="cpu", use_auto_mapping=False
+                    model_name, device="cpu", use_auto_mapping=False, trust_remote_code=trust_remote_code
                 )
         else:
-            model, tokenizer, processor, _, _, is_vlm, _ = load_model(model_name, device="cpu", use_auto_mapping=False)
+            model, tokenizer, processor, _, _, is_vlm, _ = load_model(
+                model_name, device="cpu", use_auto_mapping=False, trust_remote_code=trust_remote_code
+            )
     else:
         # Object passed in: still try to detect VLM so we can pick the right dataloader later.
         try:

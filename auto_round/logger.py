@@ -13,16 +13,19 @@
 # limitations under the License.
 
 import logging
+import os
+import sys
 import warnings
-from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, TypeVar
+from collections.abc import Callable, Mapping
+from functools import cache, wraps
+from typing import TypeVar
 
 import auto_round.envs as envs
 
 T = TypeVar("T", bound="Callable")  # used by `deprecated`
 
 
-@lru_cache(maxsize=None)
+@cache
 def warning_once(self, msg, *args):
     """
     Log a warning message only once per unique message/arguments combination.
@@ -34,7 +37,7 @@ def warning_once(self, msg, *args):
     logger.warning(msg, *args, stacklevel=2)
 
 
-@lru_cache(maxsize=None)
+@cache
 def info_once(self, msg, *args):
     """
     Log an info message only once per unique message/arguments combination.
@@ -79,6 +82,28 @@ def infoclean(self, message, *args, **kwargs):
 logging.Logger.infoclean = infoclean
 
 
+class RankZeroFilter(logging.Filter):
+    """Deduplicate routine logs while keeping failures visible on every rank."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Keep routine records on rank zero and errors on every rank.
+
+        Args:
+            record (logging.LogRecord): Record considered by the logging handler.
+
+        Returns:
+            bool: Whether this rank should emit the record.
+        """
+        if record.levelno >= logging.ERROR:
+            return True
+        # torchrun supplies RANK before process-group initialization. Also support
+        # caller-created groups without importing torch just to configure logging.
+        distributed = sys.modules.get("torch.distributed")
+        if distributed is not None and distributed.is_available() and distributed.is_initialized():
+            return distributed.get_rank() == 0
+        return int(os.environ.get("RANK", "0")) == 0
+
+
 class AutoRoundFormatter(logging.Formatter):
     grey = "\x1b[38;20m"
     yellow = "\x1b[33;1m"
@@ -110,12 +135,13 @@ logging.Logger.info_once = info_once
 logger = logging.getLogger("autoround")
 logger.setLevel(envs.AR_LOG_LEVEL)
 logger.propagate = False
+logger.addFilter(RankZeroFilter())
 fh = logging.StreamHandler()
 fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
 
-def deprecated(future_name: Optional[str] = None, message: Optional[str] = None) -> Callable[[T], T]:
+def deprecated(future_name: str | None = None, message: str | None = None) -> Callable[[T], T]:
     """
     Decorator to mark functions as deprecated
 

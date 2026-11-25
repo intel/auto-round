@@ -263,23 +263,36 @@ class TestResolveModelDir:
             result = _resolve_model_dir(str(tmp_path / "missing"))
             assert result == str(tmp_path / "missing")
 
-    def test_revision_resolves_partial_snapshot_from_cached_weight_index(self, tmp_path):
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.bin.index.json",
+            "diffusion_pytorch_model.bin",
+        ],
+    )
+    def test_revision_resolves_partial_snapshot_from_cached_weight_index(self, tmp_path, filename):
         """A usable weight snapshot need not contain every repository file."""
         from auto_round.utils.offload import _resolve_model_dir
 
         snapshot = tmp_path / "snapshots" / "commit"
-        index_path = snapshot / "model.safetensors.index.json"
+        index_path = snapshot / filename
         index_path.parent.mkdir(parents=True)
         index_path.write_text('{"weight_map": {}}')
         incomplete = RuntimeError("snapshot is missing README.md")
         with (
-            patch("huggingface_hub.try_to_load_from_cache", return_value=str(index_path)) as cached,
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                side_effect=lambda repo, name, revision: str(index_path) if name == filename else None,
+            ) as cached,
             patch("huggingface_hub.snapshot_download", side_effect=incomplete) as download,
         ):
             resolved = _resolve_model_dir("org/model", revision="commit")
 
         assert resolved == str(snapshot)
-        cached.assert_called_once_with("org/model", "model.safetensors.index.json", revision="commit")
+        cached.assert_any_call("org/model", filename, revision="commit")
         download.assert_not_called()
 
     def test_offload_manager_resolves_model_id_once(self, tmp_path):
@@ -314,6 +327,27 @@ class TestResolveModelDir:
 
         load_block.assert_called_once_with(str(component_dir), "0", model[0])
 
+    @pytest.mark.parametrize("component", ["unet", "transformer", "transformer_2"])
+    def test_diffusion_component_clear_and_reload(self, tmp_path, component):
+        from safetensors.torch import save_file
+
+        from auto_round.utils.offload import OffloadManager
+
+        component_dir = tmp_path / component
+        component_dir.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        model._autoround_checkpoint_subfolder = component
+        expected = {name: tensor.clone() for name, tensor in model.state_dict().items()}
+        save_file(expected, str(component_dir / "diffusion_pytorch_model.safetensors"))
+        model[0].register_parameter("calib_scale", nn.Parameter(torch.ones(1)))
+        manager = OffloadManager(mode="clean", model_dir=str(tmp_path))
+        manager.offload(model, "0")
+        assert model[0].weight.numel() == model[0].bias.numel() == 0
+        assert model[0].calib_scale.numel() == 1
+        manager.reload(model, "0")
+        for name, tensor in expected.items():
+            torch.testing.assert_close(model.state_dict()[name], tensor)
+
     def test_offload_manager_does_not_eagerly_resolve_without_revision(self):
         """Revision-less and non-Hugging Face sources retain the legacy lazy path."""
         from auto_round.utils.offload import OffloadManager
@@ -340,6 +374,29 @@ class TestResolveModelDir:
 
 
 class TestBuildWeightMap:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.safetensors",
+            "diffusion_pytorch_model.safetensors",
+            "pytorch_model.bin",
+            "diffusion_pytorch_model.bin",
+        ],
+    )
+    def test_single_checkpoint(self, tmp_path, filename):
+        from safetensors.torch import save_file
+
+        from auto_round.utils.offload import _build_weight_map
+
+        state_dict = {"blocks.0.weight": torch.ones(2, 2)}
+        checkpoint = tmp_path / filename
+        if filename.endswith(".safetensors"):
+            save_file(state_dict, str(checkpoint))
+        else:
+            torch.save(state_dict, checkpoint)
+
+        assert _build_weight_map(str(tmp_path)) == {"blocks.0.weight": filename}
+
     def test_custom_diffusers_safetensors_index(self, tmp_path):
         from auto_round.utils.offload import _build_weight_map
 

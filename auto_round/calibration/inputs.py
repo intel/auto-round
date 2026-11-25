@@ -13,14 +13,12 @@
 # limitations under the License.
 """Pure helpers for shaping cached block inputs."""
 
-from typing import Tuple
-
 import torch
 
 from auto_round.utils import clear_memory, to_device, to_dtype
 from auto_round.utils.device_manager import device_manager
 
-__all__ = ["split_inputs", "preprocess_block_inputs"]
+__all__ = ["preprocess_block_inputs", "split_inputs"]
 
 
 def split_inputs(
@@ -29,7 +27,8 @@ def split_inputs(
     *,
     is_diffusion: bool,
     shared_cache_keys: tuple = (),
-) -> Tuple[object, dict]:
+    model_type: str | None = None,
+) -> tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
     Mirrors the original ``Compressor._split_inputs`` exactly:
@@ -51,6 +50,8 @@ def split_inputs(
         return input_ids, input_others
     input_ids = inputs.get(first_input_name, None)
     inputs.pop(first_input_name, None)
+    if model_type == "deepseek_v4" and first_input_name == "input_ids" and "_ar_block_token_ids" in inputs:
+        inputs["input_ids"] = inputs.pop("_ar_block_token_ids")
     input_others = inputs
     return input_ids, input_others
 
@@ -71,7 +72,7 @@ def preprocess_block_inputs(
     model_context,
     compress_context,
     first_input_name: str = "input_ids",
-) -> Tuple[object, dict]:
+) -> tuple[object, dict]:
     """Move/cast cached block inputs onto the calibration cache device.
 
     Mirrors the original ``Compressor._preprocess_block_inputs`` exactly.
@@ -84,6 +85,7 @@ def preprocess_block_inputs(
         first_input_name,
         is_diffusion=model_context.is_diffusion,
         shared_cache_keys=getattr(model_context, "shared_cache_keys", ()),
+        model_type=getattr(getattr(getattr(model_context, "model", None), "config", None), "model_type", None),
     )
     clear_memory(device_list=device_manager.device_list)
     tmp_dtype = model_context.amp_dtype if model_context.amp else torch.float32

@@ -15,6 +15,19 @@ from auto_round.utils import diffusion_load_model, get_attr, get_major_device, l
 transformers_version = version.parse(transformers.__version__)
 
 
+def noop_torch_compile(model=None, *args, **kwargs):
+    """Stand-in for ``torch.compile`` that returns the callable unchanged.
+
+    Mirrors the real signature, which is both a decorator and a decorator
+    factory. Supporting the factory form (``@torch.compile(dynamic=True)``)
+    matters for third-party modules that use it at import time and would
+    otherwise fail with a ``TypeError`` while the no-op patch is active.
+    """
+    if model is None:
+        return lambda fn: fn
+    return model
+
+
 def _raise_threaded_packing(*args, **kwargs):
     raise AssertionError("Packing should not create a thread pool or call threadpoolctl.")
 
@@ -381,14 +394,14 @@ def get_tiny_model(
                         config = json.load(f)
                     _reduce_config_layers(config, num_layers, num_experts)
                     _apply_config_overrides(config, config_overrides)
-                    return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
+                    return getattr(diffusers_module, mod_name).from_config(config)
                 else:
                     config = transformers.AutoConfig.from_pretrained(
                         os.path.join(local_dir, folder_name, "config.json")
                     )
                     _reduce_config_layers(config, num_layers, num_experts)
                     _apply_config_overrides(config, config_overrides)
-                    return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
+                    return getattr(transformers_module, mod_name)._from_config(config)
 
             with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
                 model_index = json.load(f)
@@ -452,7 +465,7 @@ def get_tiny_model(
         return sliced
 
     kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
-    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
+    kwargs["trust_remote_code"] = kwargs.get("trust_remote_code", True)
     if is_mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path, **kwargs)
         if hasattr(model.config, "vision_config"):

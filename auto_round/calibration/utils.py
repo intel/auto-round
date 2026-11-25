@@ -45,7 +45,7 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
 
     model_context = ModelContext()
     if model_context.is_diffusion:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        input_id_str = [key for key in inputs if "hidden_state" in key]
         if input_id_str == ["hidden_states"]:
             if q_inputs is not None:
                 q_inputs = q_inputs.pop("hidden_states", None)
@@ -62,20 +62,13 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         raise RuntimeError(
             "hidden_states arg mismatch error," "please raise an issue in https://github.com/intel/auto-round/issues"
         )
+    # ``input_ids`` below is the historical name for the hidden-state pool.
+    # Preserve real token IDs used by token-dependent routers (DeepSeek V4).
+    from auto_round.modeling.deepseek_v4 import is_deepseek_v4
+
+    if is_deepseek_v4(getattr(model_context, "model", None)) and "input_ids" in inputs:
+        inputs["_ar_block_token_ids"] = inputs.pop("input_ids")
     inputs["input_ids"] = inputs.pop(input_id_str[0], None)
     if q_inputs is not None:
         q_inputs = q_inputs.pop(input_id_str[0], None)
     return inputs, q_inputs
-
-
-def _split_inputs_diffusion(inputs: dict) -> tuple[dict, dict]:
-    """Split inputs for diffusion models that only have hidden_states."""
-    input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
-    if input_id_str == ["hidden_states"]:
-        input_ids = inputs.pop("hidden_states", None)
-        input_others = inputs
-        return input_ids, input_others
-
-    input_ids = {k: inputs.pop(k, None) for k in input_id_str}
-    input_others = inputs
-    return input_ids, input_others

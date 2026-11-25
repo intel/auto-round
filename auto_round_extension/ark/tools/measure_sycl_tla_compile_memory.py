@@ -41,8 +41,7 @@ def measure_command(command, time_binary):
     completed = subprocess.run(
         [time_binary, "-v", *command["argv"]],
         cwd=command["directory"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=False,
     )

@@ -14,9 +14,10 @@
 
 import json
 import os
+import sys
 from collections import OrderedDict
 from inspect import signature
-from typing import Any, Dict, Optional
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -28,7 +29,7 @@ from auto_round.special_model_handler import check_mllm_only_support_bs1
 from .template import Template
 from .utils import _extract_data_dir
 
-MLLM_DATASET: Dict[str, Dataset] = {}
+MLLM_DATASET: dict[str, Dataset] = {}
 
 
 def register_dataset(name_list):
@@ -81,7 +82,7 @@ class LlavaDataset(Dataset):
         model: torch.nn.Module,
         tokenizer: Any,
         dataset_path: str,
-        extra_data_dir: Optional[str] = None,
+        extra_data_dir: str | None = None,
         seqlen: int = 512,
         padding: bool = True,
         truncation: bool = True,
@@ -95,7 +96,8 @@ class LlavaDataset(Dataset):
         self.tokenizer = tokenizer
         if os.path.exists(dataset_path):
             logger.info(f"use dataset {dataset_path}, loading from disk...")
-            self.questions = json.load(open(dataset_path, "r"))
+            with open(dataset_path, "r") as f:
+                self.questions = json.load(f)
         else:
             if dataset_path == "liuhaotian/llava":
                 dataset_path = "llava_conv_58k"
@@ -186,8 +188,7 @@ class LlavaDataset(Dataset):
                     if self.IMAGE_TOKEN in text["value"]:
                         text["value"] = self.IMAGE_TOKEN + text["value"].replace(self.IMAGE_TOKEN, "")
                     str_len += len(text["value"].split(" "))
-                if str_len > max_len:
-                    max_len = str_len
+                max_len = max(max_len, str_len)
                 if min_word_len <= str_len < max_word_len:
                     new_questions.append(source)
                 if len(new_questions) >= nsamples:
@@ -211,7 +212,7 @@ class LlavaDataset(Dataset):
     def __len__(self):
         return len(self.questions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         if self.cached_data_dict is not None and i in self.cached_data_dict:
             self.cached_data_dict.move_to_end(i)
             return self.cached_data_dict[i]
@@ -304,7 +305,7 @@ def get_mllm_dataloader(
             template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor
         )
 
-    if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
+    if os.path.isfile(dataset) or dataset in MLLM_DATASET:
         if seqlen > MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN:
             logger.warning(
                 f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset},"
@@ -341,5 +342,5 @@ def get_mllm_dataloader(
                 "Text only dataset cannot be used for calibrating non-text modules,"
                 " switching to liuhaotian/llava_conv_58k"
             )
-            exit(-1)
+            sys.exit(-1)
         return dataloader, bs, seqlen

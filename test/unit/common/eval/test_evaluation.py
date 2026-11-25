@@ -242,20 +242,24 @@ class TestPrepareModelForEval:
     def test_raises_when_meta_device(self):
         m = nn.Linear(4, 4)
         m.dtype = torch.bfloat16
-        with patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m):
-            with patch("auto_round.eval.evaluation.dispatch_model_block_wise") as mock_dispatch:
-                result = prepare_model_for_eval(m, "cpu", "auto")
-                assert result is m
-                mock_dispatch.assert_called_once()
+        with (
+            patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m),
+            patch("auto_round.eval.evaluation.dispatch_model_block_wise") as mock_dispatch,
+        ):
+            result = prepare_model_for_eval(m, "cpu", "auto")
+            assert result is m
+            mock_dispatch.assert_called_once()
 
     def test_multi_device_dispatch(self):
         m = nn.Linear(4, 4)
         m.hf_device_map = {"linear": "cpu", "linear2": "cpu"}
-        with patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m):
-            with patch("accelerate.big_modeling.dispatch_model") as mock_dispatch:
-                result = prepare_model_for_eval(m, "cpu", "auto")
-                assert result is m
-                mock_dispatch.assert_called_once()
+        with (
+            patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m),
+            patch("accelerate.big_modeling.dispatch_model") as mock_dispatch,
+        ):
+            result = prepare_model_for_eval(m, "cpu", "auto")
+            assert result is m
+            mock_dispatch.assert_called_once()
 
 
 class TestSimpleEvaluate:
@@ -274,16 +278,18 @@ class TestSimpleEvaluateUserModel:
 
     def test_creates_hflm(self):
         mock_hflm = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {
-                "lm_eval": MagicMock(),
-                "lm_eval.models": MagicMock(),
-                "lm_eval.models.huggingface": MagicMock(HFLM=mock_hflm),
-            },
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "lm_eval": MagicMock(),
+                    "lm_eval.models": MagicMock(),
+                    "lm_eval.models.huggingface": MagicMock(HFLM=mock_hflm),
+                },
+            ),
+            patch("lm_eval.simple_evaluate", return_value={"results": {}}) as mock_eval,
         ):
-            with patch("lm_eval.simple_evaluate", return_value={"results": {}}) as mock_eval:
-                model = MagicMock()
-                tokenizer = MagicMock()
-                result = simple_evaluate_user_model(model, tokenizer, batch_size=4)
-                assert "results" in result or mock_hflm.called
+            model = MagicMock()
+            tokenizer = MagicMock()
+            result = simple_evaluate_user_model(model, tokenizer, batch_size=4)
+            assert "results" in result or mock_hflm.called

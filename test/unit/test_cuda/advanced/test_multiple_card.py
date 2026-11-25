@@ -128,8 +128,8 @@ class TestAutoRound:
         model_name = "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc"
 
         device_map = {}
-        for i in range(0, 32):
-            key = f"model.layers.{str(i)}"
+        for i in range(32):
+            key = f"model.layers.{i!s}"
             device_map[key] = "cuda:0"
         device_map["model.layers.1"] = "cpu"
         device_map["model.layers.2"] = "cpu"

@@ -14,8 +14,8 @@
 
 import inspect
 import warnings
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Optional
 
 import torch
 from transformers.modeling_rope_utils import dynamic_rope_update
@@ -67,12 +67,12 @@ def rotary_emb_forward(module, x, position_ids):
 def attn_forward(
     module,
     hidden_states: torch.Tensor,
-    attention_mask: Optional[torch.Tensor] = None,
-    cache_position: Optional[torch.LongTensor] = None,
-    position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-    position_ids: Optional[torch.Tensor] = None,
+    attention_mask: torch.Tensor | None = None,
+    cache_position: torch.LongTensor | None = None,
+    position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
+    position_ids: torch.Tensor | None = None,
     **kwargs,
-) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
+) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor] | None]:
     if "padding_mask" in kwargs:
         warnings.warn(
             "Passing `padding_mask` is deprecated and will be removed in v4.37. "
@@ -104,8 +104,10 @@ def attn_forward(
 
     past_key_values = None
 
-    # transformers <= 4.55.4 is past_key_value
-    if "past_key_values" in kwargs:
+    # transformers <= 4.55.4 is past_key_value; >= 5.24 is cache
+    if kwargs.get("cache") is not None:
+        past_key_values = kwargs["cache"]
+    elif "past_key_values" in kwargs:
         past_key_values = kwargs["past_key_values"]
     elif "past_key_value" in kwargs:
         past_key_values = kwargs["past_key_value"]

@@ -14,6 +14,7 @@
 #include <string>
 #include <sycl/aliases.hpp>
 #include "bestla/bestla.h"
+#include "flash_attn_dtype.hpp"
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
 #endif
@@ -35,6 +36,7 @@
 #if defined(ARK_SDPA_ENABLE_SPARSE)
 #include "stla/xe_sparse_fmha_fwd_epilogue.hpp"
 #include "stla/xe_sparse_sagev1_fwd_mainloop.hpp"
+#include "stla/xe_sparse_sdpa_fwd_mainloop.hpp"
 #include "stla/xe_sparse_sage_fwd_kernel.hpp"
 #endif
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
@@ -61,14 +63,8 @@
 
 namespace ark {
 
-/// Flash Attention data type codes (matches Python side)
-enum class FlashAttnDtype : int {
-  FP16 = 0,
-  BF16 = 1,
-  FP32 = 2,
-  FP8_E4M3 = 3,
-  FP8_E5M2 = 4,
-};
+// FlashAttnDtype is defined in flash_attn_dtype.hpp so that dispatch-only
+// translation units such as ark.cpp do not pull in this heavy header.
 
 #if defined(ARK_SYCL_TLA)
 
@@ -87,6 +83,12 @@ struct has_sparse_q_block_size : std::false_type {};
 
 template <class T>
 struct has_sparse_q_block_size<T, std::void_t<decltype(std::declval<T&>().sparse_q_block_size)>> : std::true_type {};
+
+template <class T, class = void>
+struct has_k_block_valid : std::false_type {};
+
+template <class T>
+struct has_k_block_valid<T, std::void_t<decltype(std::declval<T&>().k_block_valid)>> : std::true_type {};
 
 // Sparse SDPA launch options.
 //
@@ -113,12 +115,24 @@ struct Options {
   // Sparse routing metadata is stored per (batch, q_head, q_block). Each LUT row is delta-encoded
   // over logical KV blocks and valid_block_num says how many entries in that row are live.
   const int *lut = nullptr, *valid_block_num = nullptr;
+  // Optional per-logical-K-block valid lengths for a 64-token sparse K routing
+  // grid. Entry b says how many of the 64 keys in route block b are real; every
+  // key column at or beyond that limit is masked to -inf before softmax so that
+  // zero padded tail tokens never enter the denominator.
+  const int *k_block_valid = nullptr;
   // Number of logical sparse Q rows and logical sparse K columns represented by
   // the LUT. These are not tile counts in the dense GEMM sense; they describe the
   // routing grid that the sparse mainloop walks.
   int num_q_blocks = 0, num_k_blocks = 0;
   const void *block_K = nullptr, *block_V = nullptr;
   const int *page_table = nullptr, *num_pages_per_seq = nullptr;
+  // Optional execution schedule for multi-row sparse SDPA. Rows are stored as
+  // [batch, q_head, q_group, sparse_row, round]. A negative entry means that
+  // sparse row is idle in that round. This changes only the order in which the
+  // already-selected K blocks are visited, never the selected block set.
+  const int* execution_schedule = nullptr;
+  const int* execution_schedule_rounds = nullptr;
+  int execution_schedule_max_rounds = 0;
   bool is_causal = false;
   bool varlen = false;
   bool use_paged_kv = false;
@@ -145,6 +159,7 @@ struct Options {
        << "  sparse_q_block_size: " << sparse_q_block_size << "\n"
        << "  lut: " << lut << "\n"
        << "  valid_block_num: " << valid_block_num << "\n"
+       << "  k_block_valid: " << k_block_valid << "\n"
        << "  num_q_blocks: " << num_q_blocks << "\n"
        << "  num_k_blocks: " << num_k_blocks << "\n"
        << "  block_K: " << block_K << "\n"
@@ -189,24 +204,31 @@ MainloopArguments make_sage_mainloop_arguments(const Options& options) {
     // lut / valid_block_num: delta-encoded sparse routing table
     // num_q_blocks / num_k_blocks: logical routing-grid shape
     // sparse_q_block_size: how many Q tokens share one LUT row
-    return {options.softmax_scale,
-            static_cast<const float*>(options.mask),
-            options.scale_block_size,
-            static_cast<const float*>(options.qscale),
-            static_cast<const float*>(options.kscale),
-            static_cast<const float*>(options.vscale),
-            options.lut,
-            options.valid_block_num,
-            options.num_q_blocks,
-            // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
-            // spans the concatenated cache + current KV space even though the kernel may source data from
-            // different tensors under the hood.
-            options.num_k_blocks,
-            options.sparse_q_block_size,
-            false,
-            options.use_paged_kv ? options.page_table : nullptr,
-            options.use_paged_kv ? options.page_size : 0,
-            options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+    MainloopArguments args{options.softmax_scale,
+                           static_cast<const float*>(options.mask),
+                           options.scale_block_size,
+                           static_cast<const float*>(options.qscale),
+                           static_cast<const float*>(options.kscale),
+                           static_cast<const float*>(options.vscale),
+                           options.lut,
+                           options.valid_block_num,
+                           options.num_q_blocks,
+                           // num_k_blocks counts the logical KV blocks visible to sparse routing. For cached decode this
+                           // spans the concatenated cache + current KV space even though the kernel may source data from
+                           // different tensors under the hood.
+                           options.num_k_blocks,
+                           options.sparse_q_block_size,
+                           false,
+                           options.use_paged_kv ? options.page_table : nullptr,
+                           options.use_paged_kv ? options.page_size : 0,
+                           options.use_paged_kv ? options.num_pages_per_seq : nullptr};
+    // Only the native-precision sparse SDPA mainloop carries the optional
+    // per-K-block valid lengths; the INT8 sparse SAGE mainloop shares the
+    // canonical_nhd_k layout and simply ignores them.
+    if constexpr (has_k_block_valid<MainloopArguments>::value) {
+      args.k_block_valid = options.k_block_valid;
+    }
+    return args;
   } else {
     return {options.softmax_scale,
             static_cast<const float*>(options.mask),
@@ -743,6 +765,9 @@ struct SageKernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            options.execution_schedule,
+            options.execution_schedule_rounds,
+            options.execution_schedule_max_rounds,
         },
         make_sage_mainloop_arguments<typename FMHAKernel::MainloopArguments>(options),
         {},
@@ -945,11 +970,11 @@ struct SparseSageConfig {
       cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
                           decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
 
-  template <bool isVarLen, bool CachedKV, bool PagedKV, class Scheduler>
+  template <bool HasMask, bool CachedKV, class Scheduler>
   static int run(const Options& options) {
     cutlass::KernelHardwareInfo hw_info;
     hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
-    using ProblemShapeType = cutlass::fmha::kernel::SparseSageProblemShape<isVarLen>;
+    using ProblemShapeType = cutlass::fmha::kernel::SparseSageProblemShape<false>;
     using TiledMMAQK = typename TiledMMAHelper<MMA_Atom<MMAOperation>, Layout<TileShapeQK>, SubgroupLayoutQK>::TiledMMA;
     using TiledMMAPV =
         typename TiledMMAHelper<MMA_Atom<MMAOperationPV>, Layout<TileShapePV>, SubgroupLayoutPV>::TiledMMA;
@@ -970,7 +995,7 @@ struct SparseSageConfig {
     using MainloopDispatchPolicy = cutlass::sage::XeDefault<PipelineStages>;
     if constexpr (Causal) {
       using CollectiveMainloop =
-          cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
+          cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, false,
                                                              UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
                                                              TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
                                                              TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
@@ -980,44 +1005,41 @@ struct SparseSageConfig {
                                                            GmemTiledCopyO>;
       using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
                                                                       CollectiveEpilogue, Scheduler>;
-      SageKernelRunner<FMHAKernel, isVarLen> runner;
+      SageKernelRunner<FMHAKernel, false> runner;
+      CUTLASS_CHECK(runner.run(options, hw_info));
+    } else if constexpr (HasMask) {
+      using CollectiveMainloop =
+          cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, false,
+                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                                             TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                                             TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
+                                                             GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
+      using CollectiveEpilogue =
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
+      SageKernelRunner<FMHAKernel, false> runner;
       CUTLASS_CHECK(runner.run(options, hw_info));
     } else {
-      if (options.mask) {
       using CollectiveMainloop =
-            cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
-                                                               TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
-                                                               TensorK_cache, TensorV_cache, GmemTiledCopyQ,
-                                                               GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
-                                                               GmemTiledCopyV_cache>;
-        using CollectiveEpilogue =
-            cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
-                                                             GmemTiledCopyO>;
-        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
-                                                                        CollectiveEpilogue, Scheduler>;
-        SageKernelRunner<FMHAKernel, isVarLen> runner;
-        CUTLASS_CHECK(runner.run(options, hw_info));
-      } else {
-        using CollectiveMainloop =
-            cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, PagedKV,
-                                                               UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
-                                                               TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
-                                                               TensorK_cache, TensorV_cache, GmemTiledCopyQ,
-                                                               GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
-                                                               GmemTiledCopyV_cache>;
-        using CollectiveEpilogue =
-            cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
-                                                             GmemTiledCopyO>;
-        using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
-                                                                        CollectiveEpilogue, Scheduler>;
-        SageKernelRunner<FMHAKernel, isVarLen> runner;
-        CUTLASS_CHECK(runner.run(options, hw_info));
-      }
+          cutlass::fmha::collective::SPARSESAGEV1FwdMainloop<MainloopDispatchPolicy, Causal, false, CachedKV, false,
+                                                             UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, TiledMMAQK,
+                                                             TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                                             TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
+                                                             GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
+      using CollectiveEpilogue =
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
+      SageKernelRunner<FMHAKernel, false> runner;
+      CUTLASS_CHECK(runner.run(options, hw_info));
     }
     return 0;
   }
 
+  template <bool HasMask, bool CachedKV = false>
   static int run(const Options& options) {
     if (options.use_paged_kv || options.varlen) {
       throw std::runtime_error("Sparse Sage does not support paged KV or varlen in v1");
@@ -1033,9 +1055,127 @@ struct SparseSageConfig {
       throw std::runtime_error("Sparse Sage requires lut and valid_block_num");
     }
     if (options.seq_len_kv_cache > 0) {
-      return run<false, true, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      throw std::runtime_error("Sparse Sage cached decode is not supported by the split sparse kernel path in v1");
     }
-    return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+    return run<HasMask, CachedKV, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+  }
+};
+
+// Independent native-precision sparse path built on the dense SDPA mainloop
+// (SPARSESDPAFwdMainloop). Unlike SparseSageConfig it does not dequantize INT8
+// Q/K: Q/K/V are bf16/fp16 and the softmax applies `params.scale` directly.
+template <bool Causal, typename TileShapeQK, typename TileShapePV, typename TileShapeOutput,
+          typename SubgroupLayoutQK, typename SubgroupLayoutPV_, int PipelineStages, bool persistent,
+          typename ElementQ = bfloat16_t, typename ElementK = bfloat16_t, typename ElementV = bfloat16_t,
+          typename ElementO = ElementQ, typename MMAOperation_ = void,
+          typename StrideQ = Stride<int, _1, int, int>, typename StrideK = Stride<int, _1, int, int>,
+          typename StrideV = Stride<_1, int, int, int>, typename StrideO = Stride<int, _1, int, int>,
+          typename GmemTiledCopyQ = void, typename GmemTiledCopyK = void, typename GmemTiledCopyV = void,
+          typename GmemTiledCopyO = void>
+struct SparseSDPAConfig {
+  static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
+  // Native-precision Q*K MMA: bf16 -> float/bf16 DPAS, fp16 -> float/half DPAS.
+  using MMAOperation = cute::conditional_t<
+      is_void_v<MMAOperation_>,
+      typename cute::conditional_t<
+          cute::is_same_v<ElementQ, cutlass::float_e5m2_t> || cute::is_same_v<ElementQ, cutlass::float_e4m3_t>,
+          XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, half_t>,
+          XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementQ>>,
+      MMAOperation_>;
+  using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
+                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
+  using SubgroupLayoutPV =
+      cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
+                          decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
+
+  template <bool HasMask, bool CachedKV, class Scheduler, bool CacheQuery = false>
+  static int run(const Options& options) {
+    cutlass::KernelHardwareInfo hw_info;
+    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    using ProblemShapeType = cutlass::fmha::kernel::SparseSageProblemShape<false>;
+    using TiledMMAQK = typename TiledMMAHelper<MMA_Atom<MMAOperation>, Layout<TileShapeQK>, SubgroupLayoutQK>::TiledMMA;
+    using TiledMMAPV =
+        typename TiledMMAHelper<MMA_Atom<MMAOperationPV>, Layout<TileShapePV>, SubgroupLayoutPV>::TiledMMA;
+    static_assert(get<0>(TileShapeOutput{}) == get<0>(TileShapePV{}),
+                  "Output tile and P*V tile have different sizes in Q dimension");
+    constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
+    auto make_dummy_tensor = [&](auto val, auto stride) {
+      return make_tensor(make_gmem_ptr(&val), make_layout(repeat<rank_v<decltype(stride)>>(1), stride));
+    };
+    using TensorQ = decltype(make_dummy_tensor(ElementQ{}, StrideQ{}));
+    using TensorK = decltype(make_dummy_tensor(ElementK{}, StrideK{}));
+    using TensorV = decltype(make_dummy_tensor(ElementV{}, StrideV{}));
+    using TensorO = decltype(make_dummy_tensor(ElementO{}, StrideO{}));
+    using TensorK_cache = TensorK;
+    using TensorV_cache = TensorV;
+    using GmemTiledCopyK_cache = GmemTiledCopyK;
+    using GmemTiledCopyV_cache = GmemTiledCopyV;
+    using MainloopDispatchPolicy = cutlass::sdpa::XeDefault<PipelineStages>;
+    if constexpr (Causal) {
+      using CollectiveMainloop =
+          cutlass::fmha::collective::SPARSESDPAFwdMainloop<MainloopDispatchPolicy, true, false, CachedKV, false,
+                                                          TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                                          TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
+                                                          GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache,
+                                                          CacheQuery>;
+      using CollectiveEpilogue =
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
+      SageKernelRunner<FMHAKernel, false> runner;
+      CUTLASS_CHECK(runner.run(options, hw_info));
+    } else if constexpr (HasMask) {
+      using CollectiveMainloop =
+          cutlass::fmha::collective::SPARSESDPAFwdMainloop<MainloopDispatchPolicy, false, true, CachedKV, false,
+                                                          TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                                          TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
+                                                          GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache,
+                                                          CacheQuery>;
+      using CollectiveEpilogue =
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
+      SageKernelRunner<FMHAKernel, false> runner;
+      CUTLASS_CHECK(runner.run(options, hw_info));
+    } else {
+      using CollectiveMainloop =
+          cutlass::fmha::collective::SPARSESDPAFwdMainloop<MainloopDispatchPolicy, false, false, CachedKV, false,
+                                                          TiledMMAQK, TiledMMAPV, VTiles, TensorQ, TensorK, TensorV,
+                                                          TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
+                                                          GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache,
+                                                          CacheQuery>;
+      using CollectiveEpilogue =
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
+      using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
+                                                                      CollectiveEpilogue, Scheduler>;
+      SageKernelRunner<FMHAKernel, false> runner;
+      CUTLASS_CHECK(runner.run(options, hw_info));
+    }
+    return 0;
+  }
+
+  template <bool HasMask, bool CachedKV = false, bool CacheQuery = false>
+  static int run(const Options& options) {
+    if (options.use_paged_kv || options.varlen) {
+      throw std::runtime_error("Sparse SDPA does not support paged KV or varlen in v1");
+    }
+    if (options.block_K != nullptr || options.block_V != nullptr) {
+      if (options.seq_len_kv_cache <= 0 || options.seq_len_qo != 1) {
+        throw std::runtime_error("Sparse SDPA only supports block_K/block_V for seq_len_q == 1 cached decode in v1");
+      }
+    } else if (options.seq_len_kv_cache > 0) {
+      throw std::runtime_error("Sparse SDPA cached decode requires block_K/block_V cache tensors");
+    }
+    if (options.lut == nullptr || options.valid_block_num == nullptr) {
+      throw std::runtime_error("Sparse SDPA requires lut and valid_block_num");
+    }
+    if (options.seq_len_kv_cache > 0) {
+      throw std::runtime_error("Sparse SDPA cached decode is not supported by the split sparse kernel path in v1");
+    }
+    return run<HasMask, CachedKV, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler, CacheQuery>(options);
   }
 };
 #endif  // ARK_SDPA_ENABLE_SPARSE
@@ -1105,7 +1245,8 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
 #endif  // ARK_SDPA_ENABLE_DENSE
 
 #if defined(ARK_SDPA_ENABLE_SPARSE)
-template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_256, _64, _32>;
@@ -1116,15 +1257,19 @@ inline int launch_sparse_sage_prefill_kernel_128(Options const& options) {
   using ShapePV1 = Shape<_256, _32, _64>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
-  return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
-                                              ElementO>::run(options)
-                           : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
-                                             ElementV, ElementO>::run(options);
+  if constexpr (Causal) {
+    return SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  } else {
+    return SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_128_qtile128(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_128, _64, _32>;
@@ -1135,15 +1280,19 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile128(Options const& options
   using ShapePV1 = Shape<_128, _32, _64>;
   using ShapeOut1 = Shape<_128, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_8, _1, _1>>;
-  return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
-                                              ElementO>::run(options)
-                           : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
-                                             ElementV, ElementO>::run(options);
+  if constexpr (Causal) {
+    return SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  } else {
+    return SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_128_qtile64(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_64, _64, _32>;
@@ -1154,15 +1303,19 @@ inline int launch_sparse_sage_prefill_kernel_128_qtile64(Options const& options)
   using ShapePV1 = Shape<_64, _32, _64>;
   using ShapeOut1 = Shape<_64, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_4, _1, _1>>;
-  return options.is_causal ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                              void, PipelineStages, false, ElementQ, ElementK, ElementV,
-                                              ElementO>::run(options)
-                           : SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1,
-                                             SubgroupLayoutQK1, void, PipelineStages, false, ElementQ, ElementK,
-                                             ElementV, ElementO>::run(options);
+  if constexpr (Causal) {
+    return SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  } else {
+    return SparseSageConfig<false, false, true, true, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void,
+                            PipelineStages, false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(
+        options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
 inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_128, _64, _32>;
@@ -1170,13 +1323,119 @@ inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
   using ShapeOut = Shape<_128, _64>;
   using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
   using SubgroupLayoutPV = void;
-  return options.is_causal
-             ? SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
-                                ElementO>::run(options)
-             : SparseSageConfig<false, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                                SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
-                                ElementO>::run(options);
+  if constexpr (Causal) {
+    return SparseSageConfig<true, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
+                            SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
+                            ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSageConfig<false, false, true, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
+                            SubgroupLayoutPV, PipelineStages, false, ElementQ, ElementK, ElementV,
+                            ElementO>::template run<HasMask>(options);
+  }
+}
+
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sdpa_prefill_kernel_128(Options const& options) {
+  constexpr int PipelineStages = 1;
+  using ShapeQK = Shape<_256, _32, _32>;
+  using ShapePV = Shape<_256, _32, _32>;
+  using ShapeOut = Shape<_256, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  using ShapeQK1 = Shape<_256, _32, _32>;
+  using ShapePV1 = Shape<_256, _32, _32>;
+  using ShapeOut1 = Shape<_256, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
+  if constexpr (Causal) {
+    return SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false, ElementQ,
+                            ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSDPAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages, false,
+                            ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  }
+}
+
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sdpa_prefill_kernel_128_qtile64(Options const& options) {
+  constexpr int PipelineStages = 1;
+  using ShapeQK = Shape<_64, _64, _32>;
+  using ShapePV = Shape<_64, _32, _64>;
+  using ShapeOut = Shape<_64, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
+  using ShapeQK1 = Shape<_64, _64, _32>;
+  using ShapePV1 = Shape<_64, _32, _64>;
+  using ShapeOut1 = Shape<_64, _128>;
+  using SubgroupLayoutQK1 = Layout<Shape<_8, _1, _1>>;
+  if constexpr (Causal) {
+    return SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false, ElementQ,
+                            ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSDPAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages, false,
+                            ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  }
+}
+
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sdpa_prefill_kernel_128_qtile128(Options const& options) {
+  constexpr int PipelineStages = 1;
+  if constexpr (!Causal && !HasMask && cute::is_same_v<ElementQ, bfloat16_t>) {
+    if (options.sparse_q_block_size == 128) {
+      using ShapeQK = Shape<_128, _64, _32>;
+      using ShapePV = Shape<_128, _32, _64>;
+      using ShapeOut = Shape<_128, _128>;
+      using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+      return SparseSDPAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false,
+                              ElementQ, ElementK, ElementV, ElementO>::template run<false, false, true>(options);
+    }
+  }
+  using ShapeQK = Shape<_128, _32, _32>;
+  using ShapePV = Shape<_128, _32, _32>;
+  using ShapeOut = Shape<_128, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  if constexpr (Causal) {
+    return SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false, ElementQ,
+                            ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSDPAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false,
+                            ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  }
+}
+
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sdpa_prefill_kernel_128_qtile512(Options const& options) {
+  constexpr int PipelineStages = 1;
+  using ShapeQK = Shape<_512, _32, _32>;
+  using ShapePV = Shape<_512, _32, _32>;
+  using ShapeOut = Shape<_512, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_32, _1, _1>>;
+  if constexpr (Causal) {
+    return SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false, ElementQ,
+                            ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSDPAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages, false,
+                            ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  }
+}
+
+template <bool Causal, bool HasMask, typename ElementQ, typename ElementK, typename ElementV,
+          typename ElementO = ElementV>
+inline int launch_sparse_sdpa_prefill_kernel_64(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_128, _64, _32>;
+  using ShapePV = Shape<_128, _32, _64>;
+  using ShapeOut = Shape<_128, _64>;
+  using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
+  using SubgroupLayoutPV = void;
+  if constexpr (Causal) {
+    return SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages,
+                            false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  } else {
+    return SparseSDPAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages,
+                            false, ElementQ, ElementK, ElementV, ElementO>::template run<HasMask>(options);
+  }
 }
 #endif  // ARK_SDPA_ENABLE_SPARSE
 

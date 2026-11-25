@@ -1,10 +1,11 @@
 import os
 import sys
-from typing import Mapping
+from collections.abc import Mapping
 
 import pytest
 
 from .fixtures import *
+from .helpers import noop_torch_compile
 
 # Easy debugging without installing auto-round.
 sys.path.insert(0, "..")
@@ -43,6 +44,28 @@ def pytest_addoption(parser):
         default="lazy",
         help="{compile|lazy}, default lazy. Choose mode to run tests",
     )
+
+
+@pytest.fixture(autouse=True)
+def reset_context_singletons():
+    """Clear the process-wide context singletons between tests.
+
+    Contexts live for the whole process, so a test that runs a real
+    quantization leaves one behind and changes what later tests observe. For
+    example ``is_immediate_saving_mode()`` consults ``CompressContext`` first,
+    so a leaked context makes it report an ordinary model as immediately
+    saved, and ``test_export_utils.py`` fails only when it runs after
+    ``test_generation.py``.
+    """
+    yield
+
+    from auto_round.compressors.shard_writer import ShardWriter
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+
+    for context in (CompressContext, ModelContext):
+        context.reset_context()
+    ShardWriter.reset()
 
 
 backup_env = pytest.StashKey[Mapping]()
@@ -123,4 +146,4 @@ def disable_torch_compile_by_default(request, monkeypatch):
     except Exception:
         return
 
-    monkeypatch.setattr(torch, "compile", lambda function, *args, **kwargs: function, raising=False)
+    monkeypatch.setattr(torch, "compile", noop_torch_compile, raising=False)

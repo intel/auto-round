@@ -36,6 +36,26 @@ _CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 
 
+from auto_round.schemes import QuantizationScheme
+
+
+def _make_awq_transform(config, *, scheme=None):
+    """Bind isolated AWQ tests to the run-owned quantization scheme."""
+    from types import SimpleNamespace
+
+    from auto_round.algorithms.transforms.awq.base import AWQTransform
+    from auto_round.algorithms.transforms.awq.qdq import QDQTool
+    from auto_round.schemes import QuantizationScheme
+
+    scheme = scheme or QuantizationScheme()
+    transform = config if isinstance(config, AWQTransform) else AWQTransform(config)
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
+    transform._qdq_tool = QDQTool(
+        bits=scheme.bits, group_size=scheme.group_size, sym=scheme.sym, data_type=scheme.data_type
+    )
+    return transform
+
+
 class TestAWQNormalLLM:
     """AWQ W4A16 quantization on a plain (non-MoE) tiny LLM."""
 
@@ -400,7 +420,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=128, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -436,7 +458,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=128, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -494,7 +518,7 @@ class TestAWQMoE:
         assert transform._mapping_is_smoothable(mapping) is False
         assert any("different quantization parameters" in warning for warning in warnings)
 
-    def test_awq_grid_search_uses_per_balance_layer_quantizer(self):
+    def test_awq_grid_search_uses_per_balance_layer_quant_func(self):
         """Direct grid search should pass each balance layer's own resolved quant function."""
         import torch.nn as nn
 
@@ -502,7 +526,9 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
         from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
-        transform = AWQTransform(AWQConfig(bits=4, group_size=8, sym=True, data_type="int", duo_scaling=False))
+        transform = _make_awq_transform(
+            AWQConfig(duo_scaling=False), scheme=QuantizationScheme(bits=4, group_size=8, sym=True, data_type="int")
+        )
 
         ln = nn.LayerNorm(8)
         q = nn.Linear(8, 8, bias=False)
@@ -524,14 +550,14 @@ class TestAWQMoE:
         }
         records = []
 
-        def fake_resolve_quantizer(params):
-            return f"{params['data_type']}_{params['bits']}"
+        def fake_resolve_quant_funcs(params):
+            return f"{params['data_type']}_{params['bits']}", None
 
-        def fake_qdq(weight, params, *, quantizer=None, imatrix=None):
-            records.append((params["data_type"], params["bits"], quantizer))
+        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None, init_scale=None):
+            records.append((params["data_type"], params["bits"], quant_func))
             return weight
 
-        transform._qdq_tool.resolve_quantizer = fake_resolve_quantizer
+        transform._qdq_tool.resolve_quant_funcs = fake_resolve_quant_funcs
         transform._qdq_tool.qdq = fake_qdq
 
         transform._grid_search_scales(mapping, torch.ones(8))
@@ -567,8 +593,9 @@ class TestAWQMoE:
 
         torch.manual_seed(0)
         model = TinyModel()
-        transform = AWQTransform(
-            AWQConfig(bits=4, group_size=2, sym=True, data_type="int", apply_clip=True, clip_n_sample_token=32)
+        transform = _make_awq_transform(
+            AWQConfig(apply_clip=True, clip_n_sample_token=32),
+            scheme=QuantizationScheme(bits=4, group_size=2, sym=True, data_type="int"),
         )
         mapping = ResolvedMapping(
             smooth_name="block.up_proj",
@@ -624,7 +651,9 @@ class TestAWQMoE:
                 return self.block(items=items, payload=payload)
 
         model = TinyModel()
-        transform = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
+        transform = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
         mapping = ResolvedMapping(
             smooth_name="block.smooth",
             smooth_layer=model.block.smooth,
@@ -682,8 +711,12 @@ class TestAWQMoE:
             ((hidden_states,), {"position_ids": position_ids, "cache_position": cache_position, "payload": payload})
         ]
 
-        full = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
-        micro = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int", smooth_batch_size=2))
+        full = _make_awq_transform(
+            AWQConfig(), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
+        micro = _make_awq_transform(
+            AWQConfig(smooth_batch_size=2), scheme=QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int")
+        )
 
         full_outputs = full._run_parent_samples(parent, kwargs_list)
         parent.batch_sizes.clear()
@@ -831,16 +864,13 @@ class TestAWQWeightClip:
 
         layer = nn.Linear(4, 2, bias=False)
         layer.weight.data = torch.tensor([[-8.0, -2.0, 1.0, 2.0], [-1.0, 3.0, 4.0, 5.0]])
-        transform = AWQTransform(
+        transform = _make_awq_transform(
             AWQConfig(
-                bits=4,
-                group_size=4,
-                sym=False,
-                data_type="int",
                 apply_clip=True,
                 clip_n_grid=2,
                 clip_n_sample_token=32,
-            )
+            ),
+            scheme=QuantizationScheme(bits=4, group_size=4, sym=False, data_type="int"),
         )
 
         input_feat = torch.randn(32, 4)
@@ -873,15 +903,16 @@ class TestAWQWeightClip:
         ar = AutoRound(
             tiny_opt_model_path,
             alg_configs=[
-                AWQConfig(
-                    bits=4, group_size=128, sym=True, apply_clip=True, n_grid=2, clip_n_grid=2, clip_n_sample_token=8
-                ),
+                AWQConfig(apply_clip=True, n_grid=2, clip_n_grid=2, clip_n_sample_token=8),
                 RTNConfig(disable_opt_rtn=True),
             ],
             nsamples=2,
             seqlen=8,
             batch_size=2,
             device_map=device,
+            bits=4,
+            group_size=128,
+            sym=True,
         )
         model, layer_config = ar.quantize()
 
@@ -907,9 +938,6 @@ class TestAWQWeightClip:
             tiny_opt_model_path,
             alg_configs=[
                 AWQConfig(
-                    bits=4,
-                    group_size=128,
-                    sym=True,
                     apply_clip=True,
                     clip_as_init=True,
                     n_grid=2,
@@ -923,6 +951,9 @@ class TestAWQWeightClip:
             batch_size=2,
             device_map=device,
             enable_torch_compile=False,  # disable torch.compile to keep this deterministic in CI.
+            bits=4,
+            group_size=128,
+            sym=True,
         )
         model, layer_config = ar.quantize()
 
@@ -961,7 +992,7 @@ class TestAWQUseV2ScaleSearch:
         from auto_round.algorithms.transforms.awq.base import AWQTransform
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
-        return AWQTransform(AWQConfig(n_grid=1, apply_smooth=True))
+        return _make_awq_transform(AWQConfig(n_grid=1, apply_smooth=True))
 
     def test_rtn_block_is_not_v2(self):
         """An RTN block quantizer must NOT be detected as V2."""
@@ -969,7 +1000,7 @@ class TestAWQUseV2ScaleSearch:
 
         q = self._awq_transform()
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
 
     def test_use_v2_false_for_non_v2_block(self):
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""
@@ -979,7 +1010,28 @@ class TestAWQUseV2ScaleSearch:
         block = SignRoundConfig(iters=1)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
+
+    def test_init_scale_dispatch_by_data_type(self):
+        """``search_optimized_init_scale`` injects only for sym int/mx/nv."""
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, search_optimized_init_scale
+
+        for dt, gs in (("int_sym", 128), ("mx_fp4", 32), ("nv_fp4", 16)):
+            weight = torch.randn(32, 128)
+            weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, gs)
+            init_scale = search_optimized_init_scale(weight_reshape, dt, 4, None)
+            assert init_scale is not None, dt
+            assert init_scale.shape[0] == weight_reshape.shape[0]
+
+        # Scalar imatrix sentinels mean uniform importance and must not enter
+        # the tensor reshape path.
+        scalar_init_scale = search_optimized_init_scale(weight_reshape, "mx_fp4", 4, 1.0)
+        assert scalar_init_scale is not None
+        assert scalar_init_scale.shape == init_scale.shape
+
+        # asym int and *_dq are not part of the optimized init-scale path.
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
+        assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None
 
     def test_nvfp4_opt_rtn_accepts_uniform_imatrix_sentinel(self):
         """AWQ's SignRound-V1 QDQ may call optimized RTN without a collected imatrix."""

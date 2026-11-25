@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -22,9 +22,7 @@ from . import (
 )
 from . import sagev1 as _dense_sagev1
 from . import sagev1_pvi8 as _dense_sagev1_pvi8
-from . import (
-    sdpa,
-)
+from . import sdpa
 
 
 def _get_xpu_sparse_kernel_backend() -> str:
@@ -199,6 +197,177 @@ def sage_sparse(
     return O
 
 
+def block_sparse_sdpa(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    lut: torch.Tensor,
+    valid_block_num: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    q_tile_override: int = 0,
+    sparse_q_block_tokens: int | None = None,
+    sparse_k_block_tokens: int | None = None,
+    tensor_layout: str = "HND",
+    execution_schedule: torch.Tensor | None = None,
+    execution_schedule_rounds: torch.Tensor | None = None,
+    k_block_valid: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Low-level native-precision sparse attention (BF16/FP16) routed by sparse LUT metadata.
+
+    Independent path built on the dense-SDPA sparse mainloop (SparseSDPAConfig).
+    Unlike the INT8 ``sage_sparse`` path it does not reuse the INT8-centric SAGE
+    mainloop; Q/K/V are native BF16/FP16 and the softmax scale is applied directly.
+
+    ``k_block_valid`` (optional, int32, one entry per 64-token routed K block) caps
+    how many keys of each block are real; columns past the limit are masked to
+    -inf before softmax. Blocks with a zero length must not be routed by ``lut``.
+    Use :func:`supports_k_block_valid` to check whether a build understands it.
+    """
+    del dropout_p, enable_gqa
+    if query.device.type != "xpu":
+        raise NotImplementedError("block_sparse_sdpa is only supported on XPU")
+    if query.dtype not in (torch.bfloat16, torch.float16):
+        raise ValueError(f"Q/K/V must be bfloat16 or float16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"Q/K/V dtypes must match, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
+    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
+        raise ValueError("lut and valid_block_num must be int32 tensors")
+    if lut.device != query.device or valid_block_num.device != query.device:
+        raise ValueError("lut and valid_block_num must be on the same XPU device as Q/K/V")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    _validate_gqa_head_config(Hq, Hkv, op_name="block_sparse_sdpa")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    effective_sparse_q_block_tokens = 64 if sparse_q_block_tokens is None else int(sparse_q_block_tokens)
+    effective_sparse_k_block_tokens = 64 if sparse_k_block_tokens is None else int(sparse_k_block_tokens)
+    if effective_sparse_q_block_tokens <= 0 or effective_sparse_k_block_tokens <= 0:
+        raise ValueError(
+            "sparse_q_block_tokens and sparse_k_block_tokens must be positive when provided; "
+            f"got {effective_sparse_q_block_tokens} and {effective_sparse_k_block_tokens}"
+        )
+
+    q_sparse_blocks = (Sq + effective_sparse_q_block_tokens - 1) // effective_sparse_q_block_tokens
+    kv_sparse_blocks = (Skv + effective_sparse_k_block_tokens - 1) // effective_sparse_k_block_tokens
+    if tuple(lut.shape) != (B, Hq, q_sparse_blocks, kv_sparse_blocks):
+        raise ValueError(f"lut must have shape {(B, Hq, q_sparse_blocks, kv_sparse_blocks)}, got {tuple(lut.shape)}")
+    if tuple(valid_block_num.shape) != (B, Hq, q_sparse_blocks):
+        raise ValueError(
+            f"valid_block_num must have shape {(B, Hq, q_sparse_blocks)}, got {tuple(valid_block_num.shape)}"
+        )
+    if k_block_valid is not None:
+        if effective_sparse_k_block_tokens != 64:
+            raise ValueError("k_block_valid currently requires sparse_k_block_tokens=64")
+        if k_block_valid.dtype != torch.int32:
+            raise ValueError("k_block_valid must be an int32 tensor")
+        if tuple(k_block_valid.shape) != (kv_sparse_blocks,):
+            raise ValueError(f"k_block_valid must have shape {(kv_sparse_blocks,)}, got {tuple(k_block_valid.shape)}")
+        if k_block_valid.device != query.device:
+            raise ValueError("k_block_valid must be on the same XPU device as Q/K/V")
+        if not k_block_valid.is_contiguous():
+            raise ValueError("k_block_valid must be contiguous")
+        if bool(((k_block_valid < 0) | (k_block_valid > 64)).any().item()):
+            raise ValueError("k_block_valid entries must be in [0, 64]")
+    if torch.any(valid_block_num < 0).item():
+        raise ValueError("valid_block_num entries must be non-negative")
+    if torch.any(valid_block_num > kv_sparse_blocks).item():
+        raise ValueError(f"valid_block_num entries must be <= {kv_sparse_blocks}")
+
+    if D == 128 and effective_sparse_q_block_tokens == 128:
+        if query.dtype != torch.bfloat16 or is_causal or attn_mask is not None:
+            raise ValueError("128-token query routing requires non-causal, unmasked BF16 attention")
+
+    if D == 64 and q_tile_override not in (0, 64, 128):
+        raise ValueError(
+            f"q_tile_override must be one of {{0, 64, 128}} for block_sparse_sdpa with head_dim=64, got {q_tile_override}"
+        )
+    if (execution_schedule is None) != (execution_schedule_rounds is None):
+        raise ValueError("execution_schedule and execution_schedule_rounds must be provided together")
+    schedule_max_rounds = 0
+    if execution_schedule is not None:
+        if query.dtype != torch.bfloat16:
+            raise ValueError("execution schedules are currently supported only for BF16 block_sparse_sdpa")
+        if q_tile_override not in (256, 512) or effective_sparse_q_block_tokens != 64:
+            raise ValueError("execution schedules require q_tile_override in {256, 512} and sparse_q_block_tokens=64")
+        rows_per_group = q_tile_override // effective_sparse_q_block_tokens
+        q_groups = (q_sparse_blocks + rows_per_group - 1) // rows_per_group
+        if execution_schedule.dtype != torch.int32 or execution_schedule_rounds.dtype != torch.int32:
+            raise ValueError("execution_schedule and execution_schedule_rounds must be int32 tensors")
+        if execution_schedule.device != query.device or execution_schedule_rounds.device != query.device:
+            raise ValueError("execution schedule tensors must be on the same XPU device as Q/K/V")
+        if execution_schedule.ndim != 5 or tuple(execution_schedule.shape[:4]) != (B, Hq, q_groups, rows_per_group):
+            raise ValueError(
+                "execution_schedule must have shape "
+                f"{(B, Hq, q_groups, rows_per_group, '<rounds>')}, got {tuple(execution_schedule.shape)}"
+            )
+        if tuple(execution_schedule_rounds.shape) != (B, Hq, q_groups):
+            raise ValueError(
+                f"execution_schedule_rounds must have shape {(B, Hq, q_groups)}, "
+                f"got {tuple(execution_schedule_rounds.shape)}"
+            )
+        schedule_max_rounds = execution_schedule.shape[-1]
+
+    lib = get_lib(query)
+    if not hasattr(lib, "block_sparse_sdpa"):
+        raise RuntimeError("Loaded XPU extension does not expose block_sparse_sdpa")
+    effective_q_tile_override = _resolve_sparse_prefill_q_tile_override(
+        head_dim=D,
+        quant_block_size=64,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=effective_sparse_q_block_tokens,
+        sparse_k_block_tokens=effective_sparse_k_block_tokens,
+        tensor_layout=tensor_layout,
+        allow_multi_row_tile=True,
+    )
+    stream = get_stream(query)
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout)
+    q_dtype = 1 if query.dtype == torch.bfloat16 else 0  # FlashAttnDtype: 0=FP16, 1=BF16
+    lib.block_sparse_sdpa(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        lut.data_ptr(),
+        valid_block_num.data_ptr(),
+        q_sparse_blocks,
+        kv_sparse_blocks,
+        effective_q_tile_override,
+        *_attention_strides_qko(query, tensor_layout),
+        *_attention_strides_qko(key, tensor_layout),
+        *_attention_strides_v(value, tensor_layout),
+        *_attention_strides_qko(O, tensor_layout),
+        q_dtype,
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        execution_schedule.data_ptr() if execution_schedule is not None else 0,
+        execution_schedule_rounds.data_ptr() if execution_schedule_rounds is not None else 0,
+        schedule_max_rounds,
+        k_block_valid.data_ptr() if k_block_valid is not None else 0,
+    )
+    return O
+
+
 def sage_sparse_row_linear(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -301,7 +470,7 @@ def sageattn(
     v: torch.Tensor,
     tensor_layout: str = "HND",
     is_causal: bool = False,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     return_lse: bool = False,
     kernel: str = "v1_pvhalf",
     **kwargs,
@@ -383,7 +552,7 @@ def _normalize_sparse_mask(
 
 
 def _normalize_per_head_hparam(
-    value: float | int | torch.Tensor,
+    value: float | torch.Tensor,
     num_heads: int,
     device: torch.device,
     name: str,
@@ -399,8 +568,10 @@ def _normalize_per_head_hparam(
 
 
 def _query_tile_tokens_for_head_dim(head_dim: int) -> int:
+    # Keep the preprocess default aligned with the sparse e2e wrappers: for head_dim 64
+    # the wrappers default to 64-token query tiles, for head_dim 128 to 64 as well.
     if head_dim == 64:
-        return 128
+        return 64
     if head_dim == 128:
         return 64
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
@@ -427,7 +598,7 @@ def _normalize_query_tile_tokens(
 
 def _validate_sparse_q_tile_override_for_head_dim(head_dim: int, q_tile_override: int) -> None:
     if head_dim == 128:
-        supported = (0, 64, 256)
+        supported = (0, 64, 128, 256, 512)
     elif head_dim == 64:
         supported = (0, 128)
     else:
@@ -475,8 +646,8 @@ def _normalize_sparse_k_block_tokens(
     k_route_block_tokens: int,
 ) -> int:
     tokens = quant_block_size if sparse_k_block_tokens is None else int(sparse_k_block_tokens)
-    if tokens != 64:
-        raise ValueError(f"sparse_k_block_tokens={tokens} is not supported; supported value: 64")
+    if tokens not in (64, 128):
+        raise ValueError(f"sparse_k_block_tokens={tokens} is not supported; supported values: 64, 128")
     if tokens <= 0 or tokens % quant_block_size != 0:
         raise ValueError(
             f"sparse_k_block_tokens={tokens} must be a positive multiple of quant_block_size={quant_block_size}"
@@ -515,18 +686,30 @@ def _resolve_sparse_prefill_q_tile_override(
     sparse_q_block_tokens: int,
     sparse_k_block_tokens: int,
     tensor_layout: str,
+    allow_multi_row_tile: bool = False,
 ) -> int:
     _validate_sparse_q_tile_override_for_head_dim(head_dim, q_tile_override)
     if quant_block_size != 64:
         raise ValueError(f"Unsupported quant_block_size={quant_block_size}; supported value: 64")
+    if head_dim == 128 and allow_multi_row_tile and sparse_q_block_tokens == 128:
+        if sparse_k_block_tokens not in (64, 128):
+            raise ValueError("128-token query routing requires sparse_k_block_tokens in {64, 128}")
+        if q_tile_override not in (0, 128):
+            raise ValueError("128-token query routing requires q_tile_override in {0, 128}")
+        return 128
     if sparse_k_block_tokens != 64:
         raise ValueError(f"Unsupported sparse_k_block_tokens={sparse_k_block_tokens}; supported value: 64")
 
     if head_dim == 128:
         if sparse_q_block_tokens == 64:
-            if q_tile_override not in (0, 64):
-                raise ValueError("head_dim=128 with sparse_q_block_tokens=64 requires q_tile_override in {0, 64}")
-            return 64
+            if q_tile_override in (0, 64):
+                return 64
+            if allow_multi_row_tile and q_tile_override in (128, 256, 512):
+                return q_tile_override
+            supported_tiles = "{0, 64, 128, 256, 512}" if allow_multi_row_tile else "{0, 64}"
+            raise ValueError(
+                "head_dim=128 with sparse_q_block_tokens=64 requires " f"q_tile_override in {supported_tiles}"
+            )
         if _is_sparse_qtile256_row64k_config(
             head_dim=head_dim,
             quant_block_size=quant_block_size,
@@ -536,9 +719,10 @@ def _resolve_sparse_prefill_q_tile_override(
             tensor_layout=tensor_layout,
         ):
             return 256
+        q64_tiles = "{0, 64, 256}" if allow_multi_row_tile else "{0, 64}"
         raise ValueError(
             "Unsupported sparse prefill config for head_dim=128; supported configs are "
-            "(sparse_q_block_tokens=64, sparse_k_block_tokens=64, q_tile_override in {0, 64}) and "
+            f"(sparse_q_block_tokens=64, sparse_k_block_tokens=64, q_tile_override in {q64_tiles}) and "
             "(sparse_q_block_tokens=256, sparse_k_block_tokens=64, q_tile_override=256)"
         )
 
@@ -550,6 +734,40 @@ def _resolve_sparse_prefill_q_tile_override(
         return q_tile_override
 
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
+
+
+def supports_k_block_valid(device: torch.device | str | torch.Tensor = "xpu") -> bool:
+    """Return whether this ARK build honours ``k_block_valid`` in ``block_sparse_sdpa``.
+
+    ``k_block_valid`` tells the sparse SDPA kernel how many of the 64 keys in each
+    routed K block hold real tokens. Without it, zero-padded tail tokens (partial
+    edge blocks, truncated prefixes) still enter the softmax denominator. The
+    argument is optional, so callers that need the exact token semantics must
+    probe this before dispatching.
+    """
+    probe = device if isinstance(device, torch.Tensor) else torch.empty(0, device=device)
+    lib = get_lib(probe)
+    kernel = getattr(lib, "block_sparse_sdpa", None)
+    if kernel is None:
+        return False
+    if getattr(lib, "ARK_BLOCK_SPARSE_K_BLOCK_VALID", False):
+        return True
+    # Fall back to the pybind11 signature for builds that predate the capability flag.
+    return "k_block_valid" in (getattr(kernel, "__doc__", "") or "")
+
+
+def supports_q256_multirow(device: torch.device | str | torch.Tensor = "xpu") -> bool:
+    """Return whether the loaded ARK extension runs independent 64Q rows in one Q256 tile.
+
+    The check reports the compiled extension, not the Python routing rules: a
+    build whose native module lacks the Q256 row-64k kernel reports ``False``
+    even though the Python wrapper knows how to describe the configuration.
+    """
+    probe = device if isinstance(device, torch.Tensor) else torch.empty(0, device=device)
+    lib = get_lib(probe)
+    if lib is None or not hasattr(lib, "block_sparse_sdpa"):
+        return False
+    return bool(getattr(lib, "ARK_BLOCK_SPARSE_Q256_MULTIROW", False))
 
 
 def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
@@ -616,19 +834,25 @@ def _build_block_causal_mask(
 def _fill_block_map_torch(
     final_map: torch.Tensor, num_to_select: torch.Tensor, sorted_indices: torch.Tensor
 ) -> torch.Tensor:
+    """Fill ``final_map`` with the top ``num_to_select`` NEW blocks in sorted order.
+
+    The naive implementation looped over every K block (``for rank in range(k_blocks)``),
+    launching a handful of elementwise kernels per iteration. At long sequences that is
+    thousands of sequential kernel launches and dominates the torch preprocess. This
+    version is fully vectorized: for a block at sorted ``rank r`` it is the
+    ``(r - #already_filled_before_r)``-th *new* block, and it is selected iff that index
+    is below the per-row quota.
+    """
     k_blocks = final_map.shape[-1]
-    filled = final_map.clone()
-    column_ids = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
     target_new = torch.maximum(num_to_select, torch.ones_like(num_to_select))
-    added = torch.zeros_like(num_to_select)
-    for rank in range(k_blocks):
-        idx_match = column_ids == sorted_indices[..., rank : rank + 1]
-        is_new = idx_match & ~filled
-        should_add = (added < target_new).unsqueeze(-1)
-        newly_selected = should_add & is_new
-        filled |= newly_selected
-        added = added + newly_selected.any(dim=-1).to(added.dtype)
-    return filled
+    already = torch.gather(final_map, -1, sorted_indices)  # is the block at this rank already filled?
+    already_cum = torch.cumsum(already.to(torch.int64), dim=-1) - already.to(torch.int64)
+    rank = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
+    new_idx = rank - already_cum  # 0-based index among new blocks at this rank
+    add_new = (new_idx < target_new.unsqueeze(-1)) & ~already
+    chosen = torch.zeros_like(final_map)
+    chosen.scatter_(-1, sorted_indices, add_new)
+    return final_map | chosen
 
 
 def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -637,8 +861,11 @@ def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.T
     one_matrix = torch.ones(block_map.shape, dtype=torch.int32, device=block_map.device)
     cum_matrix = torch.cumsum(one_matrix, dim=-1)
     masked_cum_matrix = cum_matrix * block_map.to(torch.int32)
-    filled_matrix = masked_cum_matrix.clone()
-    filled_matrix[~block_map] = 10_000_000
+    # NOTE: do not use `filled_matrix[~block_map] = 10_000_000` here — boolean-mask
+    # in-place assignment silently misses entries on the XPU backend (torch-xpu-ops),
+    # leaving 0s in the mask that become -1 in the LUT after sort and drive the
+    # ScatterGatherKernels out-of-bounds assert downstream. Use torch.where instead.
+    filled_matrix = torch.where(block_map, masked_cum_matrix, torch.full_like(masked_cum_matrix, 10_000_000))
     lut = torch.sort(filled_matrix, dim=-1)[0] - 1
     lut[..., 1:] = lut[..., 1:] - lut[..., :-1]
     invalid_mask = torch.arange(num_k_blocks, device=block_map.device).view(
@@ -646,6 +873,27 @@ def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.T
     ) >= valid_block_num.unsqueeze(-1)
     lut = torch.where(invalid_mask, torch.zeros_like(lut), lut)
     return lut.to(torch.int32).contiguous(), valid_block_num.to(torch.int32).contiguous()
+
+
+def _lut_to_block_map(lut: torch.Tensor, valid_block_num: torch.Tensor) -> torch.Tensor:
+    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
+        raise ValueError("lut and valid_block_num must be int32 tensors")
+    if lut.shape[:-1] != valid_block_num.shape:
+        raise ValueError(
+            f"lut and valid_block_num shape mismatch: expected lut.shape[:-1] == valid_block_num.shape, "
+            f"got {tuple(lut.shape)} and {tuple(valid_block_num.shape)}"
+        )
+    # Run-length encoded LUT: cumsum recovers the 0-indexed selected block positions.
+    logical_blocks = torch.cumsum(lut.to(torch.int64), dim=-1)
+    # Scatter True at every recovered position. The invalid tail of `logical_blocks`
+    # plateaus at the last selected position, so those duplicate indices do not add
+    # spurious blocks. Do NOT scatter the tail with False (e.g. `scatter_(-1, idx, mask)`):
+    # masked-out positions all index slot 0, and their trailing False writes clobber a
+    # selected block at position 0, silently dropping it. Empty rows are cleared below.
+    block_map = torch.zeros_like(lut, dtype=torch.bool)
+    block_map.scatter_(-1, logical_blocks, True)
+    block_map &= valid_block_num.unsqueeze(-1) > 0
+    return block_map.contiguous()
 
 
 def _prefix_keep_cross_attn_enabled() -> bool:
@@ -677,7 +925,7 @@ def _prefix_protection_requested() -> bool:
 
 
 def _get_explicit_protected_prefix(
-    ctx: "_SpargePreprocessContext",
+    ctx: _SpargePreprocessContext,
 ) -> tuple[int, int]:
     protected_tokens = _get_protected_kv_tokens()
     protected_sparse_blocks = _get_protected_kv_blocks()
@@ -699,7 +947,7 @@ def _get_explicit_protected_prefix(
 
 
 def _get_prefix_protection_blocks(
-    ctx: "_SpargePreprocessContext",
+    ctx: _SpargePreprocessContext,
     *,
     raw_block_count: int,
     tile_block_count: int,
@@ -750,6 +998,7 @@ def _pool_sim_and_quant_torch(
     sim_threshold: torch.Tensor,
     tensor_layout: str,
     mean_subtract: torch.Tensor | None = None,
+    force_partial_tail_dense: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     layout = _normalize_tensor_layout(tensor_layout)
     if layout == "HND":
@@ -787,12 +1036,11 @@ def _pool_sim_and_quant_torch(
     grams = torch.matmul(normalized, normalized.transpose(-1, -2))
     mean_sim = grams.sum(dim=(-1, -2)) / counts.squeeze(-1).squeeze(-1).pow(2)
     sim_blocks = mean_sim > sim_threshold.view(1, num_heads, 1)
-    # Match the CUDA reference (SpargeAttn spas_sage_attn/utils.py): a partial
-    # tail block (pad_tokens > 0 only ever affects the last block) divides padded
-    # rows by a zero norm there (0/0 -> NaN -> NaN > thr == False), forcing it
-    # dense. Our guarded norm would mark it prunable and sparsify the sequence
-    # tail (= last video frames), so force the partial last block to False.
-    if pad_tokens:
+    # Match the CUDA reference for K routing: mark a partial K tail block as not
+    # similar so every query keeps it selected. For Q routing we instead use the
+    # valid-token statistics; forcing a partial Q block dense would select all K
+    # blocks, doubling that tile's rounds without improving its sparse error.
+    if pad_tokens and force_partial_tail_dense:
         sim_blocks[:, :, -1] = False
 
     max_abs = x_blocks.abs().amax(dim=(-1, -2)).clamp_min_(0.0)
@@ -991,6 +1239,7 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         ctx.quant_block_size,
         ctx.simthreshd1,
         ctx.tensor_layout,
+        force_partial_tail_dense=False,
     )
     pooled_k, sim_kblocks, k_int8_hnd, k_scale = _pool_sim_and_quant_torch(
         ctx.key,
@@ -1017,6 +1266,7 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
                 ctx.query_tile_tokens,
                 ctx.simthreshd1,
                 ctx.tensor_layout,
+                force_partial_tail_dense=False,
             )
             tile_pooled_q.append(pooled_tile[:, :, 0, :])
             tile_sim_q.append(sim_tile[:, :, 0])
@@ -1088,8 +1338,8 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
                 .contiguous()
             )
             tail_map = torch.zeros_like(tail_prob, dtype=torch.bool)
-            tail_map[~tail_sim_k_expand] = True
-            tail_map[~tail_sim_q_expand] = True
+            tail_map |= ~tail_sim_k_expand
+            tail_map |= ~tail_sim_q_expand
             tail_map = _fill_block_map_torch(tail_map, num_to_select_tail, tail_sorted_prob.indices)
             if ctx.cdfthreshd is not None:
                 prefix_mass = pooled_prob[..., :prefix_route_blocks].sum(dim=-1, keepdim=True)
@@ -1111,8 +1361,9 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
             .contiguous()
         )
         final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
-        final_tile_map[~sim_k_expand] = True
-        final_tile_map[~sim_q_expand] = True
+        # Boolean-mask assignment (`t[mask] = val`) is unreliable on XPU; use |= instead.
+        final_tile_map |= ~sim_k_expand
+        final_tile_map |= ~sim_q_expand
         final_tile_map = _fill_block_map_torch(final_tile_map, num_to_select, sorted_prob.indices)
         if ctx.cdfthreshd is not None:
             final_tile_map |= _select_blocks_for_cdf(
@@ -1383,17 +1634,31 @@ def sparge_sage2_attn_meansim_topk_xpu(
 
     effective_query_tile_tokens = query_tile_tokens
     effective_q_tile_override = q_tile_override
+    if D == 64 and effective_query_tile_tokens is None and q_tile_override == 0:
+        effective_query_tile_tokens = 64
     if effective_query_tile_tokens is None and q_tile_override in (64, 128, 256):
         effective_query_tile_tokens = q_tile_override
     elif effective_query_tile_tokens is not None:
         if q_tile_override == 0:
-            effective_q_tile_override = int(effective_query_tile_tokens)
+            effective_q_tile_override = (
+                0 if D == 64 and int(effective_query_tile_tokens) == 64 else int(effective_query_tile_tokens)
+            )
         elif q_tile_override != int(effective_query_tile_tokens):
             raise ValueError(
                 "query_tile_tokens and q_tile_override must match when both are set; "
                 f"got query_tile_tokens={effective_query_tile_tokens}, q_tile_override={q_tile_override}"
             )
-    _validate_sparse_q_tile_override_for_head_dim(D, effective_q_tile_override)
+    if D == 64:
+        supported_q_tiles = (0, 64, 128)
+    elif D == 128:
+        supported_q_tiles = (0, 64, 256)
+    else:
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    if effective_q_tile_override not in supported_q_tiles:
+        raise ValueError(
+            f"q_tile_override={effective_q_tile_override} is not supported for BF16 sparse head_dim={D}; "
+            f"supported values: {', '.join(str(v) for v in supported_q_tiles)}"
+        )
 
     normalized_mask = _normalize_sparse_mask(attn_mask, B, Sq, Skv, query.device)
     metadata = sparge_preprocess_topk(
@@ -1425,6 +1690,115 @@ def sparge_sage2_attn_meansim_topk_xpu(
         quant_block_size=metadata["quant_block_size"],
         qscale=metadata["qscale"],
         kscale=metadata["kscale"],
+        q_tile_override=effective_q_tile_override,
+        sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
+        sparse_k_block_tokens=metadata["sparse_k_block_tokens"],
+        tensor_layout=tensor_layout,
+    )
+    sparsity_ratio = metadata["stats"]["sparsity_ratio"]
+    if return_metadata and return_sparsity:
+        return out, sparsity_ratio, metadata
+    if return_metadata:
+        return out, metadata
+    if return_sparsity:
+        return out, sparsity_ratio
+    return out
+
+
+def sparge_sage2_attn_meansim_topk_xpu_sdpa(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    smooth_k: bool = True,
+    simthreshd1: float | torch.Tensor = -0.1,
+    cdfthreshd: float | torch.Tensor | None = None,
+    topk: float | torch.Tensor = 0.5,
+    pvthreshd: float | torch.Tensor = 50,
+    attention_sink: bool = False,
+    tensor_layout: str = "HND",
+    output_dtype: torch.dtype | None = None,
+    return_sparsity: bool = False,
+    return_metadata: bool = False,
+    k_quant_granularity: int = 64,
+    query_tile_tokens: int | None = None,
+    q_tile_override: int = 0,
+    sparse_q_block_tokens: int | None = None,
+    sparse_k_block_tokens: int | None = None,
+) -> torch.Tensor | tuple[Any, ...]:
+    """E2E sparse attention on the independent native-precision (BF16/FP16) SDPA path."""
+    if query.device.type != "xpu":
+        raise NotImplementedError("sparge_sage2_attn_meansim_topk_xpu_sdpa is only supported on XPU")
+    if dropout_p != 0.0:
+        raise NotImplementedError("dropout_p must be 0.0 for sparge_sage2_attn_meansim_topk_xpu_sdpa")
+    if attn_mask is not None and is_causal:
+        raise ValueError("attn_mask and is_causal cannot both be set")
+    if query.dtype not in (torch.bfloat16, torch.float16):
+        raise ValueError(
+            "sparge_sage2_attn_meansim_topk_xpu_sdpa requires bfloat16 or float16 Q/K/V, "
+            f"got Q={query.dtype}, K={key.dtype}, V={value.dtype}"
+        )
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"Q/K/V dtypes must match, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
+    if output_dtype is not None and output_dtype != query.dtype:
+        raise ValueError(f"output_dtype must match Q dtype in the current implementation, got {output_dtype}")
+    if pvthreshd not in (None, 50):
+        warnings.warn("pvthreshd is not supported by the current ARK sparse kernel and is ignored", stacklevel=2)
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=query.dtype)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key.dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value.dtype)
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+
+    effective_query_tile_tokens = query_tile_tokens
+    effective_q_tile_override = q_tile_override
+    if effective_query_tile_tokens is None and q_tile_override in (64, 128, 256):
+        effective_query_tile_tokens = q_tile_override
+    elif effective_query_tile_tokens is not None:
+        if q_tile_override == 0:
+            effective_q_tile_override = int(effective_query_tile_tokens)
+        elif q_tile_override != int(effective_query_tile_tokens):
+            raise ValueError(
+                "query_tile_tokens and q_tile_override must match when both are set; "
+                f"got query_tile_tokens={effective_query_tile_tokens}, q_tile_override={q_tile_override}"
+            )
+    _validate_sparse_q_tile_override_for_head_dim(D, effective_q_tile_override)
+
+    normalized_mask = _normalize_sparse_mask(attn_mask, B, Sq, Skv, query.device)
+    metadata = sparge_preprocess_topk(
+        query,
+        key,
+        is_causal=is_causal,
+        smooth_k=smooth_k,
+        simthreshd1=simthreshd1,
+        topk=topk,
+        cdfthreshd=cdfthreshd,
+        attention_sink=attention_sink,
+        quant_block_size=64,
+        tensor_layout=tensor_layout,
+        k_quant_granularity=k_quant_granularity,
+        query_tile_tokens=effective_query_tile_tokens,
+        sparse_q_block_tokens=sparse_q_block_tokens,
+        sparse_k_block_tokens=sparse_k_block_tokens,
+    )
+    _get_xpu_sparse_kernel_backend()
+    out = block_sparse_sdpa(
+        query,
+        key,
+        value,
+        metadata["lut"],
+        metadata["valid_block_num"],
+        attn_mask=normalized_mask,
+        is_causal=is_causal,
+        scale=scale,
         q_tile_override=effective_q_tile_override,
         sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
         sparse_k_block_tokens=metadata["sparse_k_block_tokens"],

@@ -27,7 +27,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 
@@ -45,9 +44,7 @@ def get_e0m4_tensor(device):
     return _DEVICE_E0M4_TENSORS[device_str]
 
 
-def unpack_int4_from_uint8(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
-) -> torch.Tensor:
+def unpack_int4_from_uint8(a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16) -> torch.Tensor:
     """
     Unpacks uint8 values into int4. Each uint8 contains two int4 values
     (low nibble first). The 4-bit indices are mapped to int4 values using kE0M4ToFloat.
@@ -60,20 +57,20 @@ def unpack_int4_from_uint8(
 
 @torch.compiler.disable()
 def _unpack_int4_from_uint8_cpu(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+    a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
     return _unpack_int4_from_uint8(a, m, n, dtype)
 
 
 # @torch.compile(fullgraph=True, dynamic=True)
 def _unpack_int4_from_uint8_cuda(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+    a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
     return _unpack_int4_from_uint8(a, m, n, dtype)
 
 
 def _unpack_int4_from_uint8(
-    a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
+    a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
     """
     Unpacks uint8 values into int4. Each uint8 consists of two int4 values

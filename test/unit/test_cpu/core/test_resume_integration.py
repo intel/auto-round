@@ -60,10 +60,12 @@ class TestResumeIntegration:
             if len(crashed_after) == 1:
                 raise RuntimeError("simulated crash")
 
-        with mock.patch.object(ResumeState, "mark_block_done", crash_after_first_block):
-            with pytest.raises(RuntimeError, match="simulated crash"):
-                ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=1, nsamples=1)
-                ar.quantize()
+        with (
+            mock.patch.object(ResumeState, "mark_block_done", crash_after_first_block),
+            pytest.raises(RuntimeError, match="simulated crash"),
+        ):
+            ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=1, nsamples=1)
+            ar.quantize()
 
         assert crashed_after == ["model.decoder.layers.0"]
 

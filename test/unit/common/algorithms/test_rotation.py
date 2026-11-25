@@ -62,15 +62,9 @@ from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
 from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
     deterministic_hadamard_matrix as inplace_det_hadamard,
 )
-from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
-    get_hadK,
-    get_or_create_random_hadamard,
-)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import get_hadK, get_or_create_random_hadamard
 from auto_round.algorithms.transforms.hadamard.inplace.hooks import is_pow2 as inplace_is_pow2
-from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
-    matmul_hadU,
-    matmul_hadUt,
-)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import matmul_hadU, matmul_hadUt
 from auto_round.algorithms.transforms.hadamard.inplace.hooks import random_hadamard_matrix as inplace_rand_hadamard
 from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
     MAPPING_REGISTRY,

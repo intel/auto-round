@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
+from test.helpers import check_version, forbid_threaded_packing, get_model_path, opt_name_or_path
 
 import pytest
 import torch
@@ -9,12 +9,44 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AutoScheme
-from auto_round.export.export_to_llmcompressor import export_to_fp as llmc_fp_export
-from auto_round.export.export_to_llmcompressor import export_to_static_fp as llmc_static_fp_export
+from auto_round.export.formats.compressed_tensors import float as llmc_fp_export
+from auto_round.export.formats.compressed_tensors import static_fp as llmc_static_fp_export
 
 from ...envs import is_compressed_tensors_available
 
 pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
+
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 7, 8])
+def test_llmc_fp_export_scheme_supports_weight_only_integer_widths(bits):
+    from auto_round.export.formats.compressed_tensors.float import _get_scheme
+
+    assert _get_scheme(bits, "int", act_bits=16) == f"W{bits}A16"
+
+
+def test_llmc_fp_export_scheme_requires_weight_only_activations():
+    from auto_round.export.formats.compressed_tensors.float import _get_scheme
+
+    assert _get_scheme(4, "int", act_bits=8) is None
+    assert _get_scheme(9, "int", act_bits=16) is None
+
+
+@pytest.mark.parametrize("data_type", ["fp", "float"])
+def test_llmc_format_accepts_full_precision_dtype_aliases(data_type, monkeypatch):
+    from types import SimpleNamespace
+
+    from auto_round.export.formats.compressed_tensors.format import LLMCompressorFormat
+    from auto_round.schemes import QuantizationScheme
+
+    monkeypatch.setattr(
+        "auto_round.export.formats.compressed_tensors.check_compressed_tensors_supported",
+        lambda **kwargs: None,
+    )
+    scheme = QuantizationScheme(bits=16, data_type=data_type, act_bits=16, act_data_type="float")
+
+    output_format = LLMCompressorFormat("llm_compressor", scheme, SimpleNamespace(mllm=False))
+
+    assert output_format.backend.output_format == "llm_compressor:mx_fp"
 
 
 class TestLLMCZpInt8:
@@ -40,7 +72,7 @@ class TestLLMCZpInt8:
     def test_tensor_zp_cast_to_int8(self):
         import torch
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(torch.full((8, 1), 5.0))  # float32 integral-valued
         model = torch.nn.Sequential()
@@ -55,7 +87,7 @@ class TestLLMCZpInt8:
     def test_out_of_range_zp_raises(self):
         import torch
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(torch.full((8, 1), 200.0), bits=4)  # zp >> 2^b-1: invalid at any convention
         model = torch.nn.Sequential()
@@ -67,6 +99,10 @@ class TestLLMCZpInt8:
         else:
             raise AssertionError("out-of-range zp must raise")
 
+    @pytest.mark.skipif(
+        check_version("compressed-tensors==0.20.0"),
+        reason="compressed-tensors 0.20.0 has a zero-point unpacking bug",
+    )
     def test_asym_zp_signed_convention_round_trip(self):
         """AutoRound zp is unsigned (q in [0, 2^b-1], W = (q - zp) * s);
         compressed-tensors re-quantizes with the SIGNED range
@@ -78,7 +114,7 @@ class TestLLMCZpInt8:
         import torch.nn as nn
         from compressed_tensors.compressors.pack_quantized import PackedQuantizationCompressor
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         torch.manual_seed(0)
         out_f, in_f, gs = 8, 32, 16
@@ -97,6 +133,7 @@ class TestLLMCZpInt8:
         model = nn.Sequential()
         model.add_module("q_proj", layer)
         pack_layer("q_proj", model, device="cpu")
+        assert layer.weight_zero_point.stride(-2) == 1
 
         # AutoRound's own fake-quantized weight (unsigned convention)
         s = scale.repeat_interleave(gs, dim=1)
@@ -122,7 +159,7 @@ class TestLLMCZpInt8:
         import torch.nn as nn
         from compressed_tensors.compressors.pack_quantized import PackedQuantizationCompressor
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         torch.manual_seed(0)
         out_f, in_f, gs = 8, 32, 16
@@ -233,7 +270,8 @@ class TestLLMC:
 
         from safetensors import safe_open
 
-        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
@@ -257,12 +295,47 @@ class TestLLMC:
 
         import json
 
-        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["strategy"] == "tensor"
         assert config["quantization_config"]["quant_method"] == "compressed-tensors"
+
+    def test_bf16_default_mxfp4_override_standard_flow(self, tiny_opt_model_path, tmp_path):
+        target = "model.decoder.layers.0.self_attn.q_proj"
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="BF16",
+            layer_config={target: "MXFP4"},
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+        )
+        compressed_model, output_dir = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        assert hasattr(compressed_model.model.decoder.layers[0].self_attn.q_proj, "weight_scale")
+        with open(os.path.join(output_dir, "config.json")) as config_file:
+            config = json.load(config_file)["quantization_config"]
+        assert config["format"] == "mxfp4-pack-quantized"
+        assert config["config_groups"]["group_0"]["targets"] == [target]
+
+    def test_bf16_default_w4a16_override_standard_flow(self, tiny_opt_model_path, tmp_path):
+        target = "model.decoder.layers.0.self_attn.q_proj"
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="BF16",
+            layer_config={target: "W4A16"},
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+        )
+        _, output_dir = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        with open(os.path.join(output_dir, "config.json")) as config_file:
+            config = json.load(config_file)["quantization_config"]
+        assert config["format"] == "pack-quantized"
+        assert config["config_groups"]["group_0"]["targets"] == [target]
+        assert config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
 
     def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = "mxfp8"
@@ -748,7 +821,7 @@ class TestLLMCZpUnsignedDomain:
     def test_tensor_zp_above_unsigned_range_rejected(self):
         import torch
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(torch.full((8, 1), 100.0))  # raw 100 > 15
         m = torch.nn.Sequential()
@@ -759,7 +832,7 @@ class TestLLMCZpUnsignedDomain:
     def test_tensor_zp_negative_rejected(self):
         import torch
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(torch.full((8, 1), -3.0))  # shifted -11 fits int8
         m = torch.nn.Sequential()
@@ -768,7 +841,7 @@ class TestLLMCZpUnsignedDomain:
             pack_layer("proj", m, device="cpu")
 
     def test_scalar_zp_out_of_range_rejected(self):
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         for bad in (17.0, -1.0):  # 4-bit unsigned range is [0, 15]
             layer = self._make_layer(bad)
@@ -780,7 +853,7 @@ class TestLLMCZpUnsignedDomain:
     def test_in_range_values_pass(self):
         import torch
 
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(torch.randint(0, 16, (8, 1)).float())
         m = torch.nn.Sequential()
@@ -811,7 +884,7 @@ class TestLLMCZpFiniteIntegral:
         return layer
 
     def _expect_refusal(self, zp, match):
-        from auto_round.export.export_to_llmcompressor.export import pack_layer
+        from auto_round.export.formats.compressed_tensors.integer import pack_layer
 
         layer = self._make_layer(zp)
         m = torch.nn.Sequential()

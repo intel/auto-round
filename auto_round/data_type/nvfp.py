@@ -12,14 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-
 import torch
 
-from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
 from auto_round.data_type.gguf import _imatrix_handle_zero
+from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.logger import logger
 
@@ -44,7 +41,9 @@ def cast_to_fp4(x):
 
 def get_reciprocal(x):
     if isinstance(x, torch.Tensor):
-        return torch.where(x == 0, torch.zeros_like(x, dtype=x.dtype), 1.0 / x)
+        is_zero = x == 0
+        denominator = torch.where(is_zero, torch.ones_like(x), x)
+        return torch.where(is_zero, torch.zeros_like(x, dtype=x.dtype), 1.0 / denominator)
     elif isinstance(x, (float, int)):
         return 0.0 if x == 0 else 1.0 / x
     else:
@@ -56,15 +55,57 @@ FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8
 FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
 
-def calculate_gparam(tensor, group_size=16, device="cpu"):
+def is_valid_nvfp_global_scale(global_scale):
+    scale = global_scale.to(torch.float32)
+    inverse = scale.reciprocal()
+    return torch.isfinite(scale) & (scale > 0) & torch.isfinite(inverse) & (inverse > 0)
+
+
+def validate_nvfp_global_scale(global_scale, name):
+    # ModelOpt NVFP4QTensor.get_activation_scaling_factor checks positivity.
+    # Also require a finite reciprocal for compressed-tensors consumers.
+    # https://github.com/NVIDIA/TensorRT-Model-Optimizer/blob/main/modelopt/torch/quantization/qtensor/nvfp4_tensor.py
+    if not isinstance(global_scale, torch.Tensor) or global_scale.numel() != 1:
+        raise ValueError(f"{name} must be a scalar NVFP global scale, got {global_scale}.")
+    if not is_valid_nvfp_global_scale(global_scale).all():
+        raise ValueError(f"{name} and its FP32 reciprocal must be finite and positive, got {global_scale}.")
+
+
+def _calculate_gparam_from_amax(tensor_amax, scale_max=FLOAT8_E4M3_MAX):
+    # LLMC uses compressed-tensors generate_gparam's finite fallback for degenerate tensors,
+    # but reject nonfinite source statistics rather than hiding calibration corruption.
+    # https://github.com/vllm-project/compressed-tensors/blob/d5f7e842555b6e86dc5e5b78351934c983544155/src/compressed_tensors/quantization/utils/helpers.py#L324-L354
+    tensor_amax = tensor_amax.to(torch.float32)
+    finite = torch.isfinite(tensor_amax).all()
+    if torch.compiler.is_compiling():
+        torch._assert_async(finite, "NVFP global scale requires finite amax statistics.")
+    elif not finite:
+        raise ValueError("NVFP global scale requires finite amax statistics.")
+
+    candidate = scale_max * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax.detach())
+    valid = is_valid_nvfp_global_scale(candidate)
+    if not torch.compiler.is_compiling() and not valid.all():
+        logger.warning_once(
+            "Zero or near-zero NVFP amax cannot produce a finite positive global scale. "
+            "Using 1.0; MoE activation statistics should be repaired from calibrated peers before export."
+        )
+    # Avoid an overflowing reciprocal in autograd, even on the unselected fallback branch.
+    safe_amax = torch.where(valid, tensor_amax, torch.ones_like(tensor_amax))
+    global_scale = scale_max * FLOAT4_E2M1_MAX * get_reciprocal(safe_amax)
+    return torch.where(valid, global_scale, torch.ones_like(global_scale))
+
+
+def calculate_gparam(tensor, group_size=16, device="cpu", scale_max=None):
     """Calculate global scaling factor for NVFP quantization."""
     assert group_size == 16, f"Only group_size=16 is supported, got {group_size}"
+    scale_max = FLOAT8_E4M3_MAX if scale_max is None else scale_max
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()
     elif isinstance(tensor, torch.Tensor):
         tensor_amax = tensor.to(torch.float32).abs().max()
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
-    return global_scale
+    else:
+        raise TypeError("Input must be a float, int, or a torch.Tensor.")
+    return _calculate_gparam_from_amax(tensor_amax, scale_max)
 
 
 def ref_nvfp4_quant(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
@@ -90,7 +131,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0,
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
         tensor_max = tensor.to(torch.float32).abs().max()
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = _calculate_gparam_from_amax(tensor_max)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -116,7 +157,7 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, g
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
             if tensor_max.numel() != 1:
                 tensor_max = tensor_max.abs().max()
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = _calculate_gparam_from_amax(tensor_max)
     elif not isinstance(global_scale, torch.Tensor):
         global_scale = torch.tensor(global_scale, device=tensor.device, dtype=torch.float32)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
@@ -148,28 +189,17 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
 def e5m3_to_float_tensor(e5m3: torch.Tensor) -> torch.Tensor:
     assert e5m3.dtype == torch.uint8
 
-    x = torch.zeros_like(e5m3, dtype=torch.float32)
-    mask_nonzero = e5m3 != 0
-    e = ((e5m3[mask_nonzero] >> 3) & 0x1F).to(torch.int32)
-    m = (e5m3[mask_nonzero] & 0x07).to(torch.int32)
+    bits = e5m3.to(torch.int32)
+    e = (bits >> 3) & 0x1F
+    m = (bits & 0x07).to(torch.float32)
 
     is_nan = (e == 31) & (m == 7)
-    is_subnormal = e == 0
-    is_normal = (e > 0) & (~is_nan)
-
-    out = torch.zeros_like(e, dtype=torch.float32)
-
-    # subnormal: exponent = -14, no implicit leading 1
-    out[is_subnormal] = (m[is_subnormal].float() / 8.0) * (2**-14)
-
-    # normal: exponent = e - 15, implicit leading 1
-    mant = 1.0 + m[is_normal].float() / 8.0
-    exp = e[is_normal] - 15
-    out[is_normal] = torch.ldexp(mant, exp)
-
-    out[is_nan] = float("nan")
-    x[mask_nonzero] = out
-    return x
+    # subnormal (e == 0): exponent -14, no implicit leading 1; zero encodes as m == 0
+    subnormal = (m / 8.0) * (2**-14)
+    # normal: exponent e - 15, implicit leading 1
+    normal = torch.ldexp(1.0 + m / 8.0, e - 15)
+    out = torch.where(e == 0, subnormal, normal)
+    return torch.where(is_nan, torch.full_like(out, float("nan")), out)
 
 
 def cast_to_ue5m3(tensor):
@@ -214,13 +244,17 @@ def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=No
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
         tensor_max = tensor.to(torch.float32).abs().max()
-    elif tensor_max is not None:
+    else:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
+        else:
+            tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor.to(torch.float32).abs().max()
-    global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
-    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
+            tensor_max = tensor_max.abs().max()
+    global_scale = _calculate_gparam_from_amax(tensor_max, FLOAT8_UE5M3_MAX)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.reshape(-1).to(tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 
@@ -236,6 +270,59 @@ def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     return qdq_res.to(orig_dtype), scale, None
 
 
+def calculate_gparam_e5m3(tensor, group_size=16, device="cpu"):
+    """Calculate the per-tensor global scale for NVFP4 E5M3 (UE5M3 block scales)."""
+    return calculate_gparam(tensor, group_size, device, scale_max=FLOAT8_UE5M3_MAX)
+
+
+def calculate_gparam_by_dtype(tensor, data_type, group_size=16, device="cpu"):
+    if "nvfp4_v2" in str(data_type).lower():
+        return calculate_gparam_e5m3(tensor, group_size, device)
+    return calculate_gparam(tensor, group_size, device)
+
+
+def _to_global_scale_tensor(global_scale, device):
+    if not isinstance(global_scale, torch.Tensor):
+        global_scale = torch.tensor(global_scale, dtype=torch.float32)
+    return global_scale.to(device=device, dtype=torch.float32).reshape(-1)[:1]
+
+
+@register_dtype("nvfp4_v2_gs")
+def nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, **kwargs):
+    """FP4 E2M1 with UE5M3 block scales and a per-tensor FP32 global scale."""
+    assert group_size == 16, f"NVFP4_E5M3_GS only supports group_size=16, got {group_size}"
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if global_scale is None:
+        global_scale = calculate_gparam_e5m3(tensor, group_size)
+    global_scale = _to_global_scale_tensor(global_scale, tensor.device)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.reshape(-1).to(tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+@register_dtype("nvfp4_v2_with_static_gs")
+def nvfp4_v2_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, global_scale=None, **kwargs):
+    """Activation QDQ for NVFP4_E5M3_GS; the global scale comes from calibrated ``tensor_max``."""
+    if tensor is None or tensor.numel() == 0:
+        return tensor, None, None
+    assert group_size == 16, f"NVFP4_E5M3_GS only supports group_size=16, got {group_size}"
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if global_scale is None:
+        if tensor_max is None:
+            tensor_max = tensor.to(torch.float32).abs().max()
+        elif isinstance(tensor_max, torch.Tensor):
+            tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32).abs().max()
+        global_scale = calculate_gparam_e5m3(tensor_max, group_size, tensor.device)
+    global_scale = _to_global_scale_tensor(global_scale, tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
 @register_dtype("nv_fp4_rtn")
 def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, init_scale=1.0, **kwargs):
     orig_dtype = tensor.dtype
@@ -243,7 +330,7 @@ def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
         tensor_max = tensor.abs().max().to(torch.float32)
-        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+        global_scale = _calculate_gparam_from_amax(tensor_max)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -316,13 +403,86 @@ def ref_nvfp4_quant_inplace(
     return out.reshape(m, n), scale
 
 
-def search_nvfp4_scale(tensor, bits=4, qw=None):
-    tensor_fp32 = tensor.float()
+def _nvfp4_e4m3_block_scale(vec_amax, multiplier, global_scale):
+    """FP8 E4M3 block scale that ``nv_fp4_rtn`` produces for per-group amax and multiplier."""
+    scale = global_scale * ((vec_amax * multiplier) * get_reciprocal(FLOAT4_E2M1_MAX))
+    scale = scale.clamp(min=FLOAT8_E4M3_MIN, max=FLOAT8_E4M3_MAX)
+    return to_float8_e4m3fn(scale)
 
-    qdq_t, scale, _ = nv_fp4(
+
+def _nvfp4_e4m3_qdq(x, block_scale, global_scale):
+    """FP4 QDQ of grouped ``x`` [G, 16] with FP8 E4M3 block scales [G]; mirrors ``ref_nvfp4_quant_inplace``."""
+    output_scale = get_reciprocal(block_scale * get_reciprocal(global_scale)).unsqueeze(-1)
+    scaled = (x * output_scale).clamp(-6.0, 6.0)
+    return cast_to_fp4(scaled) * get_reciprocal(output_scale)
+
+
+_NVFP4_E4M3_MULTIPLIERS = [scale_value / 100.0 for scale_value in range(50, 152) if scale_value != 100]
+
+
+def _search_nvfp4_e4m3_multiplier(x, weight):
+    """Search per-group amax multipliers in [0.5, 1.51] for the NVFP4 E4M3 block scale.
+
+    Equivalent to re-running ``nv_fp4_rtn`` on the full tensor for every candidate with a strict ``<`` update in
+    ascending order, but only groups whose FP8 block scale changed since the previous candidate are re-quantized.
+    An unchanged scale yields the same loss as the previous candidate, which is never strictly better than the
+    current best, so skipping it does not change the result.
+
+    Args:
+        x: float32 tensor of shape [G, 16].
+        weight: float32 importance weights broadcastable to ``x``.
+
+    Returns:
+        float32 tensor of shape [G] holding the best multiplier per group.
+    """
+    amax = x.abs().amax(dim=-1)
+    global_scale = _calculate_gparam_from_amax(x.abs().max())
+
+    base_scale = _nvfp4_e4m3_block_scale(amax, torch.ones((), device=x.device), global_scale)
+    diff = _nvfp4_e4m3_qdq(x, base_scale, global_scale) - x
+    best_loss = (diff * diff * weight).sum(dim=-1)
+    best_mult = torch.ones_like(best_loss)
+
+    multipliers = torch.tensor(_NVFP4_E4M3_MULTIPLIERS, dtype=torch.float32, device=x.device)
+    prev_scale = base_scale
+    for mult in multipliers.unbind(0):
+        scale = _nvfp4_e4m3_block_scale(amax, mult, global_scale)
+        idx = torch.nonzero(scale != prev_scale).squeeze(-1)
+        prev_scale = scale
+        if idx.numel() == 0:
+            continue
+        xs = x.index_select(0, idx)
+        d = _nvfp4_e4m3_qdq(xs, scale.index_select(0, idx), global_scale) - xs
+        loss = (d * d * weight.index_select(0, idx)).sum(dim=-1)
+        old_loss = best_loss.index_select(0, idx)
+        better = loss < old_loss
+        best_loss.index_copy_(0, idx, torch.where(better, loss, old_loss))
+        best_mult.index_copy_(0, idx, torch.where(better, mult, best_mult.index_select(0, idx)))
+    return best_mult
+
+
+def search_nvfp4_scale(tensor, bits=4, qw=None, quant_func=None, group_size=16):
+    """Search the per-group block-scale multiplier in [0.5, 1.51] for NVFP4 (E4M3 block scale).
+
+    With ``quant_func=None`` the changed-only search is used. Passing ``quant_func`` selects the exhaustive
+    reference implementation, which re-quantizes the full tensor for every candidate.
+    """
+    if quant_func is None:
+        if qw is None:
+            raise TypeError("search_nvfp4_scale requires `qw` (importance weights)")
+        x = tensor.float().reshape(-1, group_size)
+        weight = torch.as_tensor(qw, dtype=torch.float32, device=x.device)
+        weight = weight.reshape_as(x) if weight.numel() == x.numel() else weight.expand_as(x)
+        return _search_nvfp4_e4m3_multiplier(x, weight).unsqueeze(-1)
+
+    tensor_fp32 = tensor.float()
+    baseline_func = quant_func
+    candidate_func = quant_func
+
+    qdq_t, scale, _ = baseline_func(
         tensor_fp32,
         bits=bits,
-        group_size=16,
+        group_size=group_size,
         v=0,
         max_scale=1.0,
     )
@@ -352,13 +512,14 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
             continue
 
         test_scale.fill_(tmp_scale)
+        candidate_scale = test_scale.squeeze(-1) if quant_func is nvfp4_v2 else test_scale
 
-        tmp_qdq, _, _ = nv_fp4_rtn(
+        tmp_qdq, _, _ = candidate_func(
             tensor_fp32,
             bits=bits,
-            group_size=16,
+            group_size=group_size,
             v=0,
-            max_scale=test_scale,
+            max_scale=candidate_scale,
         )
 
         diff.copy_(tmp_qdq)
@@ -370,10 +531,110 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
 
         mask = loss < best_loss
 
-        best_loss[mask] = loss[mask]
-        best_scale[mask] = test_scale[mask]
+        best_loss = torch.where(mask, loss, best_loss)
+        best_scale = torch.where(mask.unsqueeze(-1), test_scale, best_scale)
 
     return best_scale
+
+
+def _nvfp4_e5m3_block_scale(vec_amax, multiplier, global_scale=1.0):
+    """UE5M3 block scale that ``ref_fp4_quant`` produces for per-group amax and multiplier."""
+    scale = global_scale * ((vec_amax * multiplier) * get_reciprocal(FLOAT4_E2M1_MAX))
+    scale = torch.clip(scale, 0, FLOAT8_UE5M3_MAX)
+    return cast_to_ue5m3_ste(scale).to(torch.float32)
+
+
+def _nvfp4_e5m3_qdq(x, block_scale, global_scale=1.0):
+    """FP4 QDQ of grouped ``x`` (shape [G, 16]) with per-group UE5M3 block scales (shape [G])."""
+    dequant_scale = block_scale.unsqueeze(-1) * get_reciprocal(global_scale)
+    scaled_x = torch.where(dequant_scale == 0, torch.zeros_like(x), x / dequant_scale)
+    clipped = torch.clamp(scaled_x, -6.0, 6.0)
+    return cast_to_fp4(clipped) * dequant_scale
+
+
+_NVFP4_SEARCH_CHUNK_MAX_ELEMS = 2**24  # candidates x elements per compiled call; caps eager-fallback temporaries
+
+
+def _nvfp4_e5m3_search_chunk(x, amax, weight, global_scale, mults, best_loss, best_mult):
+    """Evaluate a chunk of amax multipliers and keep the first best one per group if it strictly improves."""
+    block_scale = _nvfp4_e5m3_block_scale(amax, mults.unsqueeze(-1), global_scale)
+    diff = _nvfp4_e5m3_qdq(x, block_scale, global_scale) - x
+    loss = (diff * diff * weight).sum(dim=-1)
+    chunk_loss, idx = loss.min(dim=0)
+    chunk_mult = mults[idx]
+    better = chunk_loss < best_loss
+    return torch.where(better, chunk_loss, best_loss), torch.where(better, chunk_mult, best_mult)
+
+
+_NVFP4_E5M3_SEARCH_CHUNK_CACHE = {}
+
+
+def _get_nvfp4_e5m3_search_chunk(device):
+    key = str(device)
+    if key not in _NVFP4_E5M3_SEARCH_CHUNK_CACHE:
+        from auto_round.utils.device import compile_func
+
+        _NVFP4_E5M3_SEARCH_CHUNK_CACHE[key] = compile_func(_nvfp4_e5m3_search_chunk, device)
+    return _NVFP4_E5M3_SEARCH_CHUNK_CACHE[key]
+
+
+def _search_nvfp4_e5m3_multiplier(tensor, qw=None, global_scale=None, enable_torch_compile=False):
+    """Search per-group amax multipliers in [0.5, 1.51] for the NVFP4 E5M3 block scale.
+
+    With ``enable_torch_compile`` the candidates run as fixed-shape compiled chunks over the full tensor
+    (chunk size bounded by ``_NVFP4_SEARCH_CHUNK_MAX_ELEMS``; the last chunk repeats the final candidate,
+    which never wins under the strict ``<`` update). Eagerly, only groups whose UE5M3 scale changed from
+    the previous candidate are re-evaluated, since an unchanged scale cannot strictly improve the loss.
+    """
+    x = tensor.float()
+    gs = 1.0 if global_scale is None else _to_global_scale_tensor(global_scale, x.device)
+    amax = x.abs().amax(dim=-1)
+    weight = (
+        torch.ones_like(x) if qw is None else torch.as_tensor(qw, dtype=torch.float32, device=x.device).expand_as(x)
+    )
+
+    base_scale = _nvfp4_e5m3_block_scale(amax, torch.tensor(1.0, device=x.device), gs)
+    diff = _nvfp4_e5m3_qdq(x, base_scale, gs) - x
+    best_loss = (diff * diff * weight).sum(dim=-1)
+    best_mult = torch.ones_like(best_loss)
+
+    multipliers = torch.tensor(
+        [scale_value / 100.0 for scale_value in range(50, 152) if scale_value != 100],
+        dtype=torch.float32,
+        device=x.device,
+    )
+
+    if not enable_torch_compile:
+        prev_scale = base_scale
+        for mult in multipliers.unbind(0):
+            scale = _nvfp4_e5m3_block_scale(amax, mult, gs)
+            idx = torch.nonzero(scale != prev_scale).squeeze(-1)
+            prev_scale = scale
+            if idx.numel() == 0:
+                continue
+            xs = x.index_select(0, idx)
+            d = _nvfp4_e5m3_qdq(xs, scale.index_select(0, idx), gs) - xs
+            loss = (d * d * weight.index_select(0, idx)).sum(dim=-1)
+            old_loss = best_loss.index_select(0, idx)
+            better = loss < old_loss
+            best_loss.index_copy_(0, idx, torch.where(better, loss, old_loss))
+            best_mult.index_copy_(0, idx, torch.where(better, mult, best_mult.index_select(0, idx)))
+        return best_mult
+
+    chunk = min(max(1, _NVFP4_SEARCH_CHUNK_MAX_ELEMS // x.numel()), multipliers.numel())
+    pad = -multipliers.numel() % chunk
+    multipliers = torch.cat([multipliers, multipliers[-1:].expand(pad)]).view(-1, chunk)
+
+    step = _get_nvfp4_e5m3_search_chunk(x.device)
+    for mults in multipliers.unbind(0):
+        best_loss, best_mult = step(x, amax, weight, gs, mults, best_loss, best_mult)
+
+    return best_mult
+
+
+def search_nvfp4_v2_scale(tensor, bits=4, qw=None, enable_torch_compile=False):
+    """Search per-group scales for the legacy-registry NVFP4 E5M3 quantizer."""
+    return _search_nvfp4_e5m3_multiplier(tensor, qw, enable_torch_compile=enable_torch_compile)
 
 
 @register_dtype("opt_rtn_nv_fp4")
@@ -403,6 +664,38 @@ def opt_rtn_fast_nvfp4(
     return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
 
 
+@register_dtype("opt_rtn_nvfp4_v2_gs")
+def opt_rtn_nvfp4_v2_gs(
+    tensor,
+    bits=4,
+    group_size=16,
+    v=0,
+    global_scale=None,
+    max_scale=1.0,
+    imatrix=1.0,
+    enable_torch_compile=False,
+    **kwargs,
+):
+    grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if not isinstance(imatrix, torch.Tensor):
+        qw = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(grouped.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(grouped.shape)
+        qw = _imatrix_handle_zero(imatrix, grouped, bits, group_size)
+    if global_scale is None:
+        global_scale = calculate_gparam_e5m3(grouped, group_size)
+
+    init_scale = _search_nvfp4_e5m3_multiplier(grouped, qw, global_scale, enable_torch_compile)
+    if isinstance(max_scale, torch.Tensor):
+        init_scale = init_scale * max_scale.reshape(-1).to(init_scale.device)
+    else:
+        init_scale = init_scale * max_scale
+    return nvfp4_v2_gs(tensor, bits, group_size, v, global_scale=global_scale, max_scale=init_scale)
+
+
 @register_dtype("rtn_nv_fp4_with_static_gs")
 def rtn_nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
     if tensor is None or tensor.numel() == 0:
@@ -419,233 +712,11 @@ def rtn_nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=Non
         if tensor_max.numel() != 1:
             tensor_max = tensor_max.abs().max()
 
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = _calculate_gparam_from_amax(tensor_max)
     global_scale = global_scale.to(tensor.device)
     qdq_res, scale = ref_nvfp4_quant_inplace(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
-
-
-@dataclass(frozen=True)
-class _NVFPState:
-    """NVFP tuning values plus optional global and optimized scales."""
-
-    tunables: Mapping[str, torch.Tensor]
-    global_scale: torch.Tensor | None
-    optimized_init: torch.Tensor | None
-
-
-class _NVFPWeightQuantizer:
-    """Own NVFP4 weight QDQ, including its global-scale preparation."""
-
-    def __init__(self, spec, family="plain"):
-        self.spec = spec
-        self.family = family
-
-    @classmethod
-    def from_spec(cls, spec, canonical=None):
-        """Create the NVFP4 weight quantizer for a resolved layer."""
-        return cls(spec)
-
-    @staticmethod
-    def create_activation(spec):
-        """Create dynamic NVFP4 activation quantization."""
-        return _NVFPActivationQuantizer(spec, "nv_fp4")
-
-    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
-        self.family = "optimized" if mode == "optimized_rtn" else "plain"
-        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
-        tunables = {}
-        if self.family == "plain" and tune_rounding:
-            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if self.family != "optimized" and tune_minmax:
-            tunables["max_scale"] = torch.nn.Parameter(
-                torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
-            )
-
-        global_scale = self.spec.global_scale
-        if global_scale is None:
-            global_scale = calculate_gparam(weight, self.spec.group_size, weight.device)
-        else:
-            global_scale = global_scale.to(weight.device)
-        optimized_init = None
-        if self.family == "optimized":
-            if isinstance(imatrix, torch.Tensor):
-                imatrix = imatrix.reshape(1, -1)
-                imatrix = reshape_pad_tensor_by_group_size(imatrix, self.spec.group_size, val=1e-5)[0].view(1, -1)
-                imatrix = imatrix.expand(grouped.numel() // imatrix.numel(), -1).reshape(grouped.shape)
-                qw = _imatrix_handle_zero(imatrix, grouped, self.spec.bits, self.spec.group_size)
-            else:
-                qw = 1.0
-            optimized_init = search_nvfp4_scale(grouped, self.spec.bits, qw)
-        return _NVFPState(tunables, global_scale, optimized_init)
-
-    def qdq(self, weight, state, *, tunables, materialize=False):
-        kwargs = {
-            "bits": self.spec.bits,
-            "group_size": self.spec.group_size,
-            "v": tunables.get("value", 0),
-            "max_scale": tunables.get("max_scale", 1.0),
-        }
-        kwargs["global_scale"] = state.global_scale
-        if state.optimized_init is not None:
-            kwargs["init_scale"] = state.optimized_init
-        quantized, scale, zero_point = nv_fp4(weight, **kwargs)
-        from auto_round.data_type.base import WeightQuantizationResult
-
-        return WeightQuantizationResult(
-            quantized,
-            scale if materialize else None,
-            zero_point if materialize else None,
-            state.global_scale if materialize else None,
-        )
-
-    @staticmethod
-    def apply_result(module, result):
-        if result.scale is None:
-            raise ValueError("NVFP weight result was not materialized")
-        module.weight.data.copy_(result.weight)
-        rows = result.logical_rows or result.weight.shape[0]
-        module.scale = result.scale.reshape(rows, -1).cpu()
-        module.zp = None
-        if result.metadata is not None:
-            module.weight_global_scale = result.metadata.cpu()
-
-
-class _NVFPV2WeightQuantizer:
-    """Own the independent NVFP4-v2 weight QDQ implementation."""
-
-    def __init__(self, spec):
-        self.spec = spec
-
-    @classmethod
-    def from_spec(cls, spec, canonical=None):
-        """Create the NVFP4-v2 weight quantizer for a resolved layer."""
-        return cls(spec)
-
-    @staticmethod
-    def create_activation(spec):
-        """Create dynamic NVFP4-v2 activation quantization."""
-        return _NVFPActivationQuantizer(spec, "nvfp4_v2")
-
-    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
-        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
-        tunables = {}
-        if tune_rounding:
-            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if tune_minmax:
-            tunables["max_scale"] = torch.nn.Parameter(
-                torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
-            )
-        return _NVFPState(tunables, None, None)
-
-    def qdq(self, weight, state, *, tunables, materialize=False):
-        quantized, scale, zero_point = nvfp4_v2(
-            weight,
-            bits=self.spec.bits,
-            group_size=self.spec.group_size,
-            v=tunables.get("value", 0),
-            max_scale=tunables.get("max_scale", 1.0),
-        )
-        from auto_round.data_type.base import WeightQuantizationResult
-
-        return WeightQuantizationResult(quantized, scale if materialize else None, zero_point if materialize else None)
-
-    apply_result = staticmethod(_NVFPWeightQuantizer.apply_result)
-
-
-class _NVFPActivationQuantizer:
-    """Quantize dynamic or calibrated NVFP activations for one NVFP format."""
-
-    def __init__(self, spec, data_type):
-        is_static = data_type in ("nv_fp4_with_static_gs", "nvfp4_v2_with_global_scale")
-        if not is_static and not spec.dynamic:
-            raise ValueError(f"NVFP datatype {data_type!r} supports only dynamic activation quantization")
-        self.spec = spec
-        self.data_type = data_type
-        self.requires_calibration = is_static
-
-    def observe(self, activation, current):
-        if not self.requires_calibration:
-            raise RuntimeError("Dynamic NVFP activation quantization does not require calibration")
-        observed = activation.detach().float().abs().max().unsqueeze(0)
-        return observed if current is None else torch.maximum(current.to(observed.device), observed)
-
-    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0, global_scale=None):
-        if self.requires_calibration and observed_max is None:
-            raise ValueError(f"{self.data_type} activation requires observed_max")
-        primitive = {
-            "nv_fp4": nv_fp4,
-            "nv_fp4_with_static_gs": nv_fp4_with_static_gs,
-            "nvfp4_v2": nvfp4_v2,
-            "nvfp4_v2_with_global_scale": nvfp4_v2_with_global_scale,
-        }[self.data_type]
-        kwargs = {"bits": self.spec.bits, "group_size": self.spec.group_size, "max_scale": max_scale}
-        if self.requires_calibration:
-            kwargs["tensor_max"] = observed_max
-        if global_scale is not None:
-            kwargs["global_scale"] = global_scale
-        return primitive(activation, **kwargs)
-
-    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0, global_scale=None):
-        quantized, _, _ = self.qdq_with_scale(
-            activation,
-            observed_max=observed_max,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            global_scale=global_scale,
-        )
-        return quantized
-
-
-def _prepare_nvfp_block(block, layer_runtimes):
-    """Materialize shared NVFP scales once after a block's observations."""
-    from auto_round.data_type.utils import update_block_global_scale_if_needed
-
-    runtime = next(iter(layer_runtimes.values()), None)
-    if runtime is None:
-        return
-    update_block_global_scale_if_needed(block, runtime["data_type"], runtime["group_size"])
-
-
-_NVFPWeightQuantizer.prepare_block = staticmethod(_prepare_nvfp_block)
-
-
-class _NVFPStaticActivation:
-    """Datatype entry that provides static NVFP activation quantization only."""
-
-    @staticmethod
-    def create_activation(spec):
-        return _NVFPActivationQuantizer(spec, "nv_fp4_with_static_gs")
-
-
-class _NVFPV2StaticActivation:
-    """Datatype entry that provides global-scale NVFP-v2 activation only."""
-
-    @staticmethod
-    def create_activation(spec):
-        return _NVFPActivationQuantizer(spec, "nvfp4_v2_with_global_scale")
-
-
-register_quantizer(
-    "nv_fp4",
-    aliases=(
-        "nv_fp",
-        "nv_fp_sym",
-        "nv_fp4_sym",
-        "rtn_nv_fp",
-        "rtn_nv_fp4",
-        "rtn_nv_fp_sym",
-        "rtn_nv_fp4_sym",
-        "opt_rtn_nv_fp",
-        "opt_rtn_nv_fp4",
-        "opt_rtn_nv_fp_sym",
-        "opt_rtn_nv_fp4_sym",
-    ),
-)(_NVFPWeightQuantizer)
-register_quantizer("nvfp4_v2")(_NVFPV2WeightQuantizer)
-register_quantizer("nv_fp4_with_static_gs", aliases=("rtn_nv_fp4_with_static_gs",))(_NVFPStaticActivation)
-register_quantizer("nvfp4_v2_with_global_scale")(_NVFPV2StaticActivation)
 
 
 if __name__ == "__main__":

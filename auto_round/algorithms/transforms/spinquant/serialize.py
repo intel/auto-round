@@ -29,7 +29,7 @@ import logging
 import math
 import os
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -65,7 +65,7 @@ ROTATION_TYPE_TRAINED = 2  # Trained orthogonal, stored as float32
 
 def inject_spinquant_buffers(
     model: nn.Module,
-    config: "SpinQuantConfig",
+    config: SpinQuantConfig,
 ) -> int:
     """Inject SpinQuant rotation buffers into QuantLinear modules for serialization.
 
@@ -132,7 +132,7 @@ def inject_spinquant_buffers(
 def save_spinquant_config(
     model: nn.Module,
     save_dir: str,
-    config: "SpinQuantConfig",
+    config: SpinQuantConfig,
 ) -> None:
     """Save SpinQuant config into the model's config.json for load-time reconstruction.
 
@@ -298,7 +298,7 @@ def _preregister_buffers_on_module(
 
 def rebuild_spinquant_online(
     model: nn.Module,
-    config: Optional["SpinQuantConfig"] = None,
+    config: SpinQuantConfig | None = None,
 ) -> nn.Module:
     """Rebuild online SpinQuant rotations after loading a quantized model.
 
@@ -385,7 +385,6 @@ def _patch_quantlinear_forward_spinquant(model: nn.Module) -> int:
     Returns:
         Number of QuantLinear modules with spinquant buffers found.
     """
-    global _QUANTLINEAR_PATCHED
 
     n_with_buffers = 0
     quantlinear_classes = set()
@@ -523,7 +522,7 @@ def _inject_rotation_buffers(
     rotation_size: int,
     random: bool,
     is_trained: bool,
-    rotation_matrix: Optional[torch.Tensor] = None,
+    rotation_matrix: torch.Tensor | None = None,
 ) -> None:
     """Register rotation buffers on a QuantLinear module.
 
@@ -649,7 +648,7 @@ def _get_r4_target_names(model: nn.Module) -> set:
     return targets
 
 
-def _get_stored_rotation(model: nn.Module, param_name: str) -> Optional[torch.Tensor]:
+def _get_stored_rotation(model: nn.Module, param_name: str) -> torch.Tensor | None:
     """Get a stored rotation matrix/parameter from the model.
 
     During preprocessing, rotation matrices are stored as model-level
@@ -687,7 +686,7 @@ def _get_intermediate_size(model: nn.Module) -> int:
     return 0
 
 
-def _config_to_serializable(config: "SpinQuantConfig", model: nn.Module) -> dict:
+def _config_to_serializable(config: SpinQuantConfig, model: nn.Module) -> dict:
     """Convert SpinQuantConfig to a JSON-serializable dict with model info."""
     from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 
@@ -714,7 +713,7 @@ def _config_to_serializable(config: "SpinQuantConfig", model: nn.Module) -> dict
 
 def _load_config_from_model(
     model: nn.Module,
-) -> Optional["SpinQuantConfig"]:
+) -> SpinQuantConfig | None:
     """Try to load SpinQuantConfig from model.config."""
     from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 

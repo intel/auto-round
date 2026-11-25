@@ -67,6 +67,19 @@ class TestDownloadAudiocapsCsv:
             else:
                 os.environ["AR_WORKSPACE"] = prev_ar_ws
 
+    def test_download_audiocaps_csv_uses_ar_work_space(self, tmp_path, monkeypatch):
+        from auto_round.utils.common import download_audiocaps_csv
+
+        monkeypatch.delenv("AR_WORKSPACE", raising=False)
+        monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path))
+        cache_file = tmp_path / "audiocaps_cache" / "train.csv"
+        cache_file.parent.mkdir()
+        cache_file.write_text("audio_id,audio_file,caption\ntest,test.wav,a test caption")
+
+        with patch("requests.get") as mock_get:
+            assert download_audiocaps_csv() == str(cache_file)
+            mock_get.assert_not_called()
+
 
 class TestCompareVersions:
     """Tests for compare_versions function."""

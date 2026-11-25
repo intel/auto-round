@@ -33,6 +33,7 @@ typedef uintptr_t torch_ptr;
 #include "xpu_mxfp4_hadamard_xmx.hpp"
 // Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
+#include "sparse_execution_schedule.hpp"
 #endif
 #else
 #include "ark/cpu/sdpa.h"
@@ -532,6 +533,177 @@ static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   throw std::invalid_argument("ark::sage_sparse: unsupported head_dim; supported values are 64 and 128");
 }
 
+static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                              torch_ptr lut, torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks,
+                              int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                              int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                              int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                              int o_stride_h, int o_stride_b, int q_dtype, int batch, int num_heads_q,
+                              int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                              bool is_causal, torch_ptr execution_schedule, torch_ptr execution_schedule_rounds,
+                              int execution_schedule_max_rounds, torch_ptr k_block_valid) {
+  if (q_dtype != (int)FlashAttnDtype::FP16 && q_dtype != (int)FlashAttnDtype::BF16) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: q_dtype must be FP16 or BF16");
+  }
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: mask and is_causal cannot both be set");
+  }
+  if (!lut || !valid_block_num) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: lut and valid_block_num must be provided");
+  }
+  auto matches_block_size = [](int seq_len, int num_blocks, int block_size) {
+    return block_size > 0 && num_blocks == ((seq_len + block_size - 1) / block_size);
+  };
+  const bool is_bf16 = (q_dtype == (int)FlashAttnDtype::BF16);
+  const bool query_block_is_128 = head_dim == 128 && is_bf16 && !is_causal && !mask &&
+                                  q_tile_override == 128 && matches_block_size(seq_len_q, num_q_blocks, 128);
+  const bool key_block_is_64 = matches_block_size(seq_len_kv, num_k_blocks, 64);
+  if (!key_block_is_64 &&
+      !(query_block_is_128 && matches_block_size(seq_len_kv, num_k_blocks, 128))) {
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: key block size must be 64, or 128 with non-causal, unmasked BF16 Q128 routing");
+  }
+  if (k_block_valid && !key_block_is_64) {
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: k_block_valid requires a 64-token key block grid");
+  }
+  if ((execution_schedule || execution_schedule_rounds) && !is_bf16) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: execution schedules are currently BF16-only");
+  }
+  if (head_dim == 64) {
+    if (!matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      throw std::invalid_argument("ark::block_sparse_sdpa: head_dim=64 requires query block size 64");
+    }
+    if (is_bf16) {
+      ark::sdpa_impl_bf16_sparse_sdpa_d64(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
+    } else {
+      ark::sdpa_impl_fp16_sparse_sdpa_d64(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
+    }
+    return;
+  }
+  if (head_dim == 128) {
+    if (query_block_is_128) {
+      if (execution_schedule || execution_schedule_rounds) {
+        throw std::invalid_argument("ark::block_sparse_sdpa: Q128 routing does not support execution schedules");
+      }
+      ark::sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, nullptr, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, false, 128, (void*)k_block_valid);
+      return;
+    }
+    if (matches_block_size(seq_len_q, num_q_blocks, 256)) {
+      if (q_tile_override != 256) {
+        throw std::invalid_argument(
+            "ark::block_sparse_sdpa: head_dim=128 query block size 256 requires q_tile_override=256");
+      }
+      if (is_bf16) {
+        ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal, 256, (int const*)execution_schedule,
+            (int const*)execution_schedule_rounds, execution_schedule_max_rounds, (void*)k_block_valid);
+      } else {
+        ark::sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal, 256, (void*)k_block_valid);
+      }
+      return;
+    }
+    if (matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      if (q_tile_override == 512) {
+        if (!is_bf16) {
+          throw std::invalid_argument("ark::block_sparse_sdpa: q_tile_override=512 is BF16-only");
+        }
+        ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+            q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+            v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+            num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64,
+            (int const*)execution_schedule, (int const*)execution_schedule_rounds,
+            execution_schedule_max_rounds, (void*)k_block_valid);
+        return;
+      }
+      if (q_tile_override == 256) {
+        if (is_bf16) {
+          ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64,
+              (int const*)execution_schedule, (int const*)execution_schedule_rounds,
+              execution_schedule_max_rounds, (void*)k_block_valid);
+        } else {
+          ark::sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        }
+        return;
+      }
+      if (q_tile_override == 128) {
+        if (is_bf16) {
+          ark::sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        } else {
+          ark::sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
+              (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+              (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d,
+              q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s,
+              v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
+              num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, 64, (void*)k_block_valid);
+        }
+        return;
+      }
+      if (is_bf16) {
+        ark::sdpa_impl_bf16_sparse_sdpa_row_linear(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
+      } else {
+        ark::sdpa_impl_fp16_sparse_sdpa_row_linear(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal, (void*)k_block_valid);
+      }
+      return;
+    }
+    throw std::invalid_argument(
+        "ark::block_sparse_sdpa: head_dim=128 supports query block sizes 64 and 256, "
+        "or 128 for non-causal, unmasked BF16");
+  }
+  throw std::invalid_argument("ark::block_sparse_sdpa: unsupported head_dim; supported values are 64 and 128");
+}
+
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
                              torch_ptr outputs, int dtype, int N, int K, torch_ptr num_tokens_per_expert,
                              int num_experts) {
@@ -583,6 +755,42 @@ static void moe_gemm_prefill_int_dpas_wrapper(torch_ptr stream, torch_ptr activa
   ark::moe_gemm_prefill_int_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
                                  (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
                                  (int*)num_tokens_per_expert, num_experts, total_tokens);
+}
+
+// W4A8 MoE: int4 weights re-scaled to int8 (AUTO_S8), int8 DPAS compute,
+// per-token dynamically quantized int8 activations. `weights_s8` is
+// [E, N, K] int8 and `wscales` is [E, N, K/rescale_block] FP32, both produced
+// by `moe_w4a8_prepack`. STATUS: NEEDS-HARDWARE-VALIDATION.
+static void moe_w4a8_prepack_wrapper(torch_ptr stream, torch_ptr weights_s4, torch_ptr scales,
+                                     torch_ptr weights_s8, torch_ptr wscales, int act_dtype, int num_experts,
+                                     int N, int K, int group_size, int rescale_group_size) {
+  ark::moe_w4a8_prepack((sycl::queue*)stream, (void*)weights_s4, (void*)scales, (void*)weights_s8,
+                        (void*)wscales, (BTLA_DTYPE)(act_dtype), num_experts, N, K, group_size,
+                        rescale_group_size);
+}
+
+// `qact`/`ascale` are optional pre-quantized activations (0 = quantize in the
+// call); `row_to_token`/`routing_weights`/`fused_out` are the optional fused
+// top-k reduction (0 = write the unreduced `[T, N]` output).
+static void moe_gemm_w4a8_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights_s8,
+                                  torch_ptr wscales, torch_ptr outputs, int act_dtype, int N, int K,
+                                  int rescale_block_size, torch_ptr num_tokens_per_expert, int num_experts,
+                                  int total_tokens, int phase, torch_ptr qact, torch_ptr ascale,
+                                  torch_ptr row_to_token, torch_ptr routing_weights, torch_ptr fused_out,
+                                  int fused_batch) {
+  ark::moe_gemm_w4a8((sycl::queue*)stream, (void*)activations, (void*)weights_s8, (void*)wscales, (void*)outputs,
+                     (BTLA_DTYPE)(act_dtype), N, K, rescale_block_size, (int*)num_tokens_per_expert, num_experts,
+                     total_tokens, phase, (const void*)qact, (const float*)ascale, (const int*)row_to_token,
+                     (const float*)routing_weights, (float*)fused_out, fused_batch);
+}
+
+// Standalone per-token activation quantization -- the pass `moe_gemm_w4a8`
+// runs internally, exposed so it can be timed on its own and so a caller can
+// pre-quantize once and hand the result back as `qact`/`ascale`.
+static void moe_w4a8_quant_act_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr qact, torch_ptr ascale,
+                                       int act_dtype, int total_tokens, int K) {
+  ark::moe_w4a8_quant_act((sycl::queue*)stream, (const void*)activations, (void*)qact, (void*)ascale,
+                          (BTLA_DTYPE)(act_dtype), total_tokens, K);
 }
 
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
@@ -1550,6 +1758,33 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
+  m.def("block_sparse_sdpa", &ark::block_sparse_sdpa, pybind11::arg("stream"), pybind11::arg("Q"),
+        pybind11::arg("K"), pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("lut"), pybind11::arg("valid_block_num"), pybind11::arg("num_q_blocks"),
+        pybind11::arg("num_k_blocks"), pybind11::arg("q_tile_override"), pybind11::arg("q_stride_s"),
+        pybind11::arg("q_stride_d"), pybind11::arg("q_stride_h"), pybind11::arg("q_stride_b"),
+        pybind11::arg("k_stride_s"), pybind11::arg("k_stride_d"), pybind11::arg("k_stride_h"),
+        pybind11::arg("k_stride_b"), pybind11::arg("v_stride_d"), pybind11::arg("v_stride_s"),
+        pybind11::arg("v_stride_h"), pybind11::arg("v_stride_b"), pybind11::arg("o_stride_s"),
+        pybind11::arg("o_stride_d"), pybind11::arg("o_stride_h"), pybind11::arg("o_stride_b"),
+        pybind11::arg("q_dtype"), pybind11::arg("batch"), pybind11::arg("num_heads_q"),
+        pybind11::arg("num_heads_kv"), pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("execution_schedule") = 0, pybind11::arg("execution_schedule_rounds") = 0,
+        pybind11::arg("execution_schedule_max_rounds") = 0, pybind11::arg("k_block_valid") = 0);
+  // Capability flags so Python can tell what this compiled extension supports
+  // without relying on private helpers or docstring parsing.
+  m.attr("ARK_BLOCK_SPARSE_K_BLOCK_VALID") = pybind11::bool_(true);
+  m.attr("ARK_BLOCK_SPARSE_Q256_MULTIROW") = pybind11::bool_(true);
+  m.def("build_sparse_execution_schedule", &ark::build_sparse_execution_schedule,
+        "Build a round-based multirow execution schedule.\n\n"
+        "execution_schedule must be [batch, heads, q_groups, rows_per_group, max_rounds]. "
+        "A negative entry in execution_schedule_rounds means the routing row needed more than "
+        "max_rounds rounds; callers must treat that as a build failure.", pybind11::arg("stream"),
+        pybind11::arg("lut"), pybind11::arg("valid_block_num"), pybind11::arg("execution_schedule"),
+        pybind11::arg("execution_schedule_rounds"), pybind11::arg("batch"), pybind11::arg("num_heads"),
+        pybind11::arg("num_q_blocks"), pybind11::arg("num_k_blocks"), pybind11::arg("rows_per_group"),
+        pybind11::arg("max_rounds"));
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
@@ -1575,6 +1810,10 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
   m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
+  m.def("moe_w4a8_prepack", &ark::moe_w4a8_prepack_wrapper);
+  m.def("moe_gemm_w4a8", &ark::moe_gemm_w4a8_wrapper);
+  m.def("moe_w4a8_quant_act", &ark::moe_w4a8_quant_act_wrapper);
+  m.def("moe_w4a8_rescale_block_size", &ark::moe_w4a8_rescale_block_size);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif  // ARK_SYCL_TLA
 #if !defined(ARK_XPU)

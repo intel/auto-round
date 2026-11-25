@@ -454,9 +454,7 @@ class TestConfigErrorHandling:
 
         # The branch diff adds ValueError to the except clause around line 294
         # Verify the pattern appears (line numbers may shift)
-        assert (
-            "except (OSError, EnvironmentError, ValueError)" in content
-        ), "BaseCompressor should catch ValueError alongside OSError/EnvironmentError"
+        assert "except (OSError, ValueError)" in content, "BaseCompressor should catch ValueError alongside OSError"
 
     def test_autoconfig_valueerror_caught_in_model_context(self):
         """ModelContext: ValueError should be caught in AutoConfig.from_pretrained."""
@@ -465,9 +463,7 @@ class TestConfigErrorHandling:
             content = f.read()
 
         # The branch diff adds ValueError to the except clause around line 146
-        assert (
-            "except (OSError, EnvironmentError, ValueError)" in content
-        ), "ModelContext should catch ValueError alongside OSError/EnvironmentError"
+        assert "except (OSError, ValueError)" in content, "ModelContext should catch ValueError alongside OSError"
 
 
 # ================= Test: mllm_load_model for bagel =================

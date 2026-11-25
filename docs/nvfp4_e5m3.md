@@ -105,6 +105,33 @@ tokenizer = AutoTokenizer.from_pretrained("./nvfp4_e5m3_model")
 
 ---
 
+## NVFP4_E5M3_GS: E5M3 Block Scales with a Global Scale
+
+`NVFP4_E5M3_GS` keeps the FP4 E2M1 values and UE5M3 block scales, and adds a
+per-tensor FP32 global scale for weights and activations (like standard NVFP4):
+
+$$\text{global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+
+| Property | Value |
+|---|---|
+| Preset name | `NVFP4_E5M3_GS` |
+| Weight dtype | `nvfp4_v2_gs` |
+| Activation dtype | `nvfp4_v2_with_static_gs` |
+| Extra tensors | `.weight_global_scale`, `.input_global_scale` (FP32) |
+| `auto_round` packing format | `auto_round:llm_compressor_nvfp4_e5m3_gs` |
+| `llm_compressor` format | `nvfp4-e5m3-gs-pack-quantized` |
+| Inference backends | `auto_round:cute_nvfp4_e5m3_gs`, `auto_round:torch_nvfp4_e5m3_gs` |
+
+- **Regular tuning flow**: global scales are computed like NVFP4. The weight global scale comes from the weight amax, and `input_global_scale` comes from the calibrated activation amax. q/k/v and gate/up projections share the minimum global scale.
+- **Model-free flow**: the weight global scale is computed per layer and `input_global_scale` is fixed to `1`.
+
+```bash
+auto-round --model <model_id_or_path> --scheme NVFP4_E5M3_GS --output_dir ./nvfp4_e5m3_gs_model
+auto-round --model <model_id_or_path> --scheme NVFP4_E5M3_GS --model_free --output_dir ./nvfp4_e5m3_gs_model
+```
+
+---
+
 ## Environment Variables
 
 ### `AR_NVFP4_E5M3_CACHE_HP_WEIGHT`

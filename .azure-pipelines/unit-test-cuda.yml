@@ -6,6 +6,7 @@ pr:
   branches:
     include:
       - main
+      - "*rc"
   paths:
     include:
       - auto_round
@@ -265,6 +266,14 @@ stages:
                       --agent "$(AGENT_NAME)-part${{ pair.value.PART }}"
                 env:
                   PYTHONUNBUFFERED: '1'
+
+  - template: template/ai-stage-template.yml
+    parameters:
+      dependsOn:
+        - ${{ each pair in parameters.matrix }}:
+            - GPU_Test_${{ pair.key }}
+      enableAiAnalysis: true
+      postComment: true
 
   - stage: Coverage
     displayName: "Collect Coverage"
