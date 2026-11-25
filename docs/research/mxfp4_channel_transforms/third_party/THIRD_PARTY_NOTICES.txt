@@ -1,0 +1,19 @@
+THIRD-PARTY FIGURES AND DATA / THIRD-PARTY LICENSE NOTICES
+
+This package reproduces only the assets listed below, under the licenses of their pinned author repositories. It does not assert a license for every figure or the full text of the corresponding papers.
+
+DuQuant: imgs/duquant.png and imgs/ppl.png.
+Copyright (c) 2024 Haobo Xu, Haokun Lin. MIT License.
+The original copyright and complete license are in DuQuant_MIT.txt.
+
+QuaRot: img/fig1.png. Ashkboos et al., spcl/QuaRot.
+Apache License, Version 2.0; complete license in Apache-2.0.txt.
+
+WUSH: plots/1_toy_example.pdf, plots/2_speedup.pdf, plots/3_platinum_bench/10_llama-3.1-8b_table.pdf, and plots/3_platinum_bench.csv. Chen et al., IST-DASLab/WUSH.
+Apache License, Version 2.0; complete license in Apache-2.0.txt.
+PDF figures were rasterized without changing their labels or data.
+
+Every source URL, revision, original hash, output hash and modification is recorded in ../evidence.json. Paper results are the authors' reported results, not measurements of the proposed AutoRound features.
+
+MicroMix and Atom figures/source code are not redistributed. Their repository license metadata did not establish a reusable license. SpinQuant figures/source code are not redistributed (noncommercial terms).
+Original diagrams and newly typeset numeric tables in this package are not reproductions of those projects' artwork or code.

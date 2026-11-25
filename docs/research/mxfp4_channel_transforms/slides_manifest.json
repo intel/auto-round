@@ -1,0 +1,269 @@
+[
+  {
+    "page": 1,
+    "title": "通道重排 × 混合 MXFP 激活 × HMT",
+    "section": "研究设计",
+    "source_ids": []
+  },
+  {
+    "page": 2,
+    "title": "建议：一份计划，两个功能，三层落地",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 3,
+    "title": "先讲证据边界：哪些知道，哪些尚未证明",
+    "section": "证据与先行工作",
+    "source_ids": []
+  },
+  {
+    "page": 4,
+    "title": "最接近的先行工作，决定创新应放在哪里",
+    "section": "证据与先行工作",
+    "source_ids": [
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12"
+    ]
+  },
+  {
+    "page": 5,
+    "title": "QuaRot：成对旋转，而不是单边处理异常值",
+    "section": "论文图",
+    "source_ids": [
+      "R05"
+    ]
+  },
+  {
+    "page": 6,
+    "title": "DuQuant：旋转 → 置换 → 再旋转",
+    "section": "论文图",
+    "source_ids": [
+      "R03",
+      "R04"
+    ]
+  },
+  {
+    "page": 7,
+    "title": "DuQuant 的原始数据表：保留格式和上下文",
+    "section": "论文数据",
+    "source_ids": [
+      "R03"
+    ]
+  },
+  {
+    "page": 8,
+    "title": "MicroMix：与 F2 最接近的直接先行实现",
+    "section": "现有实现",
+    "source_ids": [
+      "R10"
+    ]
+  },
+  {
+    "page": 9,
+    "title": "直接的 MXFP4 证据：固定 HMT 仍有改进空间",
+    "section": "论文数据",
+    "source_ids": [
+      "R12"
+    ]
+  },
+  {
+    "page": 10,
+    "title": "格式不混淆：MXFP4、MXFP8、NVFP4",
+    "section": "设计方案",
+    "source_ids": [
+      "R01",
+      "R04",
+      "R11"
+    ]
+  },
+  {
+    "page": 11,
+    "title": "不变量：激活和权重列必须成对变换",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 12,
+    "title": "F1：要优化跨块成员，而非“打乱”本身",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 13,
+    "title": "F1 搜索：用重构损失，而不只用 amax",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 14,
+    "title": "grouped GEMM：M 轴 routing 与 K 轴 gather 分开",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 15,
+    "title": "F2：一遍 gather，两段连续输入，沿 K 求和",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 16,
+    "title": "高分支有三种语义，必须分开报告",
+    "section": "设计方案",
+    "source_ids": [
+      "R10"
+    ]
+  },
+  {
+    "page": 17,
+    "title": "给谁 A8：量化误差增益优先，幅度只是代理",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 18,
+    "title": "小比例不是连续旋钮：对齐决定真实预算",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 19,
+    "title": "HMT 组合：先明确 mask 属于哪个坐标基",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 20,
+    "title": "统一搜索：离散计划与 AutoRound 交替优化",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 21,
+    "title": "进阶方向：从固定 HMT 到数据感知变换",
+    "section": "论文图 / 探索",
+    "source_ids": [
+      "R12",
+      "R06"
+    ]
+  },
+  {
+    "page": 22,
+    "title": "论文速度图能说明什么，不能说明什么",
+    "section": "论文图 / 证据边界",
+    "source_ids": [
+      "R12"
+    ]
+  },
+  {
+    "page": 23,
+    "title": "AutoRound 落点：复用已有机制，不另起一套",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 24,
+    "title": "三个真实缺口：hook、packed 消费者、后端能力",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 25,
+    "title": "Intel XPU：按代际核验原生计算，而不是按名称猜测",
+    "section": "XPU 实现",
+    "source_ids": [
+      "R13"
+    ]
+  },
+  {
+    "page": 26,
+    "title": "内核路线：参考、解码融合、能力通过后的原生",
+    "section": "XPU 实现",
+    "source_ids": []
+  },
+  {
+    "page": 27,
+    "title": "持久化：一份版本化计划贯穿校准、调优、推理",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 28,
+    "title": "正确性：先查不变量，再查编码，最后查网络",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 29,
+    "title": "实验：公平预算，独立数据，真实 MoE 负载",
+    "section": "设计方案",
+    "source_ids": []
+  },
+  {
+    "page": 30,
+    "title": "建议门槛：是研发目标，不是已经取得的结果",
+    "section": "验收设计",
+    "source_ids": []
+  },
+  {
+    "page": 31,
+    "title": "探索优先级：先解决四个可证伪的问题",
+    "section": "探索路线",
+    "source_ids": []
+  },
+  {
+    "page": 32,
+    "title": "开发里程碑：数值、dense、grouped、持久化闭环",
+    "section": "开发计划",
+    "source_ids": []
+  },
+  {
+    "page": 33,
+    "title": "最终决策：用 Pareto 证据，而不是单项宣传",
+    "section": "推荐决策",
+    "source_ids": []
+  },
+  {
+    "page": 34,
+    "title": "参考来源 1/2：论文入口与固定实现版本",
+    "section": "参考与许可",
+    "source_ids": [
+      "R01",
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R06",
+      "R07"
+    ]
+  },
+  {
+    "page": 35,
+    "title": "参考来源 2/2：论文入口与固定实现版本",
+    "section": "参考与许可",
+    "source_ids": [
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12",
+      "R13"
+    ]
+  },
+  {
+    "page": 36,
+    "title": "附录：WUSH 作者原始任务明细表",
+    "section": "附录 / 原始论文表",
+    "source_ids": [
+      "R12"
+    ]
+  }
+]
