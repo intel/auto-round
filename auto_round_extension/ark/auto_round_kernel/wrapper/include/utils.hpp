@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -88,6 +89,13 @@ struct UUIDHasher {
     return static_cast<size_t>(h1 ^ h2);
   }
 };
+
+#if ARK_XPU
+class XpuScratchOutOfMemory : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+#endif
 
 class DeviceMemoryPool {
  public:
@@ -183,27 +191,19 @@ class DeviceMemoryPool {
       if (q == nullptr) {
         throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
       }
-      // Do NOT block the host here with q->wait(). Two reasons:
-      //   1) It is redundant for correctness. The scratch slab is keyed
-      //      per-queue (see get_device_key), so only work enqueued on this
-      //      same queue `q` ever references this slab. Both the sycl::free
-      //      in release() below and the sycl::aligned_alloc_device in
-      //      allocate() are associated with `q`, and `q` is an in-order
-      //      queue (ARK device queues are built in_order; torch.xpu
-      //      streams are in-order by default). USM bookkeeping plus the
-      //      in-order ordering guarantee the old slab is not handed back
-      //      while any in-flight kernel still references it -- the same
-      //      guarantee the rest of the codebase relies on (e.g. the async
-      //      sycl::free in sycl_tla_moe_prefill_fp8_native).
-      //   2) A blocking wait() is illegal while `q` is recording to a
-      //      torch.xpu command graph, so a wait here would throw whenever a
-      //      scratch slab grows during graph capture (see issue #2206).
+      // Do not host-wait here: a blocking wait is illegal while the queue is
+      // recording to a torch.xpu command graph (see issue #2206).
 #endif
       release(it->second, q);
-      auto newptr = allocate(size, q);
+      try {
+        it->second = allocate(size, q);
+      } catch (...) {
+        dev_mem_ptr_map[buf_loc].erase(it);
+        dev_mem_size_map[buf_loc].erase(key);
+        throw;
+      }
       dev_mem_size_map[buf_loc][key] = size;
-      dev_mem_ptr_map[buf_loc][key] = newptr;
-      return newptr;
+      return it->second;
     }
 
     return it->second;
@@ -316,9 +316,23 @@ class DeviceMemoryPool {
     if (q == nullptr) {
       throw std::invalid_argument("DeviceMemoryPool: XPU allocation requires a non-null SYCL queue");
     }
-    return sycl::aligned_alloc_device<int8_t>(128, size, *q);
+    auto error = [&](const char* cause) {
+      return XpuScratchOutOfMemory("ARK XPU scratch allocation failed for " + std::to_string(size) +
+                                   " bytes: " + cause);
+    };
+    int8_t* ptr;
+    try {
+      ptr = sycl::aligned_alloc_device<int8_t>(128, size, *q);
+    } catch (const sycl::exception& err) {
+      if (err.code() != sycl::make_error_code(sycl::errc::memory_allocation)) throw;
+      throw error(err.what());
+    }
+    if (ptr == nullptr) throw error("device allocator returned null");
+    return ptr;
 #else
-    return static_cast<int8_t*>(std::malloc(size));
+    auto* ptr = static_cast<int8_t*>(std::malloc(size));
+    if (ptr == nullptr) throw std::bad_alloc();
+    return ptr;
 #endif
   }
 
