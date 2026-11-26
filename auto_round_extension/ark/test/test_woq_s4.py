@@ -396,10 +396,10 @@ def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
 @pytest.mark.parametrize(
     "in_features,out_features,selected",
     [
-        (2048, 2048, False),
-        (3584, 8192, False),
-        (4096, 1024, False),
-        (4096, 3968, False),
+        (2048, 2048, True),
+        (3584, 8192, True),
+        (4096, 1024, True),
+        (4096, 3968, True),
         (4096, 4096, True),
         (4096, 8064, True),
         (4096, 8192, True),

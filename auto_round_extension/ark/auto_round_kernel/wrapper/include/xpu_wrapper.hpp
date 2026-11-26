@@ -587,8 +587,8 @@ class XpuWrapper {
                                     void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
     using namespace dense_woq_s4_dpas;
     const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_M1");
-    if (!setting || std::strcmp(setting, "1") != 0 || params->k < 4096 || params->n < 4096 ||
-        params->n > kWoqS4SplitK4MaxN || params->n % woq_s4_dpas_tile_n(1, params) != 0 ||
+    if (!setting || std::strcmp(setting, "1") != 0 || params->n > kWoqS4SplitK4MaxN ||
+        params->n % woq_s4_dpas_tile_n(1, params) != 0 ||
         outt != BTLA_DTYPE::F16 || !has_dpas_scale_layout(params, blob_count) ||
         params->k % (kSplitK4Parts * std::max(64, params->blocksize)) != 0) {
       return false;
