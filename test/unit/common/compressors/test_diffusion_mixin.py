@@ -231,6 +231,61 @@ def test_zero_shot_quantizes_secondary_and_restores_primary(monkeypatch, fail_se
     assert comp.compress_context.is_immediate_saving
 
 
+@pytest.mark.parametrize("immediate_saving", [False, True])
+def test_modular_export_points_to_saved_components(tmp_path, immediate_saving):
+    import json
+    from pathlib import Path
+
+    def component_entry(source, name):
+        return [
+            "diffusers",
+            "ModelMixin",
+            {"pretrained_model_name_or_path": source, "subfolder": name, "revision": "old", "variant": "fp16"},
+        ]
+
+    transformer = torch.nn.Linear(2, 2)
+    vae = SimpleNamespace(save_pretrained=lambda path: Path(path).mkdir())
+    components = {"transformer": transformer, "vae": vae, "prompt_upsampler": None}
+    original_index = {
+        "_class_name": "TestModularPipeline",
+        "transformer": component_entry("original/pipeline", "transformer"),
+        "vae": component_entry("original/pipeline", "vae"),
+        "prompt_upsampler": component_entry("original/upsampler", ""),
+    }
+    pipe = SimpleNamespace(
+        **components, components=components, config=original_index, config_name="modular_model_index.json"
+    )
+
+    class Parent:
+        def save_quantized(self, output_dir, **kwargs):
+            component_dir = Path(output_dir) / "transformer" if immediate_saving else Path(output_dir)
+            component_dir.mkdir()
+            (component_dir / "model.safetensors").touch()
+            return transformer
+
+    class Compressor(DiffusionMixin, Parent):
+        def __init__(self):
+            self.model_context = SimpleNamespace(pipe=pipe, model=transformer)
+            self.compress_context = SimpleNamespace(is_immediate_saving=immediate_saving)
+
+    model, folders = Compressor().save_quantized(str(tmp_path), format=[], return_folders=True)
+
+    assert model is transformer
+    assert folders == [str(tmp_path if immediate_saving else tmp_path / "transformer")]
+    assert (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").is_file()
+    index = json.loads((tmp_path / "modular_model_index.json").read_text())
+    assert index["_class_name"] == "TestModularPipeline"
+    for name in ("transformer", "vae"):
+        assert index[name][2] == {
+            "pretrained_model_name_or_path": str(tmp_path),
+            "subfolder": name,
+            "revision": None,
+            "variant": None,
+        }
+    assert index["prompt_upsampler"] == original_index["prompt_upsampler"]
+    assert original_index["transformer"][2]["pretrained_model_name_or_path"] == "original/pipeline"
+
+
 @pytest.mark.parametrize("selector", [None, r"\.1$"])
 def test_zero_shot_resolves_component_plan_before_initialization(monkeypatch, selector):
     from auto_round.compressors.base import BaseOrchestrator
