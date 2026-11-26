@@ -46,11 +46,11 @@ ARK 算子已集成到以下项目：
 
 **XPU 上的稠密 W4A16（SYCL TLA）**
 
-设置 `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` 后，`M=1, K >= 4096, 4096 <= N <= 16384` 的调用可以走 K64 split-K4。`N` 需能被 128 整除，`K` 的每个四分之一切片都需同时对齐 K64 tile 和量化组大小。
+K64 split-K4（`M=1`）**默认开启**。调用满足以下条件时走 split-K4：`N <= 65536` 且 `N % 128 == 0`，`K` 可被切成 4 个整组（`K % 4*max(64, blocksize) == 0`），打包权重大于 8 MiB（`K*N > 16 MiB` 的 INT4 元素）。设置 `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` 可显式回退到 GEMV。
 
-该路由要求对称 INT4 权重、FP16 内核输入输出、group-major FP16 scale、group size 为 32、64 或 128，以及未处于图录制状态的有序队列。每个队列复用 256 KiB 的 FP32 临时空间；四份 FP32 partial 求和后只加一次可选 bias，再转为 FP16。Split-K 改变累加顺序，输出不保证与不切分 DPAS 逐 bit 相等。
+该路由还要求对称 INT4 权重、FP16 内核输入输出、group-major FP16 scale、group size 为 32、64 或 128，以及未处于图录制状态的有序队列。每个队列复用 1 MiB 的 FP32 临时空间（`4 * 65536` 个 float）；四份 FP32 partial 求和后加一次可选 bias，再转为 FP16。Split-K 改变累加顺序，输出不保证与不切分 DPAS 逐位相等。
 
-默认关闭，规则未命中的单行调用仍走 GEMV。`M>1` 的分流、权重打包和 dtype 转换不变。分流检查的是内核 dtype，因此已转为 FP16 的 BF16 输入也可能命中 split-K4。启用前请在目标设备测量整次调用延迟。
+规则未命中时（8 MiB 摊销下限以下、`N` 不对齐 128、`K` 切不出 4 个整组、非对称权重、非 FP16 输入输出、乱序或正在录制图的队列），单行调用仍走 GEMV。`M>1` 的调度、权重打包和 dtype 转换不变。调度检查的是内核 dtype，因此已转为 FP16 的 BF16 输入也可能命中 split-K4。8 MiB 下限是因为低于该权重时 4-kernel + 1 MiB 临时空间的开销无法摊销，实测 split-K4 比 GEMV 更慢。
 
 ### M=1 W4A16 基准测试
 

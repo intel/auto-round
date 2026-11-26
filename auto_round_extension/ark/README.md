@@ -46,11 +46,11 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=1` to opt in to K64 split-K4 for `M=1, K >= 4096, 4096 <= N <= 16384`. `N` must be divisible by 128, and each quarter of `K` must be aligned to both the K64 tile and the quantization group size.
+K64 split-K4 for `M=1` is **enabled by default**. A call takes the split-K4 route when all of these hold: `N <= 65536` and `N % 128 == 0`, `K` splits into four whole groups (`K % 4*max(64, blocksize) == 0`), and the packed weight exceeds 8 MiB (`K*N > 16 MiB` of INT4 elements). Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` to explicitly fall back to GEMV.
 
-The route requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 256 KiB of FP32 scratch per queue, adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
+The route also requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 1 MiB of FP32 scratch per queue (`4 x 65536` floats), adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
 
-By default and outside the rule, single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and dtype conversion are unchanged. The selector checks the kernel dtype, so BF16 inputs already converted to FP16 can also select split-K4. Measure whole-call latency on the target device before enabling the rule.
+Outside the rule (the 8 Mi amortization floor, off-tile `N`, a `K` that does not split into four whole groups, asymmetric weights, non-FP16 I/O, an out-of-order or recording queue) single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and dtype conversion are unchanged. The selector checks the kernel dtype, so BF16 inputs already converted to FP16 can also select split-K4. The 8 Mi floor exists because below it the 4-kernel + 1 MiB scratch cost is not amortized and split-K4 measured slower than GEMV.
 
 ### M=1 W4A16 Benchmark
 

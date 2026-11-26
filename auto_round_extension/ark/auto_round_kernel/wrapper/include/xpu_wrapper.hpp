@@ -563,6 +563,11 @@ class XpuWrapper {
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
   static constexpr size_t kWoqS4DpasMaxM = 128;
   static constexpr int kWoqS4SplitK4MaxN = 65536;
+  // Min K*N for split-K4 to amortize its fixed 4-kernel + 1 MiB scratch cost.
+  // 16 MiB of INT4 elements == 8 MiB of packed weight. The 8 MiB-weight band
+  // (2048x8192 / 4096x4096 / 8192x2048) is run-to-run unstable (0.82–1.55x),
+  // so strict > keeps it on GEMV.
+  static constexpr size_t kWoqS4SplitK4MinKN = 16 * 1024 * 1024;
   static constexpr size_t kWoqS4SplitK4ScratchLoc = 15;
 
   static inline bool woq_s4_dpas_group_size_ok(int group_size) {
@@ -586,11 +591,14 @@ class XpuWrapper {
   static bool woq_try_s4_dpas_split4(sycl::queue* queue, QuantParam* params, const void* matA, const void* blobB,
                                     void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
     using namespace dense_woq_s4_dpas;
+    // Enabled by default; the env var is an escape hatch to force GEMV.
     const char* setting = std::getenv("ARK_WOQ_S4_DPAS_SPLIT_K4_M1");
-    if (!setting || std::strcmp(setting, "1") != 0 || params->n > kWoqS4SplitK4MaxN ||
+    const bool split4_off = setting && std::strcmp(setting, "0") == 0;
+    if (split4_off || params->n > kWoqS4SplitK4MaxN ||
         params->n % woq_s4_dpas_tile_n(1, params) != 0 ||
         outt != BTLA_DTYPE::F16 || !has_dpas_scale_layout(params, blob_count) ||
-        params->k % (kSplitK4Parts * std::max(64, params->blocksize)) != 0) {
+        params->k % (kSplitK4Parts * std::max(64, params->blocksize)) != 0 ||
+        static_cast<size_t>(params->k) * params->n <= kWoqS4SplitK4MinKN) {
       return false;
     }
     if (!queue->is_in_order() || queue->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {

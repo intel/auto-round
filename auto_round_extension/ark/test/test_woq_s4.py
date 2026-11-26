@@ -396,11 +396,11 @@ def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
 @pytest.mark.parametrize(
     "in_features,out_features,selected",
     [
-        (2048, 2048, True),
+        (2048, 2048, False),
         (3584, 8192, True),
-        (4096, 1024, True),
-        (4096, 3968, True),
-        (4096, 4096, True),
+        (4096, 1024, False),
+        (4096, 3968, False),
+        (4096, 4096, False),
         (4096, 8064, True),
         (4096, 8192, True),
         (4096, 8256, False),
@@ -412,7 +412,7 @@ def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
         (4096, 15360, True),
         (4096, 16256, True),
         (4096, 16384, True),
-        (4096, 16512, False),
+        (4096, 16512, True),
         (4224, 8192, False),
         (4608, 8192, True),
         (8192, 4096, True),
@@ -424,7 +424,9 @@ def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_feature
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
         raise unittest.SkipTest("No XPU Device")
 
-    monkeypatch.delenv(M1_SPLIT4_SWITCH, raising=False)
+    # split-K4 is on by default; the flag-OFF reference arm must explicitly
+    # disable it (env "0"), and the flag-ON arm runs the default (unset).
+    monkeypatch.setenv(M1_SPLIT4_SWITCH, "0")
     at_threshold = (in_features, out_features) == (4096, 4096)
     group_size = 128
     activation, packw, bias, reference = _ark_case(
@@ -441,7 +443,7 @@ def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_feature
         legacy_packw = packw[:-scale_bytes]
         legacy_default = ark.woqgemm(rows, legacy_packw, bias, *options).cpu()
 
-    monkeypatch.setenv(M1_SPLIT4_SWITCH, "1")
+    monkeypatch.delenv(M1_SPLIT4_SWITCH, raising=False)
     actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
     assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not selected)
     torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
