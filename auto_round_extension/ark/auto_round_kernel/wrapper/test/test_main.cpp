@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 #include <iostream>
 #include "test_gemm.hpp"
 #include "test_quant.hpp"
