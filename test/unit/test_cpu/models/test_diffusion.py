@@ -211,17 +211,60 @@ def test_pathless_models_do_not_share_mllm_cache_entry():
     assert None not in _is_mllm_model_cache
 
 
-def test_modular_model_index_dir_is_detected_as_diffusion(tmp_path):
+def test_load_local_modular_diffusion_pipeline(tmp_path, monkeypatch):
     """Modular Diffusers ships modular_model_index.json instead of model_index.json."""
     pytest.importorskip("diffusers.modular_pipelines")
 
     from auto_round.utils.model import diffusion_load_model, is_diffusion_model
 
     (tmp_path / "modular_model_index.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps({"vae": {"dtype": "float32"}}), encoding="utf-8")
+    for name in ("transformer", "vae", "text_encoder"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "text_encoder" / "config.json").write_text('{"dtype": "float16"}', encoding="utf-8")
+
+    class Config(dict):
+        pass
+
+    class TestModularPipeline:
+        config_name = "modular_model_index.json"
+        pretrained_component_names = ["transformer", "vae", "tokenizer", "text_encoder", "prompt_upsampler"]
+
+        @classmethod
+        def from_pretrained(cls, path, trust_remote_code):
+            assert path == str(tmp_path)
+            assert trust_remote_code
+            return cls()
+
+        def load_config(self, path):
+            return {"_class_name": "TestModularPipeline"}
+
+        def get_component_spec(self, name):
+            return SimpleNamespace(subfolder={"tokenizer": "text_encoder", "prompt_upsampler": ""}.get(name, name))
+
+        def load_components(self, **kwargs):
+            self.load_kwargs = kwargs
+            self.config = Config()
+            self.transformer = torch.nn.Linear(2, 2)
+            self.transformer.config = SimpleNamespace()
+            self.components = {"transformer": self.transformer}
+
+    monkeypatch.setattr("auto_round.utils.model._get_modular_pipeline_class", lambda: TestModularPipeline)
 
     assert is_diffusion_model(str(tmp_path)) is True
-    with pytest.raises(NotImplementedError, match="Modular Diffusers"):
-        diffusion_load_model(str(tmp_path))
+    pipe, model = diffusion_load_model(str(tmp_path), default_torch_dtype=torch.bfloat16, trust_remote_code=True)
+    assert model is pipe.transformer
+    assert model._autoround_checkpoint_subfolder == "transformer"
+    assert pipe.config["_class_name"] == "TestModularPipeline"
+    local_names = ["transformer", "vae", "tokenizer", "text_encoder"]
+    assert pipe.load_kwargs["pretrained_model_name_or_path"] == dict.fromkeys(local_names, str(tmp_path))
+    assert pipe.load_kwargs["revision"] == dict.fromkeys(local_names)
+    assert pipe.load_kwargs["dtype"] == {
+        "default": torch.bfloat16,
+        "vae": torch.float32,
+        "text_encoder": torch.float16,
+        "tokenizer": torch.float16,
+    }
 
 
 # def test_flux_calib(setup_flux):

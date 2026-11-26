@@ -352,6 +352,14 @@ class TestResolveModelSourceDir:
         model.name_or_path = "/some/path"
         assert _resolve_model_source_dir(model) == "/some/path"
 
+    def test_with_diffusion_checkpoint_subfolder(self, tmp_path):
+        component = tmp_path / "transformer"
+        component.mkdir()
+        model = nn.Module()
+        model.name_or_path = str(tmp_path)
+        model._autoround_checkpoint_subfolder = "transformer"
+        assert _resolve_model_source_dir(model) == str(component)
+
     def test_with_config_name_or_path(self):
         model = nn.Module()
         model.config = SimpleNamespace(_name_or_path="/from/config")

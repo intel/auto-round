@@ -27,7 +27,12 @@ from auto_round.utils.device import (
     get_major_device,
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
-from auto_round.utils.model import cast_model_dtype, rename_weights_files
+from auto_round.utils.model import (
+    MODULAR_PIPELINE_INDEX_NAME,
+    cast_model_dtype,
+    config_save_pretrained,
+    rename_weights_files,
+)
 
 
 class DiffusionMixin:
@@ -523,6 +528,8 @@ class DiffusionMixin:
         quantized_transformers = getattr(self, "_quantized_transformers", {})
         compressed_model = None
         folders = []
+        saved_components = []
+        is_modular_pipeline = getattr(pipe, "config_name", None) == MODULAR_PIPELINE_INDEX_NAME
         has_multiple_quantized_transformers = bool(quantized_transformers)
 
         # Handle multi-format (convert string to list if needed)
@@ -606,14 +613,37 @@ class DiffusionMixin:
                     config.save_pretrained(sub_module_path)
                 else:
                     val.save_pretrained(sub_module_path)
+                saved_components.append(name)
+                continue
+            elif is_modular_pipeline:
                 continue
 
             if name.startswith("transformer"):
-                rename_weights_files(target_output_dir)
+                rename_weights_files(sub_module_path if is_modular_pipeline else target_output_dir)
 
             folders.append(target_output_dir)
+            saved_components.append(name)
 
-        if hasattr(pipe, "save_config"):
+        if is_modular_pipeline:
+            config = dict(pipe.config)
+            for name in saved_components:
+                entry = config.get(name)
+                if not isinstance(entry, (list, tuple)) or len(entry) != 3 or not isinstance(entry[2], dict):
+                    continue
+                library, class_name, spec = entry
+                config[name] = [
+                    library,
+                    class_name,
+                    {
+                        **spec,
+                        "pretrained_model_name_or_path": os.path.abspath(output_dir),
+                        "subfolder": name,
+                        "revision": None,
+                        "variant": None,
+                    },
+                ]
+            config_save_pretrained(config, MODULAR_PIPELINE_INDEX_NAME, output_dir)
+        elif hasattr(pipe, "save_config"):
             pipe.save_config(output_dir)
         elif hasattr(pipe.config, "save_pretrained"):
             pipe.config.save_pretrained(output_dir)

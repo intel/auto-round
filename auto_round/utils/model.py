@@ -993,6 +993,53 @@ def _attach_diffusion_pipeline_fn(pipe):
         pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
 
 
+def _load_local_modular_pipeline(pipeline_cls, model_path, torch_dtype, default_torch_dtype, trust_remote_code):
+    from pathlib import Path
+
+    if pipeline_cls is None:
+        raise ImportError("Local modular diffusion pipelines require a Diffusers version with ModularPipeline support.")
+
+    pipe = pipeline_cls.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    pipe_config = pipe.load_config(model_path)
+    native_config_path = os.path.join(model_path, "config.json")
+    native_config = {}
+    if torch_dtype == "auto" and os.path.isfile(native_config_path):
+        with open(native_config_path, encoding="utf-8") as config_file:
+            native_config = json.load(config_file)
+
+    dtype = {} if default_torch_dtype == "auto" else {"default": default_torch_dtype}
+    local_sources = {}
+    root = Path(model_path).resolve()
+    for name in pipe.pretrained_component_names:
+        spec = pipe.get_component_spec(name)
+        if not spec.subfolder or os.path.isabs(spec.subfolder):
+            continue
+        component_path = (root / spec.subfolder).resolve()
+        if not component_path.is_relative_to(root) or not component_path.is_dir():
+            continue
+        local_sources[name] = model_path
+        if torch_dtype == "auto":
+            component_config = native_config.get(name, {})
+            declared_dtype = component_config.get("dtype") if isinstance(component_config, dict) else None
+            diffusers_config = component_path / "config.json"
+            if diffusers_config.is_file():
+                with diffusers_config.open(encoding="utf-8") as config_file:
+                    component_config = json.load(config_file)
+                component_dtype = component_config.get("torch_dtype") or component_config.get("dtype")
+                if component_dtype not in (None, "auto"):
+                    declared_dtype = component_dtype
+            if declared_dtype and declared_dtype != "auto":
+                dtype[name] = convert_dtype_str2torch(declared_dtype.removeprefix("torch."))
+
+    pipe.load_components(
+        dtype=dtype if torch_dtype == "auto" else torch_dtype,
+        pretrained_model_name_or_path=local_sources,
+        revision=dict.fromkeys(local_sources),
+        trust_remote_code=trust_remote_code,
+    )
+    return pipe, pipe_config
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -1039,11 +1086,12 @@ def diffusion_load_model(
 
     # A special case for Cosmos3: model_index.json _class_name may not match
     # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    model_index = None
     _model_index = None
     if isinstance(pretrained_model_name_or_path, str):
-        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        if os.path.isfile(_mi_path):
-            with open(_mi_path, "r", encoding="utf-8") as f:
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(model_index):
+            with open(model_index, "r", encoding="utf-8") as f:
                 _model_index = json.load(f)
     _pipe_class = (_model_index or {}).get("_class_name", "")
     if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
@@ -1053,16 +1101,15 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
     modular_pipeline_cls = _get_modular_pipeline_class()
-    if isinstance(pretrained_model_name_or_path, str):
-        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        if not os.path.exists(model_index) and os.path.exists(
-            os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME)
-        ):
-            raise NotImplementedError(
-                f"{pretrained_model_name_or_path} is a Modular Diffusers pipeline "
-                f"({MODULAR_PIPELINE_INDEX_NAME}), which auto_round cannot assemble from a path yet. "
-                "Build the ModularPipeline yourself and pass the pipeline object as `model` instead."
-            )
+    if (
+        model_index is not None
+        and not os.path.exists(model_index)
+        and os.path.isfile(os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME))
+    ):
+        pipe, pipe_config = _load_local_modular_pipeline(
+            modular_pipeline_cls, pretrained_model_name_or_path, torch_dtype, default_torch_dtype, trust_remote_code
+        )
+    elif model_index is not None:
         with open(model_index, "r", encoding="utf-8") as file:
             config = json.load(file)
 
@@ -1105,14 +1152,16 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    if hasattr(pipe, "unet"):
+    if getattr(pipe, "unet", None) is not None:
         # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
         model = pipe.unet
         model_component_name = "unet"
     else:
         # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
-        model = pipe.transformer
+        model = getattr(pipe, "transformer", None)
         model_component_name = "transformer"
+    if model is None:
+        raise RuntimeError(f"Could not load a denoiser from {pretrained_model_name_or_path}.")
 
     # Diffusers keeps denoiser checkpoints below the pipeline repository root.
     # Retain the component name so block-wise offloading can find those files.

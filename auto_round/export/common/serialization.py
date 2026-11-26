@@ -181,8 +181,13 @@ def _resolve_model_source_dir(model: nn.Module) -> str | None:
         getattr(getattr(model, "config", None), "_name_or_path", None),
         getattr(getattr(model, "config", None), "name_or_path", None),
     ]
+    component = getattr(model, "_autoround_checkpoint_subfolder", None)
     for candidate in candidates:
         if isinstance(candidate, str) and candidate:
+            if component is not None:
+                component_dir = os.path.join(candidate, component)
+                if os.path.isdir(component_dir):
+                    return component_dir
             return candidate
     return None
 
