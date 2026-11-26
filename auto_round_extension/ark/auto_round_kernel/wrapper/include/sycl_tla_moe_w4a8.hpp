@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE W4A8 -- INT4 weights / INT8 compute (prefill + decode)
 //
 // STATUS: PARTIALLY HARDWARE-VALIDATED -- every perf sweep in

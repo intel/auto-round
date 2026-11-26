@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 #include "kernel_ut.h"
 #include "kernel_avx2.h"
 #include "kernel_avx_vnni.h"

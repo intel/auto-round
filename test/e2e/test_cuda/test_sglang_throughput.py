@@ -127,7 +127,6 @@ pytestmark = [
         not torch.cuda.is_available(),
         reason="SGLang throughput tests require a CUDA GPU",
     ),
-    pytest.mark.enable_torch_compile,
 ]
 
 

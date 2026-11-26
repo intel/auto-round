@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // Device scratch management for the int4 MoE decode fallbacks.
 //
 // The bookkeeping below is deliberately defined here rather than in a header so

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 #include <stdio.h>
 #include "bestla_wrapper.h"
 #include "bestla_gemm_kblock.h"
