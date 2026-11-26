@@ -1086,11 +1086,12 @@ def diffusion_load_model(
 
     # A special case for Cosmos3: model_index.json _class_name may not match
     # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    model_index = None
     _model_index = None
     if isinstance(pretrained_model_name_or_path, str):
-        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        if os.path.isfile(_mi_path):
-            with open(_mi_path, "r", encoding="utf-8") as f:
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(model_index):
+            with open(model_index, "r", encoding="utf-8") as f:
                 _model_index = json.load(f)
     _pipe_class = (_model_index or {}).get("_class_name", "")
     if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
@@ -1100,36 +1101,36 @@ def diffusion_load_model(
 
     pipelines = LazyImport("diffusers.pipelines")
     modular_pipeline_cls = _get_modular_pipeline_class()
-    if isinstance(pretrained_model_name_or_path, str):
-        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-        if not os.path.exists(model_index) and os.path.exists(
-            os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME)
-        ):
-            pipe, pipe_config = _load_local_modular_pipeline(
-                modular_pipeline_cls, pretrained_model_name_or_path, torch_dtype, default_torch_dtype, trust_remote_code
-            )
-        else:
-            with open(model_index, "r", encoding="utf-8") as file:
-                config = json.load(file)
+    if (
+        model_index is not None
+        and not os.path.exists(model_index)
+        and os.path.isfile(os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME))
+    ):
+        pipe, pipe_config = _load_local_modular_pipeline(
+            modular_pipeline_cls, pretrained_model_name_or_path, torch_dtype, default_torch_dtype, trust_remote_code
+        )
+    elif model_index is not None:
+        with open(model_index, "r", encoding="utf-8") as file:
+            config = json.load(file)
 
-            if torch_dtype == "auto":
-                torch_dtype = {}
-                for k, v in config.items():
-                    component_folder = os.path.join(pretrained_model_name_or_path, k)
-                    if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
-                        with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
-                            component_config = json.load(file)
-                        component_dtype = component_config.get("torch_dtype")
-                        if component_dtype is None or component_dtype == "auto":
-                            component_dtype = default_torch_dtype
-                        elif isinstance(component_dtype, str):
-                            component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
-                        torch_dtype[k] = component_dtype
+        if torch_dtype == "auto":
+            torch_dtype = {}
+            for k, v in config.items():
+                component_folder = os.path.join(pretrained_model_name_or_path, k)
+                if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
+                    with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
+                        component_config = json.load(file)
+                    component_dtype = component_config.get("torch_dtype")
+                    if component_dtype is None or component_dtype == "auto":
+                        component_dtype = default_torch_dtype
+                    elif isinstance(component_dtype, str):
+                        component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
+                    torch_dtype[k] = component_dtype
 
-            pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
-                pretrained_model_name_or_path, torch_dtype=torch_dtype, trust_remote_code=trust_remote_code
-            )
-            pipe_config = pipe.load_config(pretrained_model_name_or_path)
+        pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
+            pretrained_model_name_or_path, torch_dtype=torch_dtype, trust_remote_code=trust_remote_code
+        )
+        pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
     elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline) or (
         modular_pipeline_cls is not None and isinstance(pretrained_model_name_or_path, modular_pipeline_cls)
@@ -1171,9 +1172,7 @@ def diffusion_load_model(
 
     # meta model uses model.config.save_pretrained for config saving
     model.config.save_pretrained = partial(config_save_pretrained, model.config, "config.json", model=model)
-    pipe.config.save_pretrained = partial(
-        config_save_pretrained, pipe.config, getattr(pipe, "config_name", "model_index.json")
-    )
+    pipe.config.save_pretrained = partial(config_save_pretrained, pipe.config, "model_index.json")
 
     def model_save_pretrained(model, save_directory, **kwargs):
         super(model.__class__, model).save_pretrained(save_directory, **kwargs)
