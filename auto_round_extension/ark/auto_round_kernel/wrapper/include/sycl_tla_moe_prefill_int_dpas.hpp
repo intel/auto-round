@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Prefill — INT8 mixed-input DPAS Grouped GEMM (Variants A & B)
 // (Mirrors `sycl_tla_moe_prefill_fp8_dpas.hpp`)
 //
