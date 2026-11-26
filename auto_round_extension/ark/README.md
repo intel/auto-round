@@ -52,20 +52,6 @@ The route also requires symmetric INT4 weights, FP16 kernel I/O, group-major FP1
 
 Outside the rule (the 8 Mi amortization floor, off-tile `N`, a `K` that does not split into four whole groups, asymmetric weights, non-FP16 I/O, an out-of-order or recording queue) single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and dtype conversion are unchanged. The selector checks the kernel dtype, so BF16 inputs already converted to FP16 can also select split-K4. The 8 Mi floor exists because below it the 4-kernel + 1 MiB scratch cost is not amortized and split-K4 measured slower than GEMV.
 
-### M=1 W4A16 Benchmark
-
-From the ARK directory, make the newly built ARK XPU runtime importable and select one idle GPU with `ZE_AFFINITY_MASK`. Use [test_woq_s4.py](test/test_woq_s4.py) to compare GEMV and production split-K4 at `M=1, K=4096, N=16384`, with FP16 input, group32 weights, bias, and preallocated output:
-
-```bash
-export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
-for split_k4 in 0 1; do
-  printf 'split-K4 switch=%s\n' "$split_k4"
-  ARK_VERBOSE=2 ARK_WOQ_S4_DPAS_SPLIT_K4_M1="$split_k4" \
-    python -P -c 'import test_woq_s4 as bench; bench.M_VALUES = [1]; bench.run_ark_woqgemm()'
-done
-```
-
-Use `python -P -m pytest -q test/test_woq_s4.py` for correctness checks. The timing script's route labels are predictions; verify actual launches separately with `ARK_VERBOSE=1`, without using those runs for timing.
 
 ### Supported Data Types
 

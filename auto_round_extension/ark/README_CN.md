@@ -52,20 +52,6 @@ K64 split-K4（`M=1`）**默认开启**。调用满足以下条件时走 split-K
 
 规则未命中时（8 MiB 摊销下限以下、`N` 不对齐 128、`K` 切不出 4 个整组、非对称权重、非 FP16 输入输出、乱序或正在录制图的队列），单行调用仍走 GEMV。`M>1` 的调度、权重打包和 dtype 转换不变。调度检查的是内核 dtype，因此已转为 FP16 的 BF16 输入也可能命中 split-K4。8 MiB 下限是因为低于该权重时 4-kernel + 1 MiB 临时空间的开销无法摊销，实测 split-K4 比 GEMV 更慢。
 
-### M=1 W4A16 基准测试
-
-在 ARK 目录下运行，确保能导入新编译的 ARK XPU 运行时，并用 `ZE_AFFINITY_MASK` 选择一张空闲卡。用 [test_woq_s4.py](test/test_woq_s4.py) 对照生产 GEMV 和 split-K4，配置为 `M=1, K=4096, N=16384`、FP16 输入、group32 权重、带 bias、预分配输出：
-
-```bash
-export PYTHONPATH="$PWD/test${PYTHONPATH:+:$PYTHONPATH}"
-for split_k4 in 0 1; do
-  printf 'split-K4 switch=%s\n' "$split_k4"
-  ARK_VERBOSE=2 ARK_WOQ_S4_DPAS_SPLIT_K4_M1="$split_k4" \
-    python -P -c 'import test_woq_s4 as bench; bench.M_VALUES = [1]; bench.run_ark_woqgemm()'
-done
-```
-
-使用 `python -P -m pytest -q test/test_woq_s4.py` 检查正确性。计时脚本的路由标签是预判；用 `ARK_VERBOSE=1` 单独确认实际 kernel，不使用开启日志的结果计时。
 
 ### 支持的数据类型
 
