@@ -1,7 +1,56 @@
+import pytest
 import torch
 
+from auto_round.data_type.nvfp import calculate_gparam
 from auto_round.modeling.fused_moe import apply_replacements
-from auto_round.utils.model import set_amax_for_all_moe_layers
+from auto_round.utils.model import set_amax_for_all_moe_layers, set_amax_for_uncalibrated_experts
+
+
+class TestNVFPMoeScaleRepair:
+    @staticmethod
+    def _projection(amax, data_type="nv_fp4_with_static_gs"):
+        layer = torch.nn.Linear(16, 16, bias=False)
+        layer.act_bits = 4
+        layer.act_data_type = data_type
+        if amax is not None:
+            layer.act_max = torch.tensor([amax], dtype=torch.float32)
+        return layer
+
+    @pytest.mark.parametrize("name", ["Qwen3_5MoeSparseMoeBlock", "LinearQwen3_5MoeSparseMoeBlock"])
+    def test_qwen35_repairs_only_missing_and_degenerate_experts(self, monkeypatch, name):
+        monkeypatch.setenv("AR_ENABLE_UNIFY_MOE_INPUT_SCALE", "0")
+        model = type(name, (torch.nn.Module,), {})()
+        model.experts = torch.nn.ModuleList()
+        for index, value in enumerate([2.0, 4.0, 0.0, 1e-40, None]):
+            expert = torch.nn.Module()
+            expert.gate_proj = self._projection(index + 1.0)
+            expert.up_proj = self._projection(index + 1.0)
+            expert.down_proj = self._projection(value)
+            model.experts.append(expert)
+        set_amax_for_all_moe_layers(model)
+        assert [e.down_proj.act_max.item() for e in model.experts] == [2.0, 4.0, 4.0, 4.0, 4.0]
+        assert [e.gate_proj.act_max.item() for e in model.experts] == [1.0, 2.0, 3.0, 4.0, 5.0]
+        assert all(torch.isfinite(calculate_gparam(e.down_proj.act_max).reciprocal()) for e in model.experts)
+
+    @pytest.mark.parametrize("amax", [float("nan"), float("inf"), -1.0])
+    def test_corrupt_statistics_are_not_silently_replaced(self, amax):
+        layers = [self._projection(2.0), self._projection(amax)]
+        with pytest.raises(ValueError, match="finite, nonnegative"):
+            set_amax_for_uncalibrated_experts(layers)
+
+    def test_missing_valid_peer_requires_recalibration(self):
+        with pytest.raises(ValueError, match="No valid NVFP.*recalibrate"):
+            set_amax_for_uncalibrated_experts([self._projection(0.0), self._projection(1e-40)])
+
+    def test_non_nvfp_zero_statistics_remain_unchanged(self):
+        layers = [self._projection(2.0, "fp8"), self._projection(0.0, "fp8"), self._projection(None, "fp8")]
+        missing = set_amax_for_uncalibrated_experts(layers)
+        assert missing == [layers[2]]
+        assert [layer.act_max.item() for layer in layers] == [2.0, 0.0, 2.0]
+
+    def test_explicit_invalid_replacement_is_rejected(self):
+        with pytest.raises(ValueError, match="replacement NVFP"):
+            set_amax_for_uncalibrated_experts([self._projection(0.0)], set_amax_value=0.0)
 
 
 def test_set_amax_for_all_moe_layers_direct(tiny_deepseek_v2_model_path_cpu):
