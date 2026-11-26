@@ -81,7 +81,6 @@ pytestmark = [
         not torch.cuda.is_available(),
         reason="vLLM throughput tests require a CUDA GPU",
     ),
-    pytest.mark.enable_torch_compile,
     # The "low" preset fits on a 24 GiB card; the "large" preset needs ~40+ GiB.
 ]
 

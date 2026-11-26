@@ -45,7 +45,6 @@ pytestmark = [
         _is_sm12_with_old_cuda(),
         reason="SM 12.x (Blackwell) GPU requires CUDA >= 12.9 for vLLM GPTQ marlin JIT kernels",
     ),
-    pytest.mark.enable_torch_compile,
 ]
 
 MODELS = [

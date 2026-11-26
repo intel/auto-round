@@ -228,6 +228,54 @@ def test_xpu_s8_large_tile(m, n, k):
         torch.xpu.empty_cache()
 
 
+def test_xpu_int4_woq_scratch_growth():
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    size, group_size = 256, 128
+    weights = torch.ones((size, size), dtype=torch.int8, device="xpu")
+    scales = torch.full((size // group_size, size), 1 / size, dtype=torch.float16, device="xpu")
+    packed = ark.repack_quantized_weight(weights, scales, None, group_size, "int8", "int4", "fp16", False)
+    torch.xpu.synchronize()
+
+    stream = torch.xpu.Stream()
+    with torch.xpu.stream(stream):
+        for rows, value in [(256, 1), (512, 2), (256, 3)]:
+            inputs = torch.full((rows, size), value, dtype=torch.float16, device="xpu")
+            output = ark.woqgemm_linear(inputs, packed, None, size, size, group_size, "int8", "int4", "fp16", False)
+            torch.testing.assert_close(output, torch.full_like(output, value), rtol=0.01, atol=0)
+
+
+@pytest.mark.parametrize("slot, warmup_bytes", [(2, 0), (1, 128)], ids=["initial", "growth"])
+def test_xpu_scratch_allocation_raises_oom(slot, warmup_bytes):
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    stream = torch.xpu.Stream()
+    allocate_scratch = ark.xpu_lib._debug_xpu_pool_scratch_ptr
+    if warmup_bytes:
+        assert allocate_scratch(stream.sycl_queue, warmup_bytes, slot) != 0
+
+    with pytest.raises(torch.OutOfMemoryError, match="ARK XPU scratch allocation failed"):
+        allocate_scratch(stream.sycl_queue, 1 << 60, slot)
+
+
+def test_xpu_scratch_retry_after_growth_oom():
+    if not torch.xpu.is_available() or ark.xpu_lib is None:
+        pytest.skip("ARK XPU is unavailable")
+
+    stream = torch.xpu.Stream()
+    queue = stream.sycl_queue
+    allocate_scratch = ark.xpu_lib._debug_xpu_pool_scratch_ptr
+    slot = 1
+    assert allocate_scratch(queue, 128, slot) != 0
+
+    with pytest.raises(torch.OutOfMemoryError, match="ARK XPU scratch allocation failed"):
+        allocate_scratch(queue, 1 << 60, slot)
+
+    assert allocate_scratch(queue, 256, slot) != 0
+
+
 @pytest.mark.skipif(
     os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
     reason="Skipped because ARK_DNNL is not enabled in environment variables",

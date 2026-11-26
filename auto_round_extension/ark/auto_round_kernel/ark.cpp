@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -1699,6 +1700,18 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("repack_quantized_weight", &ark::repack_quantized_weight);
   m.def("unpack_weight", &ark::unpack_weight);
 #if defined(ARK_XPU)
+  pybind11::register_local_exception_translator([](std::exception_ptr error) {
+    if (!error) return;
+    try {
+      std::rethrow_exception(error);
+    } catch (const ark::XpuScratchOutOfMemory& exception) {
+      auto* torch_module = PyDict_GetItemString(PyImport_GetModuleDict(), "torch");
+      auto* oom = torch_module && PyModule_Check(torch_module)
+                      ? PyDict_GetItemString(PyModule_GetDict(torch_module), "OutOfMemoryError")
+                      : nullptr;
+      PyErr_SetString(oom && PyExceptionClass_Check(oom) ? oom : PyExc_MemoryError, exception.what());
+    }
+  });
   m.def("_debug_xpu_device_context_key", &ark::debug_xpu_device_context_key);
   m.def("_debug_xpu_device_queue_key", &ark::debug_xpu_device_queue_key);
   m.def("_debug_xpu_pool_scratch_ptr", &ark::debug_xpu_pool_scratch_ptr);

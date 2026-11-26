@@ -14,6 +14,7 @@
 
 import torch
 
+from auto_round import envs
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.schemes import needs_nvfp_global_scale
@@ -33,6 +34,8 @@ def register_act_max_hooks(quantizer, model):
         )
         input, _, _ = reshape_pad_tensor_by_group_size(input, quantizer.act_group_size)
         act_max = torch.max(torch.abs(input), dim=-1).values
+        if is_module_act_nv_fp:
+            act_max = act_max.to(torch.float32) * envs.AR_NVFP_ACT_AMAX_ALPHA
         if not hasattr(module, "act_max") or module.act_max.numel() == 0:
             module.act_max = act_max
             if is_module_act_nv_fp:

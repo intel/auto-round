@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Prefill — S4 (sym) mixed-input DPAS Grouped GEMM (Variant B)
 // (Fork of `sycl_tla_moe_prefill_int_dpas.hpp` per-group mainloop)
 //
