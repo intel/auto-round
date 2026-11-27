@@ -562,6 +562,8 @@ def copy_missing_tensors_from_source(
     if not missing_tensors_dict:
         return
 
+    missing_tensors_dict, quantized_ct_modules = _ct_mxfp_quantize_missing_tensors(target_dir, missing_tensors_dict)
+
     # ------------------------------------------------------------------ #
     # compressed-tensors: register copied-through modules in ``ignore``     #
     # ------------------------------------------------------------------ #
@@ -570,7 +572,7 @@ def copy_missing_tensors_from_source(
     # bare class name ``"Linear"`` (a catch-all), an inference engine such as
     # vLLM applies that scheme to every ``nn.Linear`` not listed in ``ignore``
     # and then fails to load these scale-less modules. Add them to ``ignore``.
-    _register_missing_modules_in_ct_ignore(target_dir, missing_tensors_dict)
+    _register_missing_modules_in_ct_ignore(target_dir, missing_tensors_dict, exclude=quantized_ct_modules)
 
     # ------------------------------------------------------------------ #
     # Write missing tensors to a new shard and update the index             #
@@ -605,7 +607,9 @@ def copy_missing_tensors_from_source(
     )
 
 
-def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict: dict) -> None:
+def _register_missing_modules_in_ct_ignore(
+    target_dir: str, missing_tensors_dict: dict, exclude: set[str] | None = None
+) -> None:
     """Add copied-through (unquantized) Linear modules to the compressed-tensors ``ignore`` list.
 
     When ``transformers`` does not instantiate a submodule (most notably **MTP /
@@ -636,7 +640,9 @@ def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict
         {
             name[: -len(".weight")]
             for name, tensor in missing_tensors_dict.items()
-            if name.endswith(".weight") and getattr(tensor, "dim", lambda: 0)() == 2
+            if name.endswith(".weight")
+            and getattr(tensor, "dim", lambda: 0)() == 2
+            and name[:-7] not in (exclude or set())
         }
     )
     if not missing_linear_modules:
@@ -693,15 +699,135 @@ def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict
             logger.warning(f"Failed to update 'ignore' in {cfg_file}: {e}")
 
 
+def _ct_mxfp_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> tuple[dict, set[str]]:
+    """Quantize missing Linear weights for compressed-tensors MXFP exports."""
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.isfile(config_path):
+        return missing_tensors_dict, set()
+
+    try:
+        with open(config_path) as f:
+            config_data = json.load(f)
+        qcfg = config_data.get("quantization_config", {})
+    except (OSError, ValueError):
+        return missing_tensors_dict, set()
+
+    if not isinstance(qcfg, dict) or qcfg.get("quant_method") != "compressed-tensors":
+        return missing_tensors_dict, set()
+    groups = qcfg.get("config_groups")
+    if not isinstance(groups, dict):
+        return missing_tensors_dict, set()
+
+    from auto_round.utils.model_free_utils import _is_mxfp_ct_group, _quantize_weight_mxfp
+
+    candidates = [
+        (name, group) for name, group in groups.items() if isinstance(group, dict) and _is_mxfp_ct_group(group)
+    ]
+    if not candidates:
+        return missing_tensors_dict, set()
+    # A non-MXFP catch-all is the default scheme; MXFP groups there are only per-layer overrides.
+    if any(
+        isinstance(value, dict) and "Linear" in (value.get("targets") or []) and not _is_mxfp_ct_group(value)
+        for value in groups.values()
+    ):
+        return missing_tensors_dict, set()
+    group_name, group = next(
+        ((name, value) for name, value in candidates if "Linear" in (value.get("targets") or [])),
+        max(candidates, key=lambda item: len(item[1].get("targets") or [])),
+    )
+    bits = group["weights"]["num_bits"]
+    ignore = qcfg.get("ignore") if isinstance(qcfg.get("ignore"), list) else []
+
+    import re as _re
+
+    def _is_ignored(module_name: str) -> bool:
+        for entry in ignore:
+            if entry == module_name:
+                return True
+            if isinstance(entry, str) and entry.startswith("re:"):
+                try:
+                    if _re.match(entry[3:], module_name):
+                        return True
+                except _re.error:
+                    continue
+        return False
+
+    block_name_to_ignore = (".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc.", "talker.")
+    quantized_modules: set[str] = set()
+    new_tensors: dict[str, torch.Tensor] = {}
+    for tensor_name, weight in missing_tensors_dict.items():
+        if not tensor_name.endswith(".weight") or weight.ndim != 2 or not weight.is_floating_point():
+            continue
+        module_name = tensor_name[: -len(".weight")]
+        if (
+            weight.shape[1] % 32
+            or _is_ignored(module_name)
+            or any(part in tensor_name for part in block_name_to_ignore)
+        ):
+            continue
+        try:
+            new_tensors.update(
+                _quantize_weight_mxfp(
+                    weight=weight,
+                    layer_name=module_name,
+                    bits=bits,
+                    group_size=32,
+                    data_type="mx_fp",
+                    device="cpu",
+                    disable_opt_rtn=False,
+                )
+            )
+            quantized_modules.add(module_name)
+        except Exception as e:
+            logger.warning(f"Failed to MXFP-quantize {tensor_name}: {e}, keeping original weight")
+
+    if not quantized_modules:
+        return missing_tensors_dict, set()
+
+    result = {
+        name: tensor
+        for name, tensor in missing_tensors_dict.items()
+        if name not in {f"{m}.weight" for m in quantized_modules}
+    }
+    result.update(new_tensors)
+
+    targets = group.get("targets") if isinstance(group.get("targets"), list) else []
+    if "Linear" not in targets:
+        group["targets"] = list(dict.fromkeys([*targets, *sorted(quantized_modules)]))
+
+    for cfg_file in ("config.json", "quantization_config.json"):
+        cfg_path = os.path.join(target_dir, cfg_file)
+        if not os.path.isfile(cfg_path):
+            continue
+        try:
+            with open(cfg_path) as f:
+                cfg_data = json.load(f)
+            target_qcfg = cfg_data.get("quantization_config", {}) if cfg_file == "config.json" else cfg_data
+            if not isinstance(target_qcfg, dict) or target_qcfg.get("quant_method") != "compressed-tensors":
+                continue
+            target_groups = target_qcfg.get("config_groups", {})
+            target_group = target_groups.get(group_name) if isinstance(target_groups, dict) else None
+            if not isinstance(target_group, dict):
+                continue
+            target_targets = target_group.get("targets") if isinstance(target_group.get("targets"), list) else []
+            if "Linear" not in target_targets:
+                target_group["targets"] = list(dict.fromkeys([*target_targets, *sorted(quantized_modules)]))
+            with open(cfg_path, "w") as f:
+                json.dump(cfg_data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to update {cfg_file} for MXFP missing tensors: {e}")
+
+    logger.info(f"Successfully MXFP-quantized {len(quantized_modules)} missing Linear weight(s) in {group_name}.")
+    return result, quantized_modules
+
+
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:
-    """Apply WOQ (Weight-Only Quantization) to missing Linear weight tensors.
+    """Quantize missing Linear weight tensors for auto-round WOQ or MXFP output.
 
     Reads ``config.json`` from *target_dir* to obtain ``quantization_config``.
-    Only activates when ``quant_method == "auto-round"`` and
-    ``packing_format == "auto_round:auto_gptq"``.
+    Supports ``auto_round:auto_gptq`` integer WOQ and ``auto_round:llm_compressor`` MXFP.
 
-    Uses :func:`quantize_weight_rtn` for RTN quantisation + packing so that
-    there is **no dependency on the model object** or on QuantLinear classes.
+    Quantization is model-free and does not depend on the original model object.
 
     Non-weight tensors (bias, norms, embeddings, etc.) are kept as-is.
 
@@ -727,10 +853,15 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     if qconfig is None:
         return missing_tensors_dict
 
+    from auto_round.compressors.utils import is_mx_fp
+    from auto_round.utils.model_free_utils import _quantize_weight_mxfp
+
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
     declared_packing = qconfig.get("packing_format", "auto_round:auto_gptq")
+    global_data_type = qconfig.get("data_type", "int")
+    is_mxfp = is_mx_fp(global_data_type)
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
@@ -779,7 +910,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             "bits": override.get("bits", global_bits),
             "group_size": override.get("group_size", global_group_size),
             "sym": override.get("sym", global_sym),
-            "data_type": override.get("data_type", "int"),
+            "data_type": override.get("data_type", global_data_type),
         }
         _layer_cfg_cache[layer_name] = result
         return result
@@ -788,6 +919,12 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         """Return True when the resolved config indicates full-precision (no quantization)."""
         dt = layer_cfg.get("data_type", "int")
         return layer_cfg["bits"] >= 16 or dt in ("fp", "float", "float16", "bfloat16", "float32")
+
+    def _is_compatible_layer(layer_cfg: dict) -> bool:
+        layer_data_type = layer_cfg.get("data_type", "int")
+        if is_mx_fp(layer_data_type) != is_mxfp:
+            return False
+        return not is_mxfp or (layer_cfg["bits"] in (4, 8) and layer_cfg["group_size"] == 32)
 
     def _is_covered_by_extra_config(layer_name: str) -> bool:
         """Return True if layer_name is matched by any entry in extra_config (exact or regex)."""
@@ -835,13 +972,16 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
+        weight = missing_tensors_dict[k]
+        if is_mxfp and (not weight.is_floating_point() or weight.shape[1] % 32 != 0):
+            return False
         # If extra_config explicitly covers this layer, trust its decision
         if _is_covered_by_extra_config(layer_name):
-            return not _is_fp_layer(layer_cfg)
+            return _is_compatible_layer(layer_cfg) and not _is_fp_layer(layer_cfg)
         # Fall back to BLOCK_NAME_TO_IGNORE heuristic
         if any(block in k for block in BLOCK_NAME_TO_IGNORE):
             return False
-        return not _is_fp_layer(layer_cfg)
+        return _is_compatible_layer(layer_cfg) and not _is_fp_layer(layer_cfg)
 
     weight_keys = [k for k in missing_tensors_dict if _is_eligible(k)]
 
@@ -860,7 +1000,10 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 ec = qcfg.get("extra_config", {})
                 for k in ignored_weight_keys:
                     layer_name = k[: -len(".weight")]
-                    ec.setdefault(layer_name, {"bits": 16, "data_type": "fp"})
+                    fp_config = {"bits": 16, "data_type": "float" if is_mxfp else "fp"}
+                    if is_mxfp:
+                        fp_config.update({"act_bits": 16, "act_data_type": "float"})
+                    ec.setdefault(layer_name, fp_config)
                 qcfg["extra_config"] = ec
                 if show_log:
                     # 7 is the len('.weight')
@@ -923,7 +1066,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         _tqdm_woq = None
 
     logger.info(
-        f"Applying WOQ[RTN] to "
+        f"Applying {'MXFP' if is_mxfp else 'WOQ[RTN]'} to "
         f"{len(weight_keys)} missing Linear weight(s) (per-layer overrides from extra_config applied)..."
     )
 
@@ -931,7 +1074,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     packed_weight_keys: set = set()
 
     _woq_iter = (
-        _tqdm_woq(weight_keys, desc="WOQ[RTN] quantizing missing weights", unit="weight") if _tqdm_woq else weight_keys
+        _tqdm_woq(weight_keys, desc=f"{'MXFP' if is_mxfp else 'WOQ[RTN]'} quantizing missing weights", unit="weight")
+        if _tqdm_woq
+        else weight_keys
     )
     for weight_key in _woq_iter:
         weight = missing_tensors_dict[weight_key]
@@ -940,7 +1085,10 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         layer_name = weight_key[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         bits = layer_cfg["bits"]
-        if bits not in [4, 8]:
+        if is_mxfp and bits not in (4, 8):
+            logger.warning(f"Unsupported MXFP bits={bits} for layer '{layer_name}', keeping the original weight.")
+            continue
+        if not is_mxfp and bits not in [4, 8]:
             if bits < 4:
                 bits = 4
             elif 4 < bits < 8:
@@ -951,6 +1099,30 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
             )
         group_size = layer_cfg["group_size"]
         sym = layer_cfg["sym"]
+
+        if is_mxfp:
+            if group_size != 32 or in_features % group_size:
+                logger.warning(
+                    f"MXFP requires group_size=32 dividing in_features for '{layer_name}', "
+                    f"got group_size={group_size}, in_features={in_features}; keeping the original weight."
+                )
+                continue
+            try:
+                packed_tensors = _quantize_weight_mxfp(
+                    weight=weight,
+                    layer_name=layer_name,
+                    bits=bits,
+                    group_size=group_size,
+                    data_type=layer_cfg["data_type"],
+                    device="cpu",
+                    disable_opt_rtn=False,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to MXFP-quantize {weight_key}: {e}, keeping original weight")
+                continue
+            new_tensors.update(packed_tensors)
+            packed_weight_keys.add(weight_key)
+            continue
 
         effective_gs = group_size if group_size != -1 else in_features
         if effective_gs <= 0:
@@ -988,8 +1160,8 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     result.update(new_tensors)
 
     logger.info(
-        f"Successfully packed {len(packed_weight_keys)} weight(s) into WOQ format "
-        f"({len(new_tensors)} packed tensor(s) created)."
+        f"Successfully packed {len(packed_weight_keys)} weight(s) into {'MXFP' if is_mxfp else 'WOQ'} format "
+        f"({len(new_tensors)} output tensor(s) created)."
     )
     return result
 
@@ -1008,10 +1180,9 @@ def _is_valid_regex(pattern: str) -> bool:
 def _get_woq_config_from_dir(target_dir: str) -> dict | None:
     """Read ``quantization_config`` from ``config.json`` in *target_dir*.
 
-    Only supports ``quant_method == "auto-round"`` with
-    ``packing_format == "auto_round:auto_gptq"``.  Returns ``None`` (skip
-    quantization) for any other combination or if any required parameter
-    (``bits``, ``group_size``, ``sym``) is missing.
+    Supports integer WOQ with ``auto_round:auto_gptq`` and MXFP with
+    ``auto_round:llm_compressor``. Returns ``None`` for other combinations or
+    if any required parameter (``bits``, ``group_size``, ``sym``) is missing.
 
     Returns a dict with keys ``bits``, ``group_size``, ``sym``
     or ``None``.
@@ -1032,6 +1203,10 @@ def _get_woq_config_from_dir(target_dir: str) -> dict | None:
     bits = qcfg.get("bits", None)
     group_size = qcfg.get("group_size", None)
     sym = qcfg.get("sym", None)
+    data_type = qcfg.get("data_type", "int")
+    from auto_round.compressors.utils import is_mx_fp
+
+    is_mxfp = is_mx_fp(data_type)
 
     if quant_method != "auto-round":
         logger.debug(
@@ -1040,10 +1215,11 @@ def _get_woq_config_from_dir(target_dir: str) -> dict | None:
         )
         return None
 
-    if packing_format != "auto_round:auto_gptq":
+    expected_packing = "auto_round:llm_compressor" if is_mxfp else "auto_round:auto_gptq"
+    if packing_format != expected_packing:
         logger.debug(
             f"Skipping WOQ quantization of missing tensors: "
-            f"packing_format='{packing_format}' (only 'auto_round:auto_gptq' is supported)"
+            f"packing_format='{packing_format}' (expected '{expected_packing}')"
         )
         return None
 
@@ -1057,12 +1233,17 @@ def _get_woq_config_from_dir(target_dir: str) -> dict | None:
     if bits > 8:
         return None
 
+    if is_mxfp and (bits not in (4, 8) or group_size != 32):
+        return None
+
     block_name_to_quantize = qcfg.get("block_name_to_quantize", None)
     extra_config = qcfg.get("extra_config", {})
     return {
         "bits": bits,
         "group_size": group_size,
         "sym": sym,
+        "data_type": data_type,
+        "packing_format": packing_format,
         "block_name_to_quantize": block_name_to_quantize,
         "extra_config": extra_config,
     }

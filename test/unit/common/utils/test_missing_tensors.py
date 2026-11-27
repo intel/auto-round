@@ -22,9 +22,11 @@ import pytest
 import torch
 
 from auto_round.utils.missing_tensors import (
+    _ct_mxfp_quantize_missing_tensors,
     _get_woq_config_from_dir,
     _normalize_tensor_name_for_warning,
     _register_missing_modules_in_ct_ignore,
+    _woq_quantize_missing_tensors,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
     restore_fp32_tensors_from_source,
@@ -513,6 +515,41 @@ class TestGetWoqConfigFromDir:
         assert cfg["bits"] == 4
         assert "block_name_to_quantize" in cfg
         assert "extra_config" in cfg
+
+    @pytest.mark.parametrize("bits", [4, 8])
+    def test_mxfp_quantizes_missing_linear_weights(self, tmp_path, bits):
+        target_dir = str(tmp_path)
+        _write_config(
+            target_dir,
+            {
+                "quant_method": "auto-round",
+                "packing_format": "auto_round:llm_compressor",
+                "bits": bits,
+                "group_size": 32,
+                "sym": True,
+                "data_type": "mx_fp",
+            },
+        )
+        weight_name = "mtp.layers.0.self_attn.q_proj.weight"
+        full_precision_name = "mtp.fc.weight"
+        tensors = {
+            weight_name: torch.randn(32, 64, dtype=torch.bfloat16),
+            full_precision_name: torch.randn(32, 64, dtype=torch.bfloat16),
+        }
+
+        result = _woq_quantize_missing_tensors(target_dir, tensors)
+
+        assert "mtp.layers.0.self_attn.q_proj.weight_scale" in result
+        if bits == 4:
+            assert weight_name not in result
+            assert "mtp.layers.0.self_attn.q_proj.weight_packed" in result
+        else:
+            assert result[weight_name].dtype == torch.float8_e4m3fn
+        assert torch.equal(result[full_precision_name], tensors[full_precision_name])
+        with open(os.path.join(target_dir, "config.json")) as f:
+            qcfg = json.load(f)["quantization_config"]
+        assert qcfg["extra_config"]["mtp.fc"]["bits"] == 16
+        assert qcfg["extra_config"]["mtp.fc"]["act_data_type"] == "float"
 
 
 # ===========================================================================
@@ -1036,13 +1073,71 @@ class TestRegisterMissingModulesInCtIgnore:
         with open(os.path.join(tgt, "config.json")) as f:
             embedded_ignore = json.load(f)["quantization_config"]["ignore"]
         assert "mtp.fc" in embedded_ignore
-        assert "mtp.layers.0.self_attn.q_proj" in embedded_ignore
+        assert "mtp.layers.0.self_attn.q_proj" not in embedded_ignore
         assert "mtp.norm" not in embedded_ignore  # 1-D norm is not matched by a "Linear" catch-all
+
+        extra_tensors = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        assert extra_tensors["mtp.layers.0.self_attn.q_proj.weight"].dtype == torch.float8_e4m3fn
+        assert "mtp.layers.0.self_attn.q_proj.weight_packed" not in extra_tensors
+        assert "mtp.layers.0.self_attn.q_proj.weight_scale" in extra_tensors
 
         with open(os.path.join(tgt, "quantization_config.json")) as f:
             standalone_ignore = json.load(f)["ignore"]
         assert "mtp.fc" in standalone_ignore
-        assert "mtp.layers.0.self_attn.q_proj" in standalone_ignore
+        assert "mtp.layers.0.self_attn.q_proj" not in standalone_ignore
+
+    def test_explicit_mxfp_targets_include_quantized_missing_module(self, tmp_path):
+        tgt = str(tmp_path)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["config_groups"]["group_0"]["targets"] = ["model.layers.0.self_attn.q_proj"]
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        with open(os.path.join(tgt, "quantization_config.json"), "w") as f:
+            json.dump(qcfg, f)
+        tensors = {"mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64, dtype=torch.bfloat16)}
+
+        result, quantized = _ct_mxfp_quantize_missing_tensors(tgt, tensors)
+
+        assert quantized == {"mtp.layers.0.self_attn.q_proj"}
+        assert result["mtp.layers.0.self_attn.q_proj.weight"].dtype == torch.float8_e4m3fn
+        for cfg_file in ("config.json", "quantization_config.json"):
+            with open(os.path.join(tgt, cfg_file)) as f:
+                cfg = json.load(f)
+            target_qcfg = cfg.get("quantization_config", cfg)
+            assert "mtp.layers.0.self_attn.q_proj" in target_qcfg["config_groups"]["group_0"]["targets"]
+
+    def test_mxfp4_group_packs_missing_module(self, tmp_path):
+        tgt = str(tmp_path)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["config_groups"]["group_0"]["format"] = "mxfp4-pack-quantized"
+        qcfg["config_groups"]["group_0"]["weights"]["num_bits"] = 4
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        tensors = {"mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64, dtype=torch.bfloat16)}
+
+        result, quantized = _ct_mxfp_quantize_missing_tensors(tgt, tensors)
+
+        assert quantized == {"mtp.layers.0.self_attn.q_proj"}
+        assert "mtp.layers.0.self_attn.q_proj.weight_packed" in result
+        assert "mtp.layers.0.self_attn.q_proj.weight" not in result
+
+    def test_non_mxfp_catch_all_skips_mxfp_override_group(self, tmp_path):
+        tgt = str(tmp_path)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["config_groups"]["group_0"]["targets"] = ["model.layers.0.self_attn.q_proj"]
+        qcfg["config_groups"]["group_1"] = {
+            "format": "pack-quantized",
+            "targets": ["Linear"],
+            "weights": {"num_bits": 4, "type": "int", "group_size": 128},
+        }
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        tensors = {"mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64, dtype=torch.bfloat16)}
+
+        result, quantized = _ct_mxfp_quantize_missing_tensors(tgt, tensors)
+
+        assert quantized == set()
+        assert result is tensors
 
     def test_existing_regex_ignore_not_duplicated(self, tmp_path):
         tgt = str(tmp_path / "tgt")
