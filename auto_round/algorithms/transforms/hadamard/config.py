@@ -138,24 +138,7 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self, **data: Any) -> None:
-        """Initialize a Hadamard rotation configuration.
-
-        Args:
-            algorithm: Canonical algorithm name used for registry lookup.
-            backend: Rotation backend to use. ``auto`` lets AutoRound pick
-                an implementation, ``inplace`` uses QuaRot-style online
-                rotation, and ``transform`` uses the transform backend.
-            block_size: Grouped Hadamard block size. None keeps the backend
-                default behavior.
-            hadamard_type: Hadamard transform variant, such as
-                ``hadamard``, ``random_hadamard``, or ``quarot_hadamard``.
-            fuse_online_to_weight: Whether online Hadamard rotation should
-                be fused into the weights when supported.
-            allow_online_rotation: Whether online activation rotation is
-                allowed.
-            random_seed: Internal flag used by random Hadamard paths.
-            **data: Additional Pydantic field values forwarded to BaseModel.
-        """
+        """Initialize the config after rejecting quantization scheme arguments"""
         from auto_round.algorithms.quantization.config import QuantizationConfig
 
         QuantizationConfig.reject_scheme_arguments(data)

@@ -253,6 +253,11 @@ def finalize_llmcompressor_config_names(
         revert(n) for n in ignored_layers + collect_fused_expert_modules(model) if not n.startswith("re:")
     ]
     qconfig = ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+    # HF Hub rejects `"format": null` in config groups; llm-compressor writes the concrete format string.
+    top_format = qconfig.get("format")
+    for group in (qconfig.get("config_groups") or {}).values():
+        if isinstance(group, dict) and group.get("format") is None and top_format != "mixed-precision":
+            group["format"] = top_format
     # Runs after the revert so the expert regexes are built from checkpoint names.
     return _compact_llmcompressor_regex_config(normalize_expert_groups(qconfig))
 

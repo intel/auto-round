@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Prefill — INT8 mixed-input DPAS Grouped GEMM (Variants A & B)
 // (Mirrors `sycl_tla_moe_prefill_fp8_dpas.hpp`)
 //
@@ -747,7 +750,7 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
-  auto event = stream.submit([&](sycl::handler& cgh) {
+  stream.submit([&](sycl::handler& cgh) {
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmIntName<ElementA, ElementB, ElementS, ElementD,
                                      layoutA, layoutB, policy, Mode>>(
@@ -759,9 +762,6 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
               atomic_buffer, local_mem);
         });
   });
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
 // ---------------------------------------------------------------------------

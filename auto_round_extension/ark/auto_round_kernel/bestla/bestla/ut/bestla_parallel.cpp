@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 #include "bestla_utils.h"
 #include "bestla_parallel.h"
 #include "bestla_device.h"

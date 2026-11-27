@@ -133,7 +133,6 @@ def test_sequential_moe_forward_batches_routes_without_nonzero(monkeypatch):
     assert empty.shape == (0, 8)
 
 
-@pytest.mark.enable_torch_compile
 @pytest.mark.parametrize("route_impl", ["sequential", "linear_loop"])
 def test_moe_route_changes_do_not_recompile_block(route_impl):
     """Different data-dependent route plans must not recompile an enclosing block."""
@@ -337,6 +336,8 @@ def test_tracker_release_original_drops_entry():
     tracker.release_original(rep)
     # ``release_original`` deletes the original and the entry.
     assert tracker.get_original(rep) is None
+    assert tracker.get_info_by_name(str(id(rep))) is None
+    assert tracker.get_info_by_name("test_name") is None
 
 
 def test_tracker_get_original_unknown_returns_none():
