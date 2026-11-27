@@ -54,7 +54,8 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     Args:
         layer_name (str): The name of the layer to be packed.
         model (torch.nn.Module): The model containing the layer.
-        backend (str): The backend framework to be used for quantization.
+        data_type (str): The data type used for packing, e.g. "fp8".
+        device (str, optional): The device to pack on.
 
     Returns:
         None: The function modifies the model in place.
@@ -202,19 +203,17 @@ def save_checkpoint(
         output_dir (str): The directory where the quantized model will be saved.
         inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
                                 Default is True.
-        backend (str, optional): The backend to be used for quantization.
-                                  Default is "autoround:exllamav2".
-        **kwargs: Additional keyword arguments including:
-            - model (nn.Module): The model to be quantized.
-            - layer_config (dict): The layer configuration for each layer.
-            - serialization_dict (dict): The serialization configuration.
-            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
+        tokenizer (Tokenizer, optional): The tokenizer to be saved.
+        layer_config (dict): The layer configuration for each layer.
+        device (str | torch.device): The device to save from.
+        serialization_dict (dict): The serialization configuration.
+        **kwargs: Additional keyword arguments, e.g. `processor`, `safe_serialization`.
 
     Returns:
         None
 
     Raises:
-        ValueError: If the backend is not supported.
+        ValueError: If the data type of the layer is not supported.
     """
     safe_serialization = kwargs.get("safe_serialization", True)
     model = prepare_model(model, inplace, device="cpu" if not inplace else None)

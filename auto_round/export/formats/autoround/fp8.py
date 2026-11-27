@@ -114,7 +114,9 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
     Args:
         layer_name (str): The name of the layer to be packed.
         model (torch.nn.Module): The model containing the layer.
-        backend (str): The backend framework to be used for quantization.
+        data_type (str): The data type used for packing, e.g. "fp8".
+        device (str, optional): The device to pack on.
+        unsqueeze (bool): Whether to unsqueeze the layer weight before packing.
 
     Returns:
         None: The function modifies the model in place.
