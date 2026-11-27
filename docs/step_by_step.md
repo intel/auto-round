@@ -146,6 +146,24 @@ Takes precedence over `fields` when both are set.
 cannot provide enough samples within the timeout, a warning is logged and the collected samples are used.
 `--dataset my-org/my-dataset:timeout=600`
 
+**Subset / Config selection**: For multi-subset datasets, specify the target configuration via `config=<name>` (or `subset=<name>`), e.g.:
+`--dataset my-org/my-dataset:config=subset1`
+Multiple subsets can be combined with `+`, e.g. `config=subset1+subset2`, or declared as distinct specifications with independent quotas:
+`--dataset my-org/my-dataset:config=subset1:num=80,my-org/my-dataset:config=subset2:num=80`
+
+Note: The built-in `mbpp` loader currently ignores `config`/`subset` options. To select the `sanitized` config, use the generic loader by explicitly specifying fields: `google-research-datasets/mbpp:config=sanitized:split=train:fields=prompt+code:concat=True`.
+
+**Multi-dataset mixture example** (compatible with modern `datasets>=4.0` and `5.x`):
+```python
+calib_dataset = (
+    "openbmb/UltraData-SFT-Agent-2609:num=192:concat=True,"
+    "nvidia/OpenCodeInstruct:num=160:concat=True,"
+    "mbpp:num=64:concat=True,"
+    "HuggingFaceH4/ultrachat_200k:num=64:apply_chat_template:concat=True,"
+    "NeelNanda/pile-10k:num=32:concat=True"
+)
+```
+
 **CalibDataset (API)**: For programmatic usage, the `CalibDataset` dataclass provides a typed interface:
 
     ~~~python
