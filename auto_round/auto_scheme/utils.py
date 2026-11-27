@@ -584,6 +584,14 @@ def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_name
                 continue
             for layer_name in expert_stats["layers"]:
                 scores_dict[layer_name][1] = fill_value
+                if len(scores_dict[layer_name]) >= 4:
+                    component_total = scores_dict[layer_name][2] + scores_dict[layer_name][3]
+                    if component_total > 0:
+                        component_scale = fill_value / component_total
+                        scores_dict[layer_name][2] *= component_scale
+                        scores_dict[layer_name][3] *= component_scale
+                    else:
+                        scores_dict[layer_name][2] = fill_value
 
 
 def _log_score_summary_by_block_and_nonblock(

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_NSAMPLES: int | None = None
     AR_AUTO_SCHEME_BATCH_SIZE: int | None = None
     AR_AUTO_SCHEME_CACHE: str | None = None
+    AR_AUTO_SCHEME_SCORE_OVERRIDE: str | None = None
     AR_AUTO_SCHEME_NO_SERIAL_FALLBACK: bool = False
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
@@ -158,6 +159,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Stores persistent AutoScheme scoring results independently from AR_WORK_SPACE,
     # whose contents are temporary working data and may be cleaned after a run.
     "AR_AUTO_SCHEME_CACHE": lambda: os.getenv("AR_AUTO_SCHEME_CACHE", None),
+    # Optional JSON file with per-scheme, per-layer act/weight score multipliers
+    # used by tuning-aware AutoScheme experiments.
+    "AR_AUTO_SCHEME_SCORE_OVERRIDE": lambda: os.getenv("AR_AUTO_SCHEME_SCORE_OVERRIDE", None),
     "AR_AUTO_SCHEME_NO_SERIAL_FALLBACK": lambda: os.getenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", "0").lower()
     in ("1", "true", "yes"),
     # Enables AutoScheme to score schemes in parallel. Enabled by default;

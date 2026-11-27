@@ -1578,7 +1578,7 @@ def get_score_for_scheme(
                         "layer{n} max abs activation is 0, please use more data to improve the accuracy"
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
-            scores_dict[n] = [layer_bits, m.mix_score]
+            scores_dict[n] = [layer_bits, m.mix_score, float(m.act_score), float(m.weight_score)]
     _fill_inactive_expert_scores(scores_dict, block_names)
     _log_score_summary_by_block_and_nonblock(
         scores_dict,
@@ -1978,6 +1978,7 @@ def _inject_score_accumulators(model, state):
     for n, m in model.named_modules():
         if n in state and hasattr(m, "mix_score"):
             m.act_score, m.weight_score, m.act_cnt = state[n]
+            m.mix_score = m.act_score + m.weight_score
 
 
 def _partial_scores_path(cache_path):
@@ -2041,7 +2042,7 @@ def _save_autoscheme_scores(
           "scheme_index": 0,
           "scheme": { ... scheme dict ... },
           "created_at": "<ISO datetime>",
-          "layer_scores": { layer_key: [bits, loss], ... },
+          "layer_scores": { layer_key: [bits, loss, act_score, weight_score], ... },
           "total_loss_for_scheme": 1.234,
           "total_params": 12345
         }
@@ -2159,10 +2160,50 @@ def _refresh_cached_layer_bits(
         scheme=scheme,
     )
     refreshed_scores = {}
-    for name, (_, loss) in cached_layer_scores.items():
+    for name, cached_score in cached_layer_scores.items():
         bits, _ = compute_layer_bits(get_module(model, name), ignore_scale_zp_bits)
-        refreshed_scores[name] = [bits, loss]
+        refreshed_scores[name] = [bits, *cached_score[1:]]
     return refreshed_scores
+
+
+def _apply_score_override(per_op_scores, scheme_index, score_override):
+    """Apply per-layer act/weight multipliers while preserving cached score components."""
+    if not score_override:
+        return per_op_scores, 0
+    scheme_override = score_override.get(str(scheme_index), score_override.get(scheme_index, {}))
+    if not isinstance(scheme_override, dict):
+        raise ValueError(f"AutoScheme override for scheme {scheme_index} must be a mapping")
+    unknown_layers = set(scheme_override) - set(per_op_scores)
+    if unknown_layers:
+        raise ValueError(
+            f"AutoScheme override contains unknown layers for scheme {scheme_index}: {sorted(unknown_layers)}"
+        )
+
+    adjusted_scores = {}
+    adjusted_layers = 0
+    for name, score in per_op_scores.items():
+        bits, mix_score, *components = score
+        if name not in scheme_override:
+            adjusted_scores[name] = list(score)
+            continue
+        if len(components) < 2:
+            raise ValueError(
+                f"AutoScheme override targets {name!r}, but its cache has no activation/weight score components; "
+                "rescore this scheme before applying the override"
+            )
+        layer_override = scheme_override[name]
+        if not isinstance(layer_override, dict):
+            raise ValueError(f"AutoScheme override for layer {name!r} must be a mapping")
+        act_scale = float(layer_override.get("act", 1.0))
+        weight_scale = float(layer_override.get("weight", 1.0))
+        if not math.isfinite(act_scale) or act_scale < 0 or not math.isfinite(weight_scale) or weight_scale < 0:
+            raise ValueError(f"AutoScheme override multipliers for layer {name!r} must be finite and non-negative")
+        act_score, weight_score = components[:2]
+        new_act_score = act_score * act_scale
+        new_weight_score = weight_score * weight_scale
+        adjusted_scores[name] = [bits, new_act_score + new_weight_score, new_act_score, new_weight_score]
+        adjusted_layers += 1
+    return adjusted_scores, adjusted_layers
 
 
 def _parallel_scoring_must_raise(parallel_error: Exception) -> bool:
@@ -2651,6 +2692,7 @@ def _gen_layer_config(
 
     total_scores = {}
     schemes = auto_scheme.options
+    score_override = None
 
     def check_bf16_scheme(scheme):
         """Return True if ``scheme`` is effectively BF16/no-op (bits >= 16 and act_bits >= 16),
@@ -2665,6 +2707,12 @@ def _gen_layer_config(
         return False
 
     from auto_round import envs as _envs
+
+    if _envs.AR_AUTO_SCHEME_SCORE_OVERRIDE:
+        with open(_envs.AR_AUTO_SCHEME_SCORE_OVERRIDE, encoding="utf-8") as override_file:
+            score_override = json.load(override_file)
+        if not isinstance(score_override, dict):
+            raise ValueError("AR_AUTO_SCHEME_SCORE_OVERRIDE must point to a JSON object")
 
     _env_nsamples = _envs.AR_AUTO_SCHEME_NSAMPLES
     # Priority for nsamples: env > API > default
@@ -2884,17 +2932,26 @@ def _gen_layer_config(
                 name_list = []
                 for name in share_layer:
                     if name in remaining:
-                        bits, loss = remaining.pop(name)
+                        score = remaining.pop(name)
+                        bits, loss = score[:2]
                         param_bits += bits
                         tmp_loss += loss
                         name_list.append(name)
                 if name_list:
                     grouped_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
-            for name, (bits, loss) in remaining.items():
+            for name, score in remaining.items():
+                bits, loss = score[:2]
                 grouped_scores[name] = [index, bits, loss, [name]]
             return grouped_scores
 
         def _record_scheme_scores(index, per_op_scores):
+            per_op_scores, adjusted_layers = _apply_score_override(per_op_scores, index, score_override)
+            if adjusted_layers:
+                logger.info(
+                    "AutoScheme: applied act/weight score override to %d layers for scheme %d",
+                    adjusted_layers,
+                    index,
+                )
             grouped_scores = _group_per_op_scores(index, per_op_scores)
             total_loss = sum(item[2] for item in grouped_scores.values())
             for key, item in grouped_scores.items():

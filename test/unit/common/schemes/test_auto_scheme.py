@@ -9,6 +9,7 @@ from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.delta_loss import (
     AutoSchemeWrapperLinear,
     _annotate_worker_oom,
+    _apply_score_override,
     _clear_wrapper_score_caches,
     _parallel_scoring_must_raise,
     _replay_retain_graph,
@@ -737,12 +738,17 @@ class TestAutoScheme:
 
             # Every layer in layer_scores must have a [bits, loss] pair (individual, not merged)
             for layer_name, score_pair in data["layer_scores"].items():
-                assert (
-                    isinstance(score_pair, list) and len(score_pair) == 2
-                ), f"layer_scores[{layer_name!r}] should be [bits, loss], got {score_pair}"
-                bits, loss = score_pair
+                assert isinstance(score_pair, list) and len(score_pair) in (2, 4), (
+                    f"layer_scores[{layer_name!r}] should be [bits, loss] or include act/weight scores, "
+                    f"got {score_pair}"
+                )
+                bits, loss = score_pair[:2]
                 assert bits > 0, f"bits must be positive for {layer_name}"
                 assert loss >= 0, f"loss must be non-negative for {layer_name}"
+                if len(score_pair) == 4:
+                    act_score, weight_score = score_pair[2:]
+                    assert act_score >= 0 and weight_score >= 0
+                    assert loss == pytest.approx(act_score + weight_score)
 
             # All non-fixed linear layers in layer_config should appear individually in cache
             for layer_name in layer_config:
@@ -750,6 +756,60 @@ class TestAutoScheme:
                     f"Layer {layer_name!r} missing from cache {path} — "
                     f"cache may have stored merged group scores instead of individual scores"
                 )
+
+
+def test_autoscheme_score_override_scales_activation_and_weight_independently():
+    scores = {"layer.0": [32, 12.0, 9.0, 3.0], "layer.1": [16, 5.0]}
+    override = {"0": {"layer.0": {"act": 0.5, "weight": 2.0}}}
+
+    adjusted, adjusted_layers = _apply_score_override(scores, 0, override)
+
+    assert adjusted_layers == 1
+    assert adjusted["layer.0"] == [32, 10.5, 4.5, 6.0]
+    assert adjusted["layer.1"] == [16, 5.0]
+    assert scores["layer.0"] == [32, 12.0, 9.0, 3.0]
+
+
+def test_autoscheme_score_override_without_components_is_noop():
+    scores = {"layer.0": [32, 12.0]}
+
+    adjusted, adjusted_layers = _apply_score_override(scores, 0, {})
+
+    assert adjusted_layers == 0
+    assert adjusted == scores
+
+
+def test_autoscheme_score_override_rejects_legacy_cache_components():
+    scores = {"layer.0": [32, 12.0]}
+
+    with pytest.raises(ValueError, match="no activation/weight score components"):
+        _apply_score_override(scores, 0, {"0": {"layer.0": {"act": 0.5}}})
+
+
+@pytest.mark.parametrize(
+    "override, message",
+    [
+        ({"0": {"missing.layer": {"act": 0.5}}}, "unknown layers"),
+        ({"0": {"layer.0": {"act": -0.5}}}, "finite and non-negative"),
+    ],
+)
+def test_autoscheme_score_override_rejects_invalid_entries(override, message):
+    with pytest.raises(ValueError, match=message):
+        _apply_score_override({"layer.0": [32, 12.0, 9.0, 3.0]}, 0, override)
+
+
+def test_inactive_expert_fill_preserves_activation_weight_score_sum():
+    from auto_round.auto_scheme.utils import _fill_inactive_expert_scores
+
+    scores = {
+        "model.layers.0.experts.0.gate_proj": [8, 12.0, 9.0, 3.0],
+        "model.layers.0.experts.1.gate_proj": [8, 0.0, 0.0, 0.0],
+    }
+
+    _fill_inactive_expert_scores(scores, ["model.layers.0"])
+
+    assert scores["model.layers.0.experts.1.gate_proj"][1] == pytest.approx(12.0)
+    assert sum(scores["model.layers.0.experts.1.gate_proj"][2:]) == pytest.approx(12.0)
 
     def test_mxfp_options_produce_mixed_layer_config(self, tiny_opt_model_path):
         """MX schemes score weight error via the weight-score path, so their
