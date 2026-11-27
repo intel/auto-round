@@ -46,7 +46,7 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 **Dense W4A16 on XPU (SYCL TLA)**
 
-K64 split-K4 for `M=1` is **enabled by default**. A call takes the split-K4 route when all of these hold: `N <= 65536` and `N % 128 == 0`, `K` splits into four whole groups (`K % 4*max(64, blocksize) == 0`), and the packed weight exceeds 8 MiB (`K*N > 16 MiB` of INT4 elements). Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` to explicitly fall back to GEMV.
+K64 split-K4 for `M=1` is **enabled by default**. A call takes the split-K4 route when all of these hold: `N <= 65536` and `N % 128 == 0`, `K` splits into four whole groups (`K % (4*max(64, blocksize)) == 0`), and the packed weight exceeds 8 MiB (`K*N > 16 MiB` of INT4 elements). Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` to explicitly fall back to GEMV.
 
 The route also requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 1 MiB of FP32 scratch per queue (`4 x 65536` floats), adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
 
