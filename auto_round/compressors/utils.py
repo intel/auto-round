@@ -814,7 +814,7 @@ def _get_diffusion_save_folder_name(format) -> str:
     only one format, it returns the original output directory directly.
 
     Args:
-        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+        format (str): The format identifier (e.g., 'gguf:q2_k_s').
 
     Returns:
         str: The path to the folder where results should be saved.
@@ -849,7 +849,7 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
     only one format, it returns the original output directory directly.
 
     Args:
-        format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
+        format (str): The format identifier (e.g., 'gguf:q2_k_s').
 
     Returns:
         str: The path to the folder where results should be saved.

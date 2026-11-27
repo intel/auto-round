@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Decode Kernel
 //
 // GEMV-style MoE kernel optimized for the decode phase, where each expert

@@ -528,7 +528,8 @@ def mock_fp8_capable_device():
     from unittest.mock import patch
 
     with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch(
-        "torch.compile", side_effect=lambda function, *args, **kwargs: function
+        "torch.compile",
+        side_effect=lambda function=None, *args, **kwargs: function if function is not None else (lambda fn: fn),
     ):
         yield
 

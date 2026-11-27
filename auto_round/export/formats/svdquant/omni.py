@@ -31,12 +31,13 @@ import torch
 
 from auto_round.data_type.nvfp import calculate_gparam, get_reciprocal, nv_fp4
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
-from auto_round.export.formats.svdquant.nunchaku import (
+from auto_round.export.formats.svdquant.common import (
     IdentitySVDQuantModelAdapter,
+    SVDQuantExportRecord,
     SVDQuantModelAdapter,
-    _export_key,
-    _source_records,
-    _validate_adapter_provenance,
+    collect_source_records,
+    export_key,
+    validate_adapter_provenance,
 )
 from auto_round.utils import logger
 from auto_round.wrapper import WrapperWALayer
@@ -241,6 +242,78 @@ def _pack_residual(weight: torch.Tensor, *, scale=None, global_scale=None) -> di
     }
 
 
+def _pack_record_residual(
+    model: torch.nn.Module, record: SVDQuantExportRecord, precision: str, device: str | torch.device
+) -> dict[str, torch.Tensor]:
+    """Pack a mapped residual while preserving supported tuned quantization parameters."""
+    weight = record.residual_weight
+    residual_layers = []
+    for source in record.sources:
+        residual = model.get_submodule(source.name).residual_linear
+        while isinstance(residual, WrapperWALayer):
+            residual = residual.orig_layer
+        residual_layers.append(residual)
+
+    has_tuned_scales = any(hasattr(residual, "scale") for residual in residual_layers)
+    if precision == "mxfp4":
+        source_weight = torch.cat([source.residual_weight for source in record.sources])
+        if not torch.equal(weight, source_weight):
+            raise ValueError("adapter must preserve residual weights")
+        if has_tuned_scales:
+            logger.warning_once(
+                "svdquant_omni MXFP4 export quantizes residuals with RTN block-32 E8M0 scales; "
+                "tuned scales are not exported. Use iters=0 for MXFP4 checkpoints."
+            )
+        return _pack_residual_mxfp4(weight.to(device))
+
+    # Untuned NVFP4 uses RTN; tuned NVFP4 must keep the calibrated scales.
+    if not has_tuned_scales:
+        return _pack_residual(weight.to(device))
+
+    for residual in residual_layers:
+        if not hasattr(residual, "scale") or not hasattr(residual, "weight_global_scale"):
+            raise ValueError("tuned Omni residuals require NVFP4 scale and weight_global_scale")
+
+    global_scale = residual_layers[0].weight_global_scale.to(device).float().reshape(1)
+    for residual in residual_layers:
+        source_global_scale = residual.weight_global_scale.to(device).float().reshape(1)
+        if not torch.equal(global_scale, source_global_scale):
+            raise ValueError("adapter must preserve tuned residuals and their shared global scale")
+    source_weight = torch.cat([source.residual_weight for source in record.sources])
+    if not torch.equal(weight, source_weight):
+        raise ValueError("adapter must preserve tuned residuals and their shared global scale")
+
+    scale = torch.cat([residual.scale.reshape(residual.weight.shape[0], -1) for residual in residual_layers]).to(device)
+    return _pack_residual(weight.to(device), scale=scale, global_scale=global_scale)
+
+
+def _build_omni_record_tensors(
+    model: torch.nn.Module, record: SVDQuantExportRecord, precision: str, device: str | torch.device
+) -> tuple[dict[str, torch.Tensor], int]:
+    """Validate one logical record and construct its Omni tensor payload."""
+    if record.omitted_suffixes - {"bias"}:
+        raise ValueError(f"{record.prefix}: cannot omit required Omni tensors")
+    weight, down, up = record.residual_weight, record.lora_down, record.lora_up
+    smooth = record.smooth.float()
+    n, k = weight.shape
+    rank = down.shape[0]
+    if rank <= 0 or down.shape != (rank, k) or up.shape != (n, rank) or smooth.shape != (k,):
+        raise ValueError(f"{record.prefix}: incompatible low-rank or smoothing dimensions")
+    if not torch.isfinite(smooth).all() or not (smooth > 0).all():
+        raise ValueError(f"{record.prefix}: smooth factors must be positive and finite")
+    if record.bias is not None and record.bias.shape != (n,):
+        raise ValueError(f"{record.prefix}: incompatible bias dimensions")
+    values = _pack_record_residual(model, record, precision, device)
+    values.update(
+        proj_down=(down.float() * smooth).T.bfloat16(),
+        proj_up=up.bfloat16(),
+        smooth_factor=smooth.reciprocal().bfloat16(),
+    )
+    if record.bias is not None:
+        values["bias"] = record.bias.bfloat16()
+    return values, rank
+
+
 @torch.inference_mode()
 def collect_svdquant_omni_tensors(
     model: torch.nn.Module, *, device: str = "cpu", adapter: SVDQuantModelAdapter | None = None
@@ -248,7 +321,7 @@ def collect_svdquant_omni_tensors(
     """Serialize adapter-selected projections without assuming a model architecture."""
     fuse_qkv = adapter is None
     adapter = adapter or IdentitySVDQuantModelAdapter()
-    sources = _source_records(model)
+    sources = collect_source_records(model)
     precision = None
     for source in sources:
         resolved = validate_omni_scheme(source.scheme)
@@ -260,7 +333,7 @@ def collect_svdquant_omni_tensors(
         records = _fuse_qkv_records(model, records)
     if not records:
         raise ValueError("model adapter produced no SVDQuant export records")
-    _validate_adapter_provenance(sources, records)
+    validate_adapter_provenance(sources, records)
     adapter.validate_records(sources, records)
     tensors, ranks = {}, set()
     for record in records:
@@ -268,62 +341,12 @@ def collect_svdquant_omni_tensors(
         if precision is not None and resolved != precision:
             raise ValueError("svdquant_omni cannot mix NVFP4 and MXFP4 layers in one export")
         precision = resolved
-        if record.omitted_suffixes - {"bias"}:
-            raise ValueError(f"{record.prefix}: cannot omit required Omni tensors")
-        weight, down, up = record.residual_weight, record.lora_down, record.lora_up
-        smooth = record.smooth.float()
-        n, k = weight.shape
-        rank = down.shape[0]
-        if rank <= 0 or down.shape != (rank, k) or up.shape != (n, rank) or smooth.shape != (k,):
-            raise ValueError(f"{record.prefix}: incompatible low-rank or smoothing dimensions")
-        if not torch.isfinite(smooth).all() or not (smooth > 0).all():
-            raise ValueError(f"{record.prefix}: smooth factors must be positive and finite")
-        if record.bias is not None and record.bias.shape != (n,):
-            raise ValueError(f"{record.prefix}: incompatible bias dimensions")
+        values, rank = _build_omni_record_tensors(model, record, precision, device)
         ranks.add(rank)
-        residuals = []
-        for source in record.sources:
-            residual = model.get_submodule(source.name).residual_linear
-            while isinstance(residual, WrapperWALayer):
-                residual = residual.orig_layer
-            residuals.append(residual)
-        scale = global_scale = None
-        if precision == "nvfp4":
-            if any(hasattr(residual, "scale") for residual in residuals):
-                if not all(
-                    hasattr(residual, "scale") and hasattr(residual, "weight_global_scale") for residual in residuals
-                ):
-                    raise ValueError("tuned Omni residuals require NVFP4 scale and weight_global_scale")
-                global_scale = residuals[0].weight_global_scale.to(device).float().reshape(1)
-                if not all(
-                    torch.equal(global_scale, residual.weight_global_scale.to(device).float().reshape(1))
-                    for residual in residuals
-                ) or not torch.equal(weight, torch.cat([source.residual_weight for source in record.sources])):
-                    raise ValueError("adapter must preserve tuned residuals and their shared global scale")
-                scale = torch.cat([residual.scale.reshape(residual.weight.shape[0], -1) for residual in residuals]).to(
-                    device
-                )
-            values = _pack_residual(weight.to(device), scale=scale, global_scale=global_scale)
-        else:
-            if not torch.equal(weight, torch.cat([source.residual_weight for source in record.sources])):
-                raise ValueError("adapter must preserve residual weights")
-            if any(hasattr(residual, "scale") for residual in residuals):
-                logger.warning_once(
-                    "svdquant_omni MXFP4 export quantizes residuals with RTN block-32 E8M0 scales; "
-                    "tuned scales are not exported. Use iters=0 for MXFP4 checkpoints."
-                )
-            values = _pack_residual_mxfp4(weight.to(device))
-        values.update(
-            proj_down=(down.float() * smooth).T.bfloat16(),
-            proj_up=up.bfloat16(),
-            smooth_factor=smooth.reciprocal().bfloat16(),
-        )
-        if record.bias is not None:
-            values["bias"] = record.bias.bfloat16()
         for suffix, value in values.items():
             if suffix in record.omitted_suffixes:
                 continue
-            key = _export_key(record, suffix)
+            key = export_key(record, suffix)
             if key in tensors:
                 raise ValueError(f"duplicate Omni tensor key {key!r}")
             value = value.detach().cpu().contiguous()

@@ -101,11 +101,6 @@ def pytest_configure(config):
     pytest.mode = config.getoption("--mode")
     assert pytest.mode.lower() in ["lazy", "compile"]
 
-    config.addinivalue_line(
-        "markers",
-        "enable_torch_compile: allow this test to use real torch.compile instead of the default no-op patch",
-    )
-
     config.stash[backup_env] = os.environ
 
     if pytest.mode == "lazy":
@@ -156,20 +151,3 @@ def _warmup_triton_cuda_driver():
         triton.runtime.driver.active.get_current_target()
     except Exception:
         pass
-
-
-@pytest.fixture(autouse=True)
-def disable_torch_compile_by_default(request, monkeypatch):
-    """Use a no-op torch.compile by default to reduce test overhead and flakiness.
-
-    Mark tests with ``@pytest.mark.enable_torch_compile`` to opt in to real torch.compile.
-    """
-    if request.node.get_closest_marker("enable_torch_compile"):
-        return
-
-    try:
-        import torch
-    except Exception:
-        return
-
-    monkeypatch.setattr(torch, "compile", lambda function, *args, **kwargs: function, raising=False)
