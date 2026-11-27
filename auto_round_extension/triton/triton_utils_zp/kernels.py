@@ -186,7 +186,12 @@ def quant_matmul_248_kernel(
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
     for k in range(num_pid_k):
-        g_idx = tl.load(g_ptrs)
+        # K may not divide BLOCK_SIZE_K, so the last tile has to be masked in the K
+        # direction as well: without it `a_ptrs`, `b_ptrs` and `g_ptrs` read past the
+        # end of their buffers and the launch fails with an illegal memory access.
+        k_mask = (k * BLOCK_SIZE_K + offs_k) < K
+
+        g_idx = tl.load(g_ptrs, mask=k_mask, other=0)
 
         # Fetch scales and zeros; these are per-outfeature and thus reused in the inner loop
         scales = tl.load(scales_ptrs + g_idx[:, None] * stride_scales)  # (BLOCK_SIZE_K, BLOCK_SIZE_N,)
@@ -195,8 +200,10 @@ def quant_matmul_248_kernel(
         zeros = (zeros >> zeros_shifter[None, :]) & maxq
         # zeros = zeros + 1
 
-        a = tl.load(a_ptrs, mask=a_mask, other=0.0)  # (BLOCK_SIZE_M, BLOCK_SIZE_K)
-        b = tl.load(b_ptrs)  # (BLOCK_SIZE_K, BLOCK_SIZE_N), but repeated
+        # `other=0.0` for A zeroes the masked taps, so the `other=0` words loaded for B
+        # and the group 0 scale used above cannot contribute to the accumulator.
+        a = tl.load(a_ptrs, mask=a_mask & k_mask[None, :], other=0.0)  # (BLOCK_SIZE_M, BLOCK_SIZE_K)
+        b = tl.load(b_ptrs, mask=k_mask[:, None], other=0)  # (BLOCK_SIZE_K, BLOCK_SIZE_N), but repeated
 
         # Now we need to unpack b (which is N-bit values) into 32-bit values
         b = (b >> shifter[:, None]) & maxq  # Extract the N-bit values
@@ -378,7 +385,20 @@ def silu(x):
     return x * tl.sigmoid(x)
 
 
+def _wrap_negative_g_idx(g_idx, scales):
+    """Map GPTQ's -1 group marker onto the last group.
+
+    ``g_idx`` may record the final group as ``-1`` instead of ``num_groups - 1``. The
+    dequant kernel wraps it before use; without the same wrap the fused kernel indexes
+    ``scales`` and ``qzeros`` at a negative offset and returns NaN.
+    """
+    if g_idx is None:
+        return g_idx
+    return torch.where(g_idx < 0, g_idx + scales.shape[0], g_idx)
+
+
 def quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    g_idx = _wrap_negative_g_idx(g_idx, scales)
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)
     grid = lambda META: (  # noqa: E731
         triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
@@ -475,6 +495,7 @@ class QuantLinearFunction(torch.autograd.Function):
 
 
 def quant_matmul_inference_only_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    g_idx = _wrap_negative_g_idx(g_idx, scales)
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=torch.float16)
     grid = lambda META: (  # noqa: E731
         triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
