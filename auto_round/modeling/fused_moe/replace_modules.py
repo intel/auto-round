@@ -39,6 +39,7 @@ BUILTIN_MODULES = {
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
+    "tr_hash_moe": LazyImport("auto_round.modeling.fused_moe.tr_hash_moe"),
     # Qwen3-Omni MoE: thinker (no shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
     # Kimi remote MoE: routed experts run under @torch.no_grad() in eval mode
@@ -47,7 +48,9 @@ BUILTIN_MODULES = {
     "kimi_k3": LazyImport("auto_round.modeling.fused_moe.kimi"),
 }
 
-_FUSED_MOE_PROJECTION_NAMES = frozenset({"gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3"})
+_FUSED_MOE_PROJECTION_NAMES = frozenset(
+    {"gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3", "expert_gate", "expert_up", "expert_down"}
+)
 
 
 def _is_fused_moe_parameter(name: str, parameter: torch.Tensor) -> bool:
@@ -481,8 +484,8 @@ class ModuleReplacementTracker:
         if ModuleReplacementTracker._initialized:
             return
 
-        # Map from replacement module id to original module
-        self._replacement_to_original: dict[int, torch.nn.Module] = {}
+        # Map from replacement id to its original module and registered names.
+        self._replacement_to_original: dict[int, tuple[torch.nn.Module, set[str]]] = {}
         # Map from module name to ReplacedModuleInfo
         self._name_to_info: dict[str, ReplacedModuleInfo] = {}
 
@@ -497,13 +500,18 @@ class ModuleReplacementTracker:
 
     def register_replacement(self, name: str, original: torch.nn.Module, replacement: ReplacementModuleBase) -> None:
         """Register a module replacement."""
-        self._replacement_to_original[id(replacement)] = original
+        replacement_id = id(replacement)
+        entry = self._replacement_to_original.get(replacement_id)
+        names = entry[1] if entry is not None else set()
+        names.add(name)
+        self._replacement_to_original[replacement_id] = (original, names)
         self._name_to_info[name] = ReplacedModuleInfo(original_module=original, replacement_module=replacement)
         logger.trace(f"Registered replacement for module: {name}")
 
     def get_original(self, replacement: ReplacementModuleBase) -> torch.nn.Module:
         """Get the original module for a given replacement module."""
-        return self._replacement_to_original.get(id(replacement))
+        entry = self._replacement_to_original.get(id(replacement))
+        return entry[0] if entry is not None else None
 
     def get_info_by_name(self, name: str) -> ReplacedModuleInfo:
         """Get replacement info by module name."""
@@ -512,18 +520,19 @@ class ModuleReplacementTracker:
     def release_original(self, replacement: ReplacementModuleBase) -> None:
         """Release the original module associated with a replacement module."""
         replacement_id = id(replacement)
-        if replacement_id in self._replacement_to_original:
-            original = self._replacement_to_original[replacement_id]
-            # Delete the original module to free memory
-            del original
-            del self._replacement_to_original[replacement_id]
+        entry = self._replacement_to_original.pop(replacement_id, None)
+        if entry is not None:
+            for name in entry[1]:
+                info = self._name_to_info.get(name)
+                if info is not None and info.replacement_module is replacement:
+                    del self._name_to_info[name]
             logger.trace(f"Released original module for replacement {replacement_id}")
 
     def release_all_originals(self) -> None:
         """Release all tracked original modules."""
         count = len(self._replacement_to_original)
+        self.clear()
         if count > 0:
-            self._replacement_to_original.clear()
             logger.debug(f"Released {count} original modules from tracker")
 
     def clear(self) -> None:

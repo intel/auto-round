@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE prefill low-bit to INT8 upcast kernels
 
 #pragma once

@@ -14,6 +14,7 @@ from auto_round.export.formats.compressed_tensors.utils import (
     assign_config_group_targets,
     collect_fused_expert_modules,
     compact_expert_targets,
+    finalize_llmcompressor_config_names,
     ignore_fused_experts_for_vllm,
     revert_quantization_config_names,
 )
@@ -148,6 +149,17 @@ def test_rewrite_config_group_targets_preserves_uniform_targets():
     config = {"config_groups": {"group_0": {"targets": ["Linear"]}}}
 
     assert _rewrite_config_group_targets(torch.nn.Module(), config) == config
+
+
+def test_finalize_llmcompressor_config_names_fills_uniform_group_format():
+    config = {
+        "format": "mxfp4-pack-quantized",
+        "config_groups": {"group_0": {"format": None, "targets": ["Linear"]}},
+    }
+
+    finalized = finalize_llmcompressor_config_names(config, torch.nn.Module(), [], [])
+
+    assert finalized["config_groups"]["group_0"]["format"] == "mxfp4-pack-quantized"
 
 
 def test_compact_llmcompressor_config_keeps_exact_paths_and_merges_regex_ignores():

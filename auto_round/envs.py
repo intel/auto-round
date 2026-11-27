@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
+    AR_NVFP_ACT_AMAX_ALPHA: float = 1.0
     AR_ALLOW_W8_ASYM: bool = False
     AR_DISABLE_DEFAULT_SHARED_LAYERS: bool = False
     AR_CALIB_DATA_MULTIPLIER: int = 100
@@ -255,6 +256,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
+    # Multiplier applied to the collected NVFP activation amax.
+    "AR_NVFP_ACT_AMAX_ALPHA": lambda: _get_optional_positive_float_env("AR_NVFP_ACT_AMAX_ALPHA") or 1.0,
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
     # AutoScheme shares one quantization scheme across vLLM-fused projections
     # (q/k/v, MLA q_a/kv_a, gate/up) by default, because a fused serving kernel

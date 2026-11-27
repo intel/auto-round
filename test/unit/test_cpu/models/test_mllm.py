@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from test.helpers import get_model_path, opt_name_or_path
@@ -134,6 +135,29 @@ class TestAutoRound:
             seqlen=16,
         )
         autoround.quantize()
+
+    def test_local_text_dataset_with_quant_nontext_module_false(self, tiny_qwen_vl_model_path, tmp_path):
+        """A local (non-MLLM-registered) text file must route through the standard text dataloader
+        instead of raising KeyError in get_mllm_dataloader when the vision tower isn't quantized."""
+        calib_file = tmp_path / "calib.json"
+        with open(calib_file, "w") as f:
+            json.dump([{"text": "The quick brown fox jumps over the lazy dog. " * 40}] * 20, f)
+
+        ar = AutoRound(
+            model=tiny_qwen_vl_model_path,
+            scheme="W4A16",
+            iters=1,
+            nsamples=1,
+            seqlen=32,
+            dataset=str(calib_file),
+            quant_nontext_module=False,
+        )
+        _, layer_config = ar.quantize()
+
+        quantized_language_layers = [
+            name for name, cfg in layer_config.items() if "bits" in cfg and "language_model" in name
+        ]
+        assert quantized_language_layers, "expected language-model layers to be quantized"
 
     def test_pure_text_model_check(self, tiny_qwen_vl_model_path):
         from transformers import AutoModelForCausalLM

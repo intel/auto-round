@@ -220,7 +220,6 @@ class TestNeuqiAsymFusedSweep:
         scale, zp = N.neuqi_search_scale_zero(data.clone(), bits, qw=qw.clone() if qw is not None else None, **kwargs)
         return scale, zp, N
 
-    @pytest.mark.enable_torch_compile
     def test_fused_matches_eager(self, monkeypatch):
         """One setup, the structural combo set: bits=2 (smallest zp grid),
         bits=4 (shipping default), bits=8 (zp grid of 256, largest sweep
@@ -326,7 +325,6 @@ class TestNeuqiAsymBatchedSweep:
         scale, zp = N.neuqi_search_scale_zero(data.clone(), bits, qw=qw.clone() if qw is not None else None, **kwargs)
         return scale, zp, N
 
-    @pytest.mark.enable_torch_compile
     def test_batched_matches_per_candidate(self, monkeypatch):
         """One setup, the structural combo set (see test_fused_matches_eager):
         batched selections must match the per-candidate sweep up to
