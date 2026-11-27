@@ -25,7 +25,7 @@ from typing import Any
 
 import torch
 
-from auto_round.export.formats.svdquant.nunchaku import SourceLinearRecord, SVDQuantExportRecord
+from auto_round.export.formats.svdquant.common import SourceLinearRecord, SVDQuantExportRecord
 from auto_round.export.formats.svdquant.w4a16 import quantize_adanorm_w4a16_rtn
 
 _BLOCK_RE = re.compile(r"^(transformer_blocks|single_transformer_blocks)\.(\d+)\.(.+)$")

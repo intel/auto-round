@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Prefill — Native FP8 Fused Grouped-GEMM (Variant A: W8A16)
 //
 // Motivation

@@ -40,6 +40,17 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_NVFP_ACT_AMAX_ALPHA
+- **描述**：在校准统计 NVFP 静态激活 amax 时乘以的系数，后续激活 global scale 直接由该 amax 推导（`global_scale = scale_max * FLOAT4_E2M1_MAX / amax`）。alpha 越大，global scale 越小，使 outlier 更稳定地由 block scale 表达。权重 amax 和 KV cache amax 不受影响。
+- **默认值**：`1`
+- **有效值**：正的有限浮点数（如 `1.5`、`2`、`2.5`）。`0`、负数、`nan`、`inf`、`auto`、空值或非数字字符串会抛出 `ValueError`。
+- **用途**：仅作用于输入/激活 global scale，不影响权重 global scale。增大 alpha 会降低 global scale，使 FP8 block scale 的有效表达范围收窄。对 NVFP4 的 E4M3FN scale，alpha=2 时最大 scale 从 448 降至约 224；高于该上限的 scale 编码仍可表示，但相应范围会为 outlier 预留，可能造成其他 scale 表达空间的浪费。DeepSeek-V3.2 MoE 的 NVFP4 量化实测中，alpha=2 时 AIME25 精度显著提高；alpha=4 时 GPQA 精度开始下降。常规 NVFP4 建议从 alpha=2 开始，并结合目标数据集验证；NVFP4_E5M3_GS 使用动态范围更宽的 UE5M3 block scale，可在验证后尝试更大的值。
+
+```bash
+export AR_NVFP_ACT_AMAX_ALPHA=1     # 默认值
+export AR_NVFP_ACT_AMAX_ALPHA=2     # 增大激活 amax 余量
+```
+
 ### AR_DISABLE_DEFAULT_SHARED_LAYERS
 - **描述**：关闭 AutoScheme 的默认行为：为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、MLA 的 `q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。由于单个融合 kernel 只能使用一种量化方案，该共享默认开启。等价于 `AutoScheme(default_shared_layers=False)` 以及命令行参数 `--disable_default_shared_layers`。
 - **默认值**：`False`（等价于 `"0"`）

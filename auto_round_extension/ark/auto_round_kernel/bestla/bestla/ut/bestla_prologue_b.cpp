@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 #include "bestla_gemm.h"
 #include "bestla_gemm_kblock.h"
 #include "bestla_prologue_b.h"
