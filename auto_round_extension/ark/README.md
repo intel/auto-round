@@ -44,6 +44,15 @@ Low-bit weight-only linear for LLM inference. Both CPU and XPU are supported.
 
 > **W4A8 / W2A8 Rescale (QQQ-style)** — On XPU, ARK supports \~[QQQ](https://github.com/HandH1998/QQQ)-style compute: low-bit weights (INT2/INT4) are re-scaled to INT8 and computed via INT8 GEMM, avoiding FP16 dequantization for better throughput. Enabled automatically via environment variable `ARK_AUTO_S8`; see [xpu_wrapper.hpp](auto_round_kernel/wrapper/include/xpu_wrapper.hpp).
 
+**Dense W4A16 on XPU (SYCL TLA)**
+
+K64 split-K4 for `M=1` is **enabled by default**. A call takes the split-K4 route when all of these hold: `N <= 65536` and `N % 128 == 0`, `K` splits into four whole groups (`K % (4*max(64, blocksize)) == 0`), and the packed weight exceeds 8 MiB (`K*N > 16 MiB` of INT4 elements). Set `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` to explicitly fall back to GEMV.
+
+The route also requires symmetric INT4 weights, FP16 kernel I/O, group-major FP16 scales with group size 32, 64, or 128, and an in-order queue outside graph recording. It reuses 1 MiB of FP32 scratch per queue (`4 x 65536` floats), adds optional bias once after summing the four FP32 partials, and then converts to FP16. Split-K changes the accumulation order, so results need not match unsplit DPAS bitwise.
+
+Outside the rule (the 8 Mi amortization floor, off-tile `N`, a `K` that does not split into four whole groups, asymmetric weights, non-FP16 I/O, an out-of-order or recording queue) single-row calls retain GEMV. Dispatch for `M>1`, packed weights, and dtype conversion are unchanged. The selector checks the kernel dtype, so BF16 inputs already converted to FP16 can also select split-K4. The 8 Mi floor exists because below it the 4-kernel + 1 MiB scratch cost is not amortized and split-K4 measured slower than GEMV.
+
+
 ### Supported Data Types
 
 #### CPU

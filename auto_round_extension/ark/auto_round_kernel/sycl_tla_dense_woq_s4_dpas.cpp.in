@@ -8,6 +8,7 @@ namespace ark {
 namespace dense_woq_s4_dpas {
 namespace detail {
 
+#if !@DENSE_WOQ_S4_SPLIT_K4@
 void @DENSE_WOQ_S4_FUNCTION_NAME@(sycl::queue* q, const void* activations, const void* weights, const void* scales,
                                   const void* bias, void* outputs, int gemm_m, int gemm_n, int gemm_k,
                                   int group_size) {
@@ -25,6 +26,72 @@ void @DENSE_WOQ_S4_FUNCTION_NAME@(sycl::queue* q, const void* activations, const
         gemm_m, gemm_n, gemm_k, group_size);
   }
 }
+
+#else
+template <int GroupSize>
+class DenseWoqS4SplitK4;
+class DenseWoqS4ReduceK4;
+
+void run_m4_n128_k64_split4(sycl::queue* queue, const void* activations, const void* weights, const void* scales,
+                           const void* bias, void* outputs, float* partials, int gemm_m, int gemm_n, int gemm_k,
+                           int group_size) {
+  using ElementA = cute_scalar_t<sycl::half>;
+  using Weight = cutlass::uint4b_t;
+  using Policy = @DENSE_WOQ_S4_POLICY_NAME@;
+  using Atom = MMA_Atom<XE_DPAS_TT<8, float, ElementA, ElementA>>;
+  using Mma = typename TiledMMAHelper<Atom, Layout<typename Policy::WGTile>, typename Policy::SGLayout>::TiledMMA;
+  Mma mma;
+  constexpr int splits = kSplitK4Parts;
+  const int slice_k = gemm_k / splits;
+  const size_t output_size = static_cast<size_t>(gemm_m) * gemm_n;
+  auto* input = const_cast<ElementA*>(static_cast<const ElementA*>(activations));
+  auto* packed = const_cast<uint8_t*>(static_cast<const uint8_t*>(weights));
+  const auto* group_scales = static_cast<const ElementA*>(scales);
+  const auto* output_bias = static_cast<const ElementA*>(bias);
+  auto* output = static_cast<ElementA*>(outputs);
+  const sycl::range<3> local(1, 1, size(mma));
+  const sycl::range<3> groups(gemm_n / 128, 1, splits);
+  const sycl::ext::oneapi::experimental::properties props{
+      sycl::ext::oneapi::experimental::sub_group_size<16>, sycl::ext::intel::experimental::grf_size<256>};
+  if (compat::get_default_queue() != *queue) {
+    compat::set_default_queue(*queue);
+  }
+  const auto submit_partials = [&](auto group) {
+    constexpr int group_k = decltype(group)::value;
+    queue->submit([&](sycl::handler& handler) {
+      handler.parallel_for<DenseWoqS4SplitK4<group_k>>(
+          sycl::nd_range<3>{groups * local, local}, props, [=](sycl::nd_item<3> item) {
+            const int split = item.get_group(2);
+            const int offset = split * slice_k;
+            const auto stride = make_stride(gemm_k, _1{});
+            auto input_slice = make_tensor(make_gmem_ptr(input + offset),
+                                           make_layout(make_shape(gemm_m, slice_k), stride));
+            auto weight_slice = make_tensor(make_gmem_ptr(reinterpret_cast<Weight*>(packed + offset / 2)),
+                                            make_layout(make_shape(gemm_n, slice_k), stride));
+            auto partial_tile = make_dense_tensor<float, 'R'>(partials + split * output_size, gemm_m, gemm_n);
+            dense_gemm_s4_pergroup<void, void, void, group_k, true, true>(
+                input_slice, weight_slice, group_scales + (offset / group_k) * gemm_n,
+                static_cast<const ElementA*>(nullptr), partial_tile, make_coord(0, int(item.get_group(0)), _, 0), mma);
+          });
+    });
+  };
+  switch (group_size) {
+    case 32: submit_partials(Int<32>{}); break;
+    case 64: submit_partials(Int<64>{}); break;
+    case 128: submit_partials(Int<128>{}); break;
+    default: throw std::invalid_argument("dense_woq_s4_dpas: unsupported split-K4 group size");
+  }
+  queue->parallel_for<DenseWoqS4ReduceK4>(sycl::range<1>(output_size), [=](sycl::id<1> item) {
+    const size_t index = item[0];
+    float sum = partials[index];
+    for (int split = 1; split < splits; ++split) {
+      sum += partials[split * output_size + index];
+    }
+    if (output_bias != nullptr) sum += static_cast<float>(output_bias[index % gemm_n]);
+    output[index] = static_cast<ElementA>(sum);
+  });
+}
+#endif
 
 }  // namespace detail
 }  // namespace dense_woq_s4_dpas

@@ -13,6 +13,7 @@ namespace dense_woq_s4_dpas {
 inline constexpr int kMinGroupSize = 32;
 inline constexpr int kMaxGroupSize = 4096;
 inline constexpr int kPackedScaleMaxGroupSize = 128;
+inline constexpr int kSplitK4Parts = 4;
 
 inline bool is_supported_group_size(int group_size) {
   return group_size >= kMinGroupSize && group_size <= kMaxGroupSize &&
@@ -36,6 +37,10 @@ ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m64_n256);
 ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE(run_m128);
 
 #undef ARK_DECLARE_DENSE_WOQ_S4_DPAS_ROUTE
+
+void run_m4_n128_k64_split4(sycl::queue* queue, const void* activations, const void* weights, const void* scales,
+                           const void* bias, void* outputs, float* partials, int gemm_m, int gemm_n, int gemm_k,
+                           int group_size);
 
 }  // namespace detail
 }  // namespace dense_woq_s4_dpas

@@ -9,6 +9,7 @@ from importlib import metadata
 from pathlib import Path
 
 import auto_round_kernel as ark
+import pytest
 import torch
 from ut_utils import gen_weis8
 
@@ -26,6 +27,7 @@ WEIGHT_TYPE = "int4"
 SCALE_TYPE = "fp16"
 ASYM = False
 WARMUP_LIMIT = 1000
+M1_SPLIT4_SWITCH = "ARK_WOQ_S4_DPAS_SPLIT_K4_M1"
 
 
 def _print_config_types():
@@ -154,22 +156,26 @@ def _torch_int4_case(n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
     return weight_nt, scales, zero_points, bias
 
 
-def _ark_case(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
+def _ark_case(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE, with_bias=True):
     torch.manual_seed(0)
-    raw_s8_wei = gen_weis8(WEIGHT_TYPE, device, k, n)
-    scales = torch.rand(k // blocksize, n, dtype=dtype, device=device) / 300 + 0.002
-    bias = torch.randn(1, n, dtype=dtype, device=device)
+    raw_s8_wei = gen_weis8(WEIGHT_TYPE, "cpu", k, n)
+    scales = torch.rand(k // blocksize, n, dtype=dtype) / 300 + 0.002
+    bias = torch.randn(1, n, dtype=dtype) if with_bias else torch.empty(0, dtype=dtype)
     zp = torch.Tensor()
 
-    packw = ark.repack_quantized_weight(raw_s8_wei, scales, zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+    packw = ark.repack_quantized_weight(
+        raw_s8_wei.to(device), scales.to(device), zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM
+    )
     revert_wei_t = ark.unpack_weight(packw, dtype, n, k, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
-    revert_wei = revert_wei_t.t()
+    revert_wei = revert_wei_t.cpu().t()
     ref_weight = raw_s8_wei.to(dtype) * scales.repeat_interleave(repeats=blocksize, dim=0)
     assert torch.allclose(revert_wei, ref_weight)
 
-    activation = torch.randn(m, k, dtype=dtype, device=device) - 0.5
-    ref_c = torch.matmul(activation, revert_wei) + bias
-    return activation, packw, bias, ref_c
+    activation = torch.randn(m, k, dtype=dtype) - 0.5
+    ref_c = torch.matmul(activation, revert_wei)
+    if with_bias:
+        ref_c = ref_c + bias
+    return activation.to(device), packw, bias.to(device), ref_c
 
 
 def _runs_for_m(m):
@@ -203,9 +209,8 @@ def _guarded_output(m, n, dtype=DTYPE, device=DEVICE):
     return storage[:m], storage[m:]
 
 
-def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE):
-    activation, packw, bias, ref_c = _ark_case(m, n=n, k=k, blocksize=blocksize)
-    output, guard = _guarded_output(m, n)
+def _ark_woqgemm_with_output_guard(activation, packw, bias, n, k, blocksize):
+    output, guard = _guarded_output(activation.shape[0], n)
 
     actual = ark.woqgemm(
         activation,
@@ -223,8 +228,14 @@ def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=
     _sync_xpu()
 
     assert actual.data_ptr() == output.data_ptr()
+    assert torch.all(guard.cpu() == OUTPUT_GUARD_VALUE)
+    return actual.cpu()
+
+
+def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE):
+    activation, packw, bias, ref_c = _ark_case(m, n=n, k=k, blocksize=blocksize)
+    actual = _ark_woqgemm_with_output_guard(activation, packw, bias, n, k, blocksize)
     assert torch.allclose(actual, ref_c, rtol=0.1, atol=2.0)
-    assert torch.all(guard == OUTPUT_GUARD_VALUE)
 
 
 def _memory_bytes(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE):
@@ -288,6 +299,7 @@ def run_ark_woqgemm():
             )
 
         output, dur = _benchmark_loop(call, runs, warmup)
+        output = output.cpu()
         diff = abs(ref_c - output)
         print(
             f"  Max Diff: {diff.max().item():.6f}, Mean Diff: {diff.mean().item():.6f}, "
@@ -349,6 +361,84 @@ def test_dense_s4_dpas_non_tile_aligned_m_accuracy_and_output_bounds():
     for m in DENSE_S4_DPAS_PARTIAL_M_VALUES:
         assert _ark_expected_route(m, ACCURACY_N, ACCURACY_K, BLOCKSIZE) == "woq_s4_dpas"
         _assert_ark_woqgemm_matches_reference_with_output_bounds(m)
+
+
+@pytest.mark.parametrize("group_size", [32, 64, 128])
+def test_dense_s4_dpas_split4_group_scales_and_bias(monkeypatch, group_size):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    monkeypatch.setenv(M1_SPLIT4_SWITCH, "1")
+    inner, columns = 4096, 8192
+    slice_k = inner // 4
+    indices = [0, group_size, slice_k, 2 * slice_k, 3 * slice_k]
+    weights = torch.zeros(inner, columns, dtype=torch.int8)
+    weights[indices] = 1
+    scales = torch.zeros(inner // group_size, columns, dtype=DTYPE)
+    half_ulp = 2**-11
+    for index, scale in zip(indices, (0.5, 0.25, 0.125, 0.125, half_ulp)):
+        scales[index // group_size] = scale
+    packed = ark.repack_quantized_weight(
+        weights.to(DEVICE), scales.to(DEVICE), None, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM
+    )
+    activation = torch.zeros(1, inner, dtype=DTYPE)
+    activation[:, indices] = 1
+    activation = activation.to(DEVICE)
+    bias = torch.tensor([half_ulp, -half_ulp], dtype=DTYPE).repeat(columns // 2).view(1, columns)
+    for output_bias in (torch.empty(0, dtype=DTYPE), bias):
+        reference = torch.full((1, columns), 1 + half_ulp, dtype=torch.float32)
+        if output_bias.numel():
+            reference += output_bias.float()
+        actual = _ark_woqgemm_with_output_guard(activation, packed, output_bias.to(DEVICE), columns, inner, group_size)
+        torch.testing.assert_close(actual, reference.to(DTYPE), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "in_features,out_features,selected",
+    [
+        (2048, 2048, False),
+        (3584, 8192, True),
+        (4096, 1024, False),
+        (4096, 3968, False),
+        (4096, 4096, False),
+        (4096, 8064, True),
+        (4096, 8192, True),
+        (4096, 8256, False),
+        (4096, 8320, True),
+        (4096, 10240, True),
+        (4096, 11008, True),
+        (4096, 12288, True),
+        (4096, 14336, True),
+        (4096, 15360, True),
+        (4096, 16256, True),
+        (4096, 16384, True),
+        (4096, 16512, True),
+        (4224, 8192, False),
+        (4608, 8192, True),
+        (8192, 4096, True),
+        (8192, 8192, True),
+        (14336, 4096, True),
+    ],
+)
+def test_dense_s4_dpas_split4_m1_threshold(monkeypatch, in_features, out_features, selected):
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    # split-K4 is on by default; the flag-OFF reference arm must explicitly
+    # disable it (env "0"), and the flag-ON arm runs the default (unset).
+    monkeypatch.setenv(M1_SPLIT4_SWITCH, "0")
+    group_size = 128
+    activation, packw, bias, reference = _ark_case(
+        1, n=out_features, k=in_features, blocksize=group_size, with_bias=False
+    )
+    options = (out_features, in_features, group_size, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
+    rows = activation[:1]
+    default = ark.woqgemm(rows, packw, bias, *options).cpu()
+
+    monkeypatch.delenv(M1_SPLIT4_SWITCH, raising=False)
+    actual = _ark_woqgemm_with_output_guard(rows, packw, bias, out_features, in_features, group_size)
+    assert torch.equal(actual.view(torch.int16), default.view(torch.int16)) == (not selected)
+    torch.testing.assert_close(actual, reference[:1], rtol=0.01, atol=0.01)
 
 
 if __name__ == "__main__":

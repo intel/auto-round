@@ -44,6 +44,15 @@ ARK 算子已集成到以下项目：
 
 > **W4A8 / W2A8 重缩放（QQQ 风格）**：XPU 上支持将低比特权重（INT2/INT4）重缩放为 INT8，并通过 INT8 GEMM 计算，避免 FP16 反量化。该功能通过环境变量 `ARK_AUTO_S8` 自动启用，详见 [xpu_wrapper.hpp](auto_round_kernel/wrapper/include/xpu_wrapper.hpp)。
 
+**XPU 上的稠密 W4A16（SYCL TLA）**
+
+K64 split-K4（`M=1`）**默认开启**。调用满足以下条件时走 split-K4：`N <= 65536` 且 `N % 128 == 0`，`K` 可被切成 4 个整组（`K % 4*max(64, blocksize) == 0`），打包权重大于 8 MiB（`K*N > 16 MiB` 的 INT4 元素）。设置 `ARK_WOQ_S4_DPAS_SPLIT_K4_M1=0` 可显式回退到 GEMV。
+
+该路由还要求对称 INT4 权重、FP16 内核输入输出、group-major FP16 scale、group size 为 32、64 或 128，以及未处于图录制状态的有序队列。每个队列复用 1 MiB 的 FP32 临时空间（`4 * 65536` 个 float）；四份 FP32 partial 求和后加一次可选 bias，再转为 FP16。Split-K 改变累加顺序，输出不保证与不切分 DPAS 逐位相等。
+
+规则未命中时（8 MiB 摊销下限以下、`N` 不对齐 128、`K` 切不出 4 个整组、非对称权重、非 FP16 输入输出、乱序或正在录制图的队列），单行调用仍走 GEMV。`M>1` 的调度、权重打包和 dtype 转换不变。调度检查的是内核 dtype，因此已转为 FP16 的 BF16 输入也可能命中 split-K4。8 MiB 下限是因为低于该权重时 4-kernel + 1 MiB 临时空间的开销无法摊销，实测 split-K4 比 GEMV 更慢。
+
+
 ### 支持的数据类型
 
 #### CPU

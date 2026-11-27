@@ -101,6 +101,11 @@ class dpas_w4a16_dense_policy_m_4_n128 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
 };
 
+class dpas_w4a16_dense_policy_m_4_n128_k64 : public dpas_w4a16_dense_policy_m_4_n128 {
+ public:
+  using WGTile = Shape<_4, _128, _64>;
+};
+
 class dpas_w4a16_dense_policy_m_8_n128 : public dpas_policy_base {
  public:
   using WGTile = Shape<_8, _128, _32>;
@@ -381,6 +386,7 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   static constexpr auto tile_k = get<2>(wg_tile);
   static constexpr int tile_k_size = int(tile_k);
   static constexpr int tiles_per_group = GroupSize / tile_k_size;
+  static constexpr int groups_per_tile = tile_k_size / GroupSize;
 
   static constexpr auto SG_M = tile_m / ATOM_M;
   static constexpr auto SG_N = tile_n / ATOM_N;
@@ -450,7 +456,10 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
 
     bool is_group_start;
     int group_idx;
-    if constexpr (TileAlignedGroup) {
+    if constexpr (groups_per_tile > 1) {
+      is_group_start = false;
+      group_idx = k_tile * groups_per_tile;
+    } else if constexpr (TileAlignedGroup) {
       is_group_start = k_tile % tiles_per_group == 0;
       group_idx = k_tile / tiles_per_group;
     } else {
@@ -514,27 +523,50 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
       tCrB(i) = static_cast<TA>(static_cast<float>(tCrB(i)) - 8.0f);
     }
 
-    // HOT MAINLOOP -- MMA accumulates into `tCrC_group`. Per-N scale
-    // is applied ONCE at the end of the group in the fold block below.
-    cute::gemm(mma, tCrA, tCrB, tCrC_group);
-
-    bool is_group_end;
-    if constexpr (TileAlignedGroup) {
-      is_group_end = ((k_tile + 1) % tiles_per_group == 0) ||
-                     (k_tile + 1 == k_tile_count);
-    } else {
-      is_group_end = (((k_tile + 1) * tile_k) % group_size == 0) ||
-                     (k_tile + 1 == k_tile_count);
-    }
-    if (is_group_end) {
+    if constexpr (groups_per_tile > 1) {
+      constexpr int atom_steps = decltype(size<2>(tCrA.tensor()))::value;
+      static_assert(ScaleGroupMajor && tile_k_size % GroupSize == 0 && atom_steps % groups_per_tile == 0);
+      constexpr int steps_per_group = atom_steps / groups_per_tile;
       CUTLASS_PRAGMA_UNROLL
-      for (int sn = 0; sn < sg_n_strides; ++sn) {
-        float s = sg_scale[sn];
+      for (int group = 0; group < groups_per_tile; ++group) {
+        clear(tCrC_group);
         CUTLASS_PRAGMA_UNROLL
-        for (int sm = 0; sm < SG_M; ++sm) {
-          const int idx = sn * SG_M + sm;
-          tCrC(idx) += tCrC_group(idx) * s;
-          tCrC_group(idx) = 0.0f;
+        for (int step = 0; step < steps_per_group; ++step) {
+          const int atom = group * steps_per_group + step;
+          cute::gemm(mma, tCrA.tensor()(_, _, atom), tCrB.tensor()(_, _, atom), tCrC_group);
+        }
+        CUTLASS_PRAGMA_UNROLL
+        for (int sn = 0; sn < sg_n_strides; ++sn) {
+          const int column = n_tile_start + n_sg_start + sn * sg_local_range + sg_local_id;
+          const float scale = Scales[(group_idx + group) * gemm_n + column];
+          CUTLASS_PRAGMA_UNROLL
+          for (int sm = 0; sm < SG_M; ++sm) {
+            const int idx = sn * SG_M + sm;
+            tCrC(idx) += tCrC_group(idx) * scale;
+          }
+        }
+      }
+    } else {
+      cute::gemm(mma, tCrA, tCrB, tCrC_group);
+
+      bool is_group_end;
+      if constexpr (TileAlignedGroup) {
+        is_group_end = ((k_tile + 1) % tiles_per_group == 0) ||
+                       (k_tile + 1 == k_tile_count);
+      } else {
+        is_group_end = (((k_tile + 1) * tile_k) % group_size == 0) ||
+                       (k_tile + 1 == k_tile_count);
+      }
+      if (is_group_end) {
+        CUTLASS_PRAGMA_UNROLL
+        for (int sn = 0; sn < sg_n_strides; ++sn) {
+          float s = sg_scale[sn];
+          CUTLASS_PRAGMA_UNROLL
+          for (int sm = 0; sm < SG_M; ++sm) {
+            const int idx = sn * SG_M + sm;
+            tCrC(idx) += tCrC_group(idx) * s;
+            tCrC_group(idx) = 0.0f;
+          }
         }
       }
     }
@@ -614,7 +646,9 @@ void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
                                  const int gemm_m,
                                  const int gemm_n,
                                  const int gemm_k) {
-  compat::set_default_queue(stream);
+  if (compat::get_default_queue() != stream) {
+    compat::set_default_queue(stream);
+  }
 
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
   auto op = XE_DPAS_TT<8, float, ElementA_non_CV, ElementA_non_CV>{};
@@ -724,9 +758,10 @@ void DenseWoqS4GEMMLauncherUpTo(sycl::queue& stream,
                                 const int gemm_n,
                                 const int gemm_k,
                                 const int group_size) {
+  constexpr int min_group_size = get<2>(typename policy::WGTile{});
   if (!is_supported_group_size(group_size) ||
-      group_size > MaxGroupSize ||
-      !DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, kMinGroupSize,
+      group_size < min_group_size || group_size > MaxGroupSize ||
+      !DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, min_group_size,
                                           layoutA, layoutB, policy, ScaleGroupMajor>(
           stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
           gemm_k, group_size)) {
