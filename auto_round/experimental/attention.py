@@ -212,7 +212,6 @@ def init_hooked_attention(module: Module, config, granularity: str = "tensor"):
     Initialize `QuantizedAttentionImpl` and `QuantizedKVCache` instances
     attached to attention
 
-    :param model: parent model of attention module
     :param module: attention module to initialize with
     """
     config = _get_attention_config(module, config)
