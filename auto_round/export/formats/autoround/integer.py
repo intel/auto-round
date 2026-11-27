@@ -54,6 +54,7 @@ from auto_round.utils import (
     to_standard_regex,
     unsupported_meta_device,
 )
+from auto_round.utils.regex import compress_autoround_extra_config
 
 
 @functools.cache
@@ -411,6 +412,7 @@ def save_checkpoint(
     for layer_name, cfg in layer_config.items():
         if is_standard_fp(cfg.get("data_type", "int")) and cfg.get("bits") == 8:
             extra_config.setdefault(layer_name, {})["packing_format"] = "auto_round:fp8"
+    extra_config = compress_autoround_extra_config(extra_config, set(layer_config))
     if extra_config:
         quantization_config["extra_config"] = extra_config
 

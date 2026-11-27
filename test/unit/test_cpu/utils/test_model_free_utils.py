@@ -42,6 +42,7 @@ from auto_round.utils.model_free_utils import (
     _dequant_inkling_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
+    _extract_model_type_passthrough_tensors,
     _fused_nvfp4_global_scale_overrides,
     _fused_nvfp4_projection_groups,
     _handle_mxfp_source_tensors,
@@ -477,6 +478,7 @@ class TestBuildMxfpQuantizationConfigMixedPrecisionMoe:
         dense_layers = [
             "model.layers.0.mlp.down_proj",
             "model.layers.0.mlp.up_proj",
+            "model.layers.0.mlp.gate_proj",
         ]
         all_layers = moe_layers + dense_layers
 
@@ -536,7 +538,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=[],
             format="llm_compressor",
@@ -550,7 +551,6 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=["model.layers.0.mlp.down_proj"],
             ignored_layers=[],
             format="llm_compressor",
@@ -564,31 +564,28 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         qconfig = _build_quantization_config(
             default_scheme=default_scheme,
             layer_config=layer_cfg,
-            ignore_patterns=[],
             quantized_layers=_MOE_NV_QUANTIZED,
             ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
             format="llm_compressor",
         )
-        assert qconfig["ignore"] == [r"re:^model\.layers\.2\.mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+        assert qconfig["ignore"] == [
+            f"model.layers.2.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")
+        ]
 
 
 class TestIgnoreFusedExpertsForVllm:
-    _ENTRY = r"re:^model\.layers\.0\.mlp\.experts\.\d+\.(gate|up|down)_proj$"
+    _ENTRIES = [f"model.layers.0.mlp.experts.0.{proj}" for proj in ("gate_proj", "up_proj", "down_proj")]
 
     def _qconfig(self, targets):
         return {"config_groups": {"group_0": {"targets": targets}}, "ignore": ["lm_head"]}
 
     def test_adds_entry_matching_vllm_probe_names(self):
-        import re
-
         qconfig = _ignore_fused_experts_for_vllm(
             self._qconfig(["Linear", "RoutedExperts"]),
             ["model.layers.0.mlp.experts.w13_weight", "model.layers.0.mlp.experts.w2_weight"],
             [],
         )
-        assert qconfig["ignore"] == ["lm_head", self._ENTRY]
-        for proj in ("gate_proj", "up_proj", "down_proj"):
-            assert re.match(self._ENTRY[3:], f"model.layers.0.mlp.experts.0.{proj}")
+        assert qconfig["ignore"] == ["lm_head", *self._ENTRIES]
 
     def test_no_routed_experts_no_change(self):
         qconfig = _ignore_fused_experts_for_vllm(
@@ -719,7 +716,6 @@ class TestBuildQuantizationConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=[],
             ignored_layers=ignored,
         )
@@ -834,6 +830,37 @@ class TestBuildMxfpConfig:
         assert "lm_head" in cfg["ignore"]
         assert len(cfg["config_groups"]) == 1
 
+    @pytest.mark.parametrize(
+        ("data_type", "expected_format"),
+        [
+            ("mx_fp", "mxfp4-pack-quantized"),
+            ("nv_fp", "nvfp4-pack-quantized"),
+            ("nvfp4_v2", "nvfp4-e5m3-pack-quantized"),
+        ],
+    )
+    @require_compressed_tensors
+    def test_single_group_format_is_serialized(self, data_type, expected_format):
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": data_type}
+        cfg = _build_mxfp_quantization_config(default, ["model.layers.0.fc1"], [], layer_config={})
+
+        assert cfg["format"] == expected_format
+        assert cfg["config_groups"]["group_0"]["format"] == expected_format
+
+    @require_compressed_tensors
+    def test_bf16_default_nvfp4_override_llmc_group_format(self):
+        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
+        layer = "model.layers.0.self_attn.q_proj"
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={layer: {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}},
+            quantized_layers=[layer],
+            ignored_layers=[],
+            format="llm_compressor",
+        )
+
+        assert cfg["format"] == "nvfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["format"] == "nvfp4-pack-quantized"
+
     @require_compressed_tensors
     def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
         default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
@@ -844,6 +871,17 @@ class TestBuildMxfpConfig:
         cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
         assert cfg["format"] == "mxfp4-pack-quantized"
         assert cfg["config_groups"]["group_0"]["targets"] == quantized
+
+    @require_compressed_tensors
+    def test_build_mxfp_config_single_nvfp4_group_uses_nvfp4_scheme(self):
+        from auto_round.export.formats.compressed_tensors.config import initialize_quantization
+
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {"model.layers.0.mlp.fc1": {"bits": 4, "group_size": 16, "data_type": "nv_fp"}}
+        cfg = _build_mxfp_quantization_config(default, ["model.layers.0.mlp.fc1"], [], layer_config=layer_config)
+        expected = initialize_quantization(scheme="NVFP4", ignore=[]).to_dict()["config_groups"]["group_0"]
+        assert cfg["format"] == "nvfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["weights"] == expected["weights"]
 
     @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
@@ -1107,6 +1145,127 @@ class TestMXFPDequantization:
         assert torch.equal(result, torch.tensor([[0.5, 1.0, 6.0, 8.0]]))
 
 
+class TestDeepseekV41EngramSourceTensors:
+    """DeepSeek-V4.1 Engram handling in the model-free source chain.
+
+    The FP8 n-gram lookup table must reach the output checkpoint unchanged (source key,
+    ``float8_e4m3fn`` weight, ``float8_e8m0fnu`` scale), while ``engram.wkv`` is an ordinary
+    Linear: requantized like any other layer, or dequantized when layer_config sets it to BF16.
+    """
+
+    @staticmethod
+    def _raw_tensors():
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        # [32, 32] blocks of ue8m0 exponents, exactly as shipped in the source checkpoint
+        scale = torch.full((2, 2), 120, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        table = torch.randn(1000, 32, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        table_scale = torch.full((1000, 1), 127, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        return {
+            "layers.1.attn.wkv.weight": weight.clone(),
+            "layers.1.attn.wkv.scale": scale.clone(),
+            "layers.1.engram.wkv.weight": weight.clone(),
+            "layers.1.engram.wkv.scale": scale.clone(),
+            "layers.1.engram.embed.weight": table.clone(),
+            "layers.1.engram.embed.scale": table_scale.clone(),
+            "layers.1.engram.q_weight": torch.randn(4, 128, dtype=torch.bfloat16),
+        }
+
+    def _run(self, model_type="deepseek_v41", layer_config=None):
+        raw = self._raw_tensors()
+        passthrough_src = _extract_model_type_passthrough_tensors(raw, model_type)
+        out, state = _preprocess_model_type_source_tensors(raw, model_type=model_type)
+        matcher = _matcher(
+            layer_config={"layers.1.engram.wkv": {"bits": 16}} if layer_config is None else layer_config,
+            default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"},
+        )
+        out, passthrough, layers = _handle_mxfp_source_tensors(out, matcher, source_state=state)
+        return {**out, **passthrough, **passthrough_src}, state, layers
+
+    def test_v41_reaches_the_translation_chain(self):
+        _, state, _ = self._run()
+        assert state == {"layers.1.attn.wkv": 8, "layers.1.engram.wkv": 8}
+
+    def test_engram_table_keeps_source_key_and_dtype(self):
+        tensors, _, _ = self._run()
+        assert tensors["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert torch.equal(
+            tensors["layers.1.engram.embed.scale"].view(torch.uint8),
+            torch.full((1000, 1), 127, dtype=torch.uint8),
+        )
+        assert "layers.1.engram.embed.weight_scale" not in tensors
+
+    def test_bf16_engram_linear_is_exported_in_float32(self):
+        tensors, _, layers = self._run()
+        weight = tensors["layers.1.engram.wkv.weight"]
+        assert weight.dtype == torch.float32 and weight.shape == (64, 128)
+        assert "layers.1.engram.wkv.scale" not in tensors
+        assert "layers.1.engram.wkv.weight_scale" not in tensors
+        assert "layers.1.engram.wkv" not in layers
+
+    def test_non_ignored_linear_becomes_ocp_mxfp8(self):
+        tensors, _, layers = self._run()
+        assert layers == ["layers.1.attn.wkv"]
+        assert tensors["layers.1.attn.wkv.weight"].dtype == torch.float8_e4m3fn
+        # 2D [32, 32] blocks expanded to per-row groups of 32
+        assert tensors["layers.1.attn.wkv.weight_scale"].shape == (64, 4)
+        assert "layers.1.attn.wkv.scale" not in tensors
+
+    def test_engram_non_linear_projections_untouched(self):
+        tensors, _, _ = self._run()
+        q = tensors["layers.1.engram.q_weight"]
+        assert q.dtype == torch.bfloat16 and q.shape == (4, 128)
+
+    def test_kept_raw_when_not_overridden(self):
+        tensors, state, layers = self._run(layer_config={})
+        assert layers == ["layers.1.attn.wkv", "layers.1.engram.wkv"]
+        assert state["layers.1.engram.wkv"] == 8
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert torch.equal(
+            tensors["layers.1.engram.embed.scale"].view(torch.uint8),
+            torch.full((1000, 1), 127, dtype=torch.uint8),
+        )
+
+    def test_full_process_shard_keeps_engram_table_unquantized(self, tmp_path):
+        scheme = {"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        shard_path = tmp_path / "model.safetensors"
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale = torch.full((2, 2), 120, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        table = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        table_scale = torch.full((64, 4), 127, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        save_file(
+            {
+                "layers.1.attn.wkv.weight": weight,
+                "layers.1.attn.wkv.scale": scale,
+                "layers.1.engram.embed.weight": table,
+                "layers.1.engram.embed.scale": table_scale,
+            },
+            str(shard_path),
+        )
+
+        output, quantized, ignored = _process_shard(
+            str(shard_path),
+            scheme,
+            {},
+            [],
+            device="cpu",
+            fp8_block_size=None,
+            model_type="deepseek_v41",
+            matcher=_matcher(default=scheme),
+        )
+
+        assert "layers.1.attn.wkv" in quantized
+        assert "layers.1.engram.embed" in ignored
+        assert output["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
+        assert output["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert torch.equal(
+            output["layers.1.engram.embed.scale"].view(torch.uint8),
+            torch.full((64, 4), 127, dtype=torch.uint8),
+        )
+        assert "layers.1.engram.embed.weight_scale" not in output
+        assert "layers.1.engram.embed.weight_packed" not in output
+
+
 # ===========================================================================
 #  AutoScheme helpers
 # ===========================================================================
@@ -1299,7 +1458,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=[],
             format="auto_round",
@@ -1313,7 +1471,6 @@ class TestBuildMxfpAutoRoundConfig:
         cfg = _build_quantization_config(
             default_scheme=default,
             layer_config={},
-            ignore_patterns=[],
             quantized_layers=["layer.fc1"],
             ignored_layers=["lm_head"],
             format="llm_compressor",

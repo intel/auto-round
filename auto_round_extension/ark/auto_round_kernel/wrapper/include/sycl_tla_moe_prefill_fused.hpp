@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL MoE Prefill — SLM-Transposed Weight Dequantization Kernels (PR-B1)
 //
 // Path-A staged rewrite of the MoE prefill dequantization stage. The v1
