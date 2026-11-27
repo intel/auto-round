@@ -378,7 +378,20 @@ def silu(x):
     return x * tl.sigmoid(x)
 
 
+def _wrap_negative_g_idx(g_idx, scales):
+    """Map GPTQ's -1 group marker onto the last group.
+
+    ``g_idx`` may record the final group as ``-1`` instead of ``num_groups - 1``. The
+    dequant kernel wraps it before use; without the same wrap the fused kernel indexes
+    ``scales`` and ``qzeros`` at a negative offset and returns NaN.
+    """
+    if g_idx is None:
+        return g_idx
+    return torch.where(g_idx < 0, g_idx + scales.shape[0], g_idx)
+
+
 def quant_matmul_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    g_idx = _wrap_negative_g_idx(g_idx, scales)
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=input.dtype)
     grid = lambda META: (  # noqa: E731
         triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
@@ -475,6 +488,7 @@ class QuantLinearFunction(torch.autograd.Function):
 
 
 def quant_matmul_inference_only_248_core(input, qweight, scales, qzeros, g_idx, bits, maxq):
+    g_idx = _wrap_negative_g_idx(g_idx, scales)
     output = torch.empty((input.shape[0], qweight.shape[1]), device=input.device, dtype=torch.float16)
     grid = lambda META: (  # noqa: E731
         triton.cdiv(input.shape[0], META["BLOCK_SIZE_M"]) * triton.cdiv(qweight.shape[1], META["BLOCK_SIZE_N"]),
