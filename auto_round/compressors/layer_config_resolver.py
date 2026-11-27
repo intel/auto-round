@@ -147,7 +147,7 @@ def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> l
 
     tensor_names: list = []
     if os.path.exists(source_index_file):
-        with open(source_index_file) as f:
+        with open(source_index_file, encoding="utf-8") as f:
             src_index = json.load(f)
         tensor_names = list(src_index["weight_map"].keys())
     elif os.path.exists(source_single_file):

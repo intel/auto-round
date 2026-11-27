@@ -393,7 +393,7 @@ class NomicBertModel(BertModel):
             self.gguf_writer.add_expert_used_count(self.hparams["moe_top_k"])
 
     def _is_tokenizer_xlmroberta(self) -> bool:
-        with open(self.dir_model / "tokenizer.json") as f:
+        with open(self.dir_model / "tokenizer.json", encoding="utf-8") as f:
             tokenizer_json = json.load(f)
         toktyp = tokenizer_json["model"]["type"]
         if toktyp == "Unigram":

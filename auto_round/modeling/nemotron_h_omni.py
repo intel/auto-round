@@ -220,7 +220,7 @@ def _source_shard_map(source_dir: str) -> dict[str, str]:
 
     index_path = os.path.join(source_dir, "model.safetensors.index.json")
     if os.path.exists(index_path):
-        with open(index_path) as f:
+        with open(index_path, encoding="utf-8") as f:
             weight_map = json.load(f).get("weight_map", {})
         if weight_map:
             return {k: os.path.join(source_dir, shard) for k, shard in weight_map.items()}
