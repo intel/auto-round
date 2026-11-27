@@ -8,6 +8,7 @@ import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
     compress_layer_names,
     expand_layer_config_for_weight_renames,
+    get_checkpoint_conversion_mapping,
     get_reverse_checkpoint_conversion_mapping,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
@@ -165,6 +166,144 @@ def test_expand_layer_config_for_weight_renames_to_model_names(monkeypatch):
 
     assert expanded[checkpoint_name]["bits"] == 4
     assert expanded[model_name]["bits"] == 4
+
+
+def test_expand_layer_config_for_deepseek_v4_actual_forward_mapping():
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+
+    if not tf_mapping("deepseek_v4"):
+        pytest.skip("installed transformers has no DeepSeek V4 mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
+    config = {
+        "mlp.experts": {"scheme": "NVFP4"},
+        "layers.3.attn.wq_a.weight": {"bits": 8},
+        "layers.3.attn.compressor.wkv.weight": {"bits": 16},
+        "layers.3.ffn.experts.0.w1.weight": {"bits": 4},
+        "layers.3.ffn.experts.255.w2": {"bits": 8},
+        "layers.3.ffn.experts.4.w3.weight": {"bits": 16},
+    }
+    expanded = expand_layer_config_for_weight_renames(config, model=model, to_model_names=True)
+    assert expanded["mlp.experts"] == {"scheme": "NVFP4"}
+    assert expanded["layers.3.self_attn.q_a_proj.weight"] == {"bits": 8}
+    assert expanded["layers.3.self_attn.compressor.kv_proj.weight"] == {"bits": 16}
+    assert expanded["layers.3.mlp.experts.0.gate_proj.weight"] == {"bits": 4}
+    assert expanded["layers.3.mlp.experts.255.down_proj"] == {"bits": 8}
+    assert expanded["layers.3.mlp.experts.4.up_proj.weight"] == {"bits": 16}
+    assert "layers.3.mlp.experts.gate_up_proj" not in expanded
+    assert all(expanded[k] == v for k, v in config.items())
+
+
+@pytest.mark.parametrize(
+    "sources,targets", [([], ["target"]), (["source"], []), (["a", "b"], ["target"]), (["source"], ["a", "b"])]
+)
+def test_deepseek_v4_aliases_reject_non_scalar_renames(monkeypatch, sources, targets):
+    mapping = pytest.importorskip("transformers.conversion_mapping")
+    pytest.importorskip("transformers.core_model_loading")
+    from transformers.core_model_loading import WeightRenaming
+
+    from auto_round.modeling.deepseek_v4 import expand_layer_config
+
+    rule = object.__new__(WeightRenaming)
+    rule.source_patterns = sources
+    rule.target_patterns = targets
+    monkeypatch.setattr(mapping, "get_checkpoint_conversion_mapping", lambda _: [rule])
+    with pytest.raises(ValueError, match="scalar DeepSeek V4 rename rule"):
+        expand_layer_config({"source": {"bits": 4}})
+
+
+def test_rename_only_mapping_preserves_default_tensor_conversions():
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+    from transformers.core_model_loading import WeightConverter, WeightRenaming
+
+    rules = tf_mapping("deepseek_v4")
+    if not rules:
+        pytest.skip("installed transformers has no DeepSeek V4 mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type="deepseek_v4"))
+    full = get_checkpoint_conversion_mapping(model)
+    expected = {
+        source: rule.target_patterns
+        for rule in rules
+        if isinstance(rule, WeightRenaming)
+        for source in rule.source_patterns
+    }
+    converter_sources = {
+        source for rule in rules if isinstance(rule, WeightConverter) for source in rule.source_patterns
+    }
+    if not converter_sources:
+        pytest.skip("installed transformers has no DeepSeek V4 tensor converters")
+    assert converter_sources <= full.keys()
+    assert not (converter_sources & expected.keys())
+
+
+@pytest.mark.parametrize("model_type", ["gemma4_unified", "qwen3_5_text", "qwen3_omni_moe", "glm5_next"])
+def test_non_deepseek_aliases_keep_reverse_mapping_path(monkeypatch, model_type):
+    # Real loaded models may carry scoped/runtime conversion rules that are
+    # absent from the model-type registry. Do not replace this source of truth.
+    reverse = {
+        r"model.embed_vision.multimodal_embedder.embedding_projection": [r"model.embed_vision.embedding_projection"],
+    }
+    model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+    monkeypatch.setattr("auto_round.utils.common.get_reverse_checkpoint_conversion_mapping", lambda model: reverse)
+
+    def reject_forward(*args, **kwargs):
+        raise AssertionError("Non-DeepSeek models must retain their existing reverse-map path")
+
+    monkeypatch.setattr("auto_round.utils.common.get_checkpoint_conversion_mapping", reject_forward)
+    source = "model.embed_vision.embedding_projection"
+    target = "model.embed_vision.multimodal_embedder.embedding_projection"
+    expanded = expand_layer_config_for_weight_renames({source: {"bits": 4}}, model=model, to_model_names=True)
+    assert expanded[target] == {"bits": 4}
+
+
+@pytest.mark.parametrize("family", ["gemma4_unified", "qwen3_5_text", "qwen3_omni_moe"])
+def test_non_deepseek_actual_registry_aliases_match_legacy(family):
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as tf_mapping
+
+    from auto_round.utils.common import apply_checkpoint_conversion_mapping
+
+    if not tf_mapping(family):
+        pytest.skip(f"installed transformers has no {family} conversion mapping")
+    model = SimpleNamespace(config=SimpleNamespace(model_type=family))
+    legacy = {}
+    for source, targets in reversed(list(get_reverse_checkpoint_conversion_mapping(model).items())):
+        for target in [targets] if isinstance(targets, str) else targets:
+            legacy.setdefault(target, []).append(source)
+    names = [
+        "model.embed_vision.embedding_projection",
+        "model.vision_embedder.patch_dense",
+        "model.language_model.layers.0.self_attn.q_proj",
+        "model.layers.0.mlp.experts.0.gate_proj",
+    ]
+    for name in names:
+        expected = apply_checkpoint_conversion_mapping(name, legacy)
+        expanded = expand_layer_config_for_weight_renames({name: {"bits": 4}}, model=model, to_model_names=True)
+        assert expanded == {key: {"bits": 4} for key in (name, expected)}
+
+
+def test_gemma4_visual_aliases_match_real_meta_model_modules():
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Gemma4UnifiedForConditionalGeneration"):
+        pytest.skip("installed transformers has no Gemma4 Unified model")
+    from transformers.conversion_mapping import get_model_conversion_mapping
+
+    # vision_config=None builds a text-only model; explicitly enable vision.
+    config = transformers.Gemma4UnifiedConfig(vision_config={})
+    with torch.device("meta"):
+        model = transformers.Gemma4UnifiedForConditionalGeneration(config)
+    model._weight_conversions = get_model_conversion_mapping(model, add_legacy=False)
+    modules = dict(model.named_modules())
+    pairs = {
+        "model.embed_vision.embedding_projection": "model.embed_vision.multimodal_embedder.embedding_projection",
+        "model.vision_embedder.patch_dense": "model.embed_vision.patch_dense",
+        "model.vision_embedder.patch_ln1": "model.embed_vision.patch_ln1",
+    }
+    for source, target in pairs.items():
+        expanded = expand_layer_config_for_weight_renames({source: {"bits": 4}}, model=model, to_model_names=True)
+        assert target in modules
+        assert expanded[target] == {"bits": 4}
 
 
 def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):

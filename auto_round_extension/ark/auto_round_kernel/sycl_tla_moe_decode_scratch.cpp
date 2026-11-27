@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // Device scratch management for the int4 MoE decode fallbacks.
 //
 // The bookkeeping below is deliberately defined here rather than in a header so
@@ -64,6 +67,11 @@ void* acquire_slab(sycl::queue* q, size_t bytes, size_t buf_loc, bool* reallocat
   const size_t held = pool->get_scratch_size(buf_loc, q);
   const bool grows = held < bytes;
   if (held != 0 && grows) {
+    if (q->ext_oneapi_get_state() == sycl::ext::oneapi::experimental::queue_state::recording) {
+      throw std::runtime_error(
+          "moe_gemm_decode: cannot grow device scratch during XPU graph capture; "
+          "warm up the required shapes on the capture queue before capture");
+    }
     q->wait();
   }
   void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
