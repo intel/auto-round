@@ -225,7 +225,6 @@ class TestCalculateGparam:
         assert torch.isfinite(scale).all()
         assert torch.equal(quantized, torch.zeros_like(quantized))
 
-    @pytest.mark.enable_torch_compile
     def test_global_scale_supports_fullgraph_compile(self):
         compiled = torch.compile(calculate_gparam, backend="eager", fullgraph=True)
         for value in (0.0, 1e-40, 0.37):

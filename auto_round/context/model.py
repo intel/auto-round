@@ -373,6 +373,8 @@ class ModelContext(BaseContext):
         model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
         """
         if envs.AR_DISK_STREAM_MODEL:
+            if getattr(config, "model_type", None) == "tr_hash_moe":
+                raise ValueError("TR-HASH does not support forced disk streaming; unset AR_DISK_STREAM_MODEL.")
             return True
         if envs.AR_DISABLE_META_LOAD:
             return False

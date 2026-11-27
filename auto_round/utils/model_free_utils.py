@@ -206,7 +206,18 @@ def split_fused_expert_tensors(
         return dict(tensors_dict)
 
     result: dict[str, torch.Tensor] = {}
+    tr_hash = (model_type or "").lower() == "tr_hash_moe"
+    if tr_hash:
+        from auto_round.modeling.fused_moe.tr_hash_moe import TR_HASH_PROJECTIONS, tr_hash_linear_weight
+
     for tensor_name, tensor in tensors_dict.items():
+        if tr_hash and tensor.ndim == 3 and tensor.is_floating_point():
+            parent, _, name = tensor_name.rpartition(".")
+            projection = TR_HASH_PROJECTIONS.get(name)
+            if projection and parent.endswith("mlp.engine"):
+                for index in range(tensor.shape[0]):
+                    result[f"{parent}.experts.{index}.{projection}.weight"] = tr_hash_linear_weight(tensor, index)
+                continue
         if tensor.dim() not in (1, 2, 3):
             result[tensor_name] = tensor
             continue
