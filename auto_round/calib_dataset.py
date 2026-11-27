@@ -377,7 +377,7 @@ def get_pile_dataset(
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
+    dataset_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
@@ -498,7 +498,7 @@ def get_cci3_hq_dataset(
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
+    dataset_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
@@ -535,7 +535,7 @@ def get_github_code_clean_dataset(
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
+    dataset_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
@@ -1207,7 +1207,7 @@ def get_mbpp_dataset(
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
+    dataset_name: The name of the dataset.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
@@ -1324,7 +1324,7 @@ def get_local_dataset(
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name or path of the dataset, which is a json or jsonl file.
+    dataset_name: The name or path of the dataset, which is a json or jsonl file.
     split: The data split to be used (e.g., "train", "test").
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
