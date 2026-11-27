@@ -164,7 +164,7 @@ def _iter_extra_tensors(cls):
             dir_path = download_or_get_path(dir_path)
         INDEX_FILE = "model.safetensors.index.json"
         if INDEX_FILE in os.listdir(dir_path):
-            with open(os.path.join(dir_path, INDEX_FILE)) as f:
+            with open(os.path.join(dir_path, INDEX_FILE), encoding="utf-8") as f:
                 tensor_index = json.load(f)
             for tensor_name in tensor_index["weight_map"]:
                 if is_extra_tensor(tensor_name):

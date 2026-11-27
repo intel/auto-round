@@ -114,7 +114,7 @@ class MLXFormat(OutputFormat):
             model.config.save_pretrained(output_dir)
 
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
             # Build mixed-bit aware quantization dict (mlx-community format).
             quant_cfg = _build_mlx_quantization_config(model, default_bits=bits, default_group_size=group_size)
@@ -164,7 +164,7 @@ class MLXFormat(OutputFormat):
             # rename them on save (e.g. vision_config: qwen3_5 -> qwen3_5_vision).
             _preserve_original_model_types(config, orig_model_types)
 
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2)
 
         save_artifacts(output_dir, tokenizer, kwargs.get("processor"), kwargs.get("image_processor"))

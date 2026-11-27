@@ -274,7 +274,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
             logger.warning(f"[Hadamard] config.json not found at {save_dir}, cannot save rotation_config")
             return
 
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             model_config = json.load(f)
 
         if "quantization_config" in model_config:
@@ -282,7 +282,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         else:
             model_config[self.config_key()] = cfg_dict
 
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:
             json.dump(model_config, f, indent=2)
 
         logger.info(f"[Hadamard] Saved rotation_config to {config_path}")

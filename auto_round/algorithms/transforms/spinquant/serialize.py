@@ -149,7 +149,7 @@ def save_spinquant_config(
         logger.warning(f"[SpinQuant Serialize] config.json not found at {save_dir}, " f"cannot save spinquant_config")
         return
 
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         model_config = json.load(f)
 
     # Build serializable spinquant config
@@ -165,7 +165,7 @@ def save_spinquant_config(
     else:
         model_config["spinquant_config"] = spinquant_dict
 
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(model_config, f, indent=2)
 
     logger.info(f"[SpinQuant Serialize] Saved spinquant_config to {config_path}")

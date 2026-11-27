@@ -184,7 +184,7 @@ def load_cosmos3_diffusion(pretrained_model_name_or_path, device_str):
 
     # Read transformer config for model dimensions / metadata only.
     config_path = os.path.join(pretrained_model_name_or_path, "transformer", "config.json")
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
     import torch.nn as nn

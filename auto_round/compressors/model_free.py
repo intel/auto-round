@@ -1130,7 +1130,7 @@ class _ModelFreeCompressorCore:
         self._resume_parameters = self._build_resume_parameters()
         manifest = None
         try:
-            with open(self._resume_manifest_path) as f:
+            with open(self._resume_manifest_path, encoding="utf-8") as f:
                 manifest = json.load(f)
         except FileNotFoundError:
             pass
@@ -1590,15 +1590,25 @@ class _ModelFreeCompressorCore:
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
         if self.format == "fake" and quantization_config.get("packing_format") != "auto_round:fake":
-            with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
+            with open(
+                os.path.join(self._quant_output_dir, "config.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
                 json.dump(self.config, f, indent=2)
             return
 
         self.config["quantization_config"] = quantization_config
-        with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
+        with open(
+            os.path.join(self._quant_output_dir, "config.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(self.config, f, indent=2)
 
-        with open(os.path.join(self._quant_output_dir, "quantization_config.json"), "w") as f:
+        with open(
+            os.path.join(self._quant_output_dir, "quantization_config.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
             json.dump(quantization_config, f, indent=2)
 
     def _quantize_additional_transformers(self) -> None:

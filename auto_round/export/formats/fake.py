@@ -76,13 +76,13 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
     index_path = os.path.join(output_dir, "model.safetensors.index.json")
     if rewrote_safetensors and os.path.exists(index_path):
         try:
-            with open(index_path) as index_file:
+            with open(index_path, encoding="utf-8") as index_file:
                 index = json.load(index_file)
             weight_map = index.get("weight_map", {})
             normalized_weight_map, changed = _normalize_state_dict_keys(weight_map)
             if changed:
                 index["weight_map"] = normalized_weight_map
-                with open(index_path, "w") as index_file:
+                with open(index_path, "w", encoding="utf-8") as index_file:
                     json.dump(index, index_file, indent=2)
         except Exception as exc:
             logger.warning("Failed to normalize safetensors index keys for %s: %s", index_path, exc)
