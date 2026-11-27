@@ -253,15 +253,20 @@ def _rrq_cache_release(num_bytes: int) -> None:
     _RRQ_CACHE_USED_BYTES = max(0, _RRQ_CACHE_USED_BYTES - num_bytes)
 
 
+_RRQ_TRITON_DEVICE_TYPES = ("cuda", "xpu")
+
+
 def _rrq_triton_available(device: torch.device) -> bool:
     """Whether the fused W2A16 Triton kernel can be used on ``device``.
 
     The fused kernel is what makes low-bit decode fast: it reads the packed INT2
     weights directly, so it moves 8x fewer bytes than dequantizing to bf16 first.
-    It is CUDA-only and optional (Triton ships with PyTorch on Linux, but not on
-    every platform), so every call site must degrade to the dequant path.
+    It runs on every accelerator with a Triton backend (CUDA and Intel XPU;
+    Triton ships with the Intel XPU PyTorch build).  It is still optional
+    (Triton is not available on every platform), so every call site must
+    degrade to the dequant path.
     """
-    if device.type != "cuda":
+    if device.type not in _RRQ_TRITON_DEVICE_TYPES:
         return False
     try:
         import triton  # noqa: F401  pylint: disable=unused-import
@@ -396,7 +401,7 @@ class RRQLinear(nn.Module):
                 and x.shape[-2] == 1
                 and x.shape[0] <= _RRQ_FUSED_MAX_BATCH
                 and x.dtype in (torch.bfloat16, torch.float16)
-                and self.base.qweight.device.type == "cuda"
+                and self.base.qweight.device.type in _RRQ_TRITON_DEVICE_TYPES
             ):
                 out = self._fused_decode_forward(x, planes)
                 if out is not None:

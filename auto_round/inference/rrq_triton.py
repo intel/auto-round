@@ -44,9 +44,22 @@ except ImportError:  # pragma: no cover - platform dependent
     _HAS_TRITON = False
 
 
+def _triton_backend_available() -> bool:
+    """True when a Triton-capable accelerator (CUDA or XPU) is present."""
+    if torch.cuda.is_available():
+        return True
+    xpu = getattr(torch, "xpu", None)
+    return xpu is not None and xpu.is_available()
+
+
 def triton_gemv_available() -> bool:
-    """Whether the fused RRQ decode kernel can run on this machine."""
-    return _HAS_TRITON and torch.cuda.is_available()
+    """Whether the fused RRQ decode kernel can run on this machine.
+
+    CUDA (NVIDIA) and XPU (Intel) are both supported: the same Triton kernels
+    compile and run on both backends (Triton ships with the Intel XPU PyTorch
+    build).  Call sites still fall back per layer when a kernel cannot run.
+    """
+    return _HAS_TRITON and _triton_backend_available()
 
 
 if _HAS_TRITON:
