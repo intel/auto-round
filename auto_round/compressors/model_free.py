@@ -1599,9 +1599,7 @@ class _ModelFreeCompressorCore:
             return
 
         self.config["quantization_config"] = quantization_config
-        with open(
-            os.path.join(self._quant_output_dir, "config.json"), "w", encoding="utf-8"
-        ) as f:
+        with open(os.path.join(self._quant_output_dir, "config.json"), "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=2)
 
         with open(
