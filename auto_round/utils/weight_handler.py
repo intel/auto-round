@@ -713,10 +713,10 @@ class MXFP4Handler(WeightTypeHandler):
         if weight_packed is None:
             weight_packed = getattr(layer, "weight", None)
         weight_scale = getattr(layer, "weight_scale", None)
-        weight_scale = weight_scale.to(torch.uint8)
 
         if weight_packed is None or weight_scale is None:
             raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
+        weight_scale = weight_scale.to(torch.uint8)
 
         # Dequantize using to_dtype function
         dq_weight = dequant_mxfp4(
@@ -798,10 +798,10 @@ class MXFP8Handler(WeightTypeHandler):
         # Get weight and scale from layer
         weight = layer.weight
         weight_scale = getattr(layer, "weight_scale", None)
-        weight_scale = weight_scale.to(torch.uint8)
 
         if weight is None or weight_scale is None:
             raise ValueError("MXFP8 layer must have weight and weight_scale attributes")
+        weight_scale = weight_scale.to(torch.uint8)
 
         # Dequantize using dequant_mx_fp8 function
         dq_weight = dequant_mx_fp8(
