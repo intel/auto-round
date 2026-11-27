@@ -785,6 +785,7 @@ class TestAWQMoE:
             n_grid=1,
             nsamples=2,
             seqlen=8,
+            dataset=torch.utils.data.DataLoader(torch.ones((2, 8), dtype=torch.long), batch_size=1),
             batch_size=2,
             device_map=device,
         )
@@ -827,6 +828,7 @@ class TestAWQMoE:
             n_grid=1,
             nsamples=2,
             seqlen=32,
+            dataset=torch.utils.data.DataLoader(torch.ones((2, 32), dtype=torch.long), batch_size=1),
             batch_size=2,
             device_map=device,
         )

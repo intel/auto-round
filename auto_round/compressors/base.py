@@ -510,18 +510,24 @@ class BaseOrchestrator:
 
         self.need_calib = self._check_need_calib()
         calibrator_kind = self._get_calibrator_kind()
-        # The default pile dataset is model-adaptive for pure-text LLMs. Any
-        # non-default dataset remains untouched.
-        if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
-            from auto_round.calib_dataset import get_code_calibration_dataset
+        text_only_calibration = calibrator_kind == "llm" or (calibrator_kind == "mllm" and not quant_nontext_module)
+        if self.need_calib and not dataset_was_explicitly_set and text_only_calibration:
+            from auto_round.calib_dataset import get_code_calibration_dataset, get_default_calibration_dataset
             from auto_round.utils.model import is_code_model
 
             detection_config = model_config or getattr(self.model_context.model, "config", None)
-            if is_code_model(model, detection_config):
+            if calibrator_kind == "llm" and is_code_model(model, detection_config):
                 self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
                 logger.info("Automatically selected code calibration dataset: %s", self.dataset)
             else:
-                logger.info("Using default calibration dataset %s.", self.dataset)
+                _, _, calibration_scheme = parse_scheme(
+                    self.scheme,
+                    self._user_scheme_overrides,
+                    format=_formats_policy_string_of(getattr(self, "formats", None)),
+                )
+                if calibration_scheme["bits"] >= 4:
+                    self.dataset = get_default_calibration_dataset(self.tokenizer)
+                    logger.info("Using default calibration dataset %s.", self.dataset)
             self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:

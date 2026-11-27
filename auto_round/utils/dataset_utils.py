@@ -73,6 +73,8 @@ class CalibDataset:
         system_prompt: Optional system prompt for chat template.
         timeout: Seconds to wait for data collection before falling back to
             whatever has been collected so far (default: 300).
+        ratio: Fraction of the total sample budget. Set for every dataset,
+            summing to one, and do not combine with num.
 
     Example::
 
@@ -91,6 +93,7 @@ class CalibDataset:
     apply_chat_template: bool = False
     system_prompt: str | None = None
     timeout: int = 300
+    ratio: float | None = None
 
     def to_spec_string(self) -> str:
         """Convert to a spec string (the format used in CLI / ``dataset`` param).
@@ -108,6 +111,9 @@ class CalibDataset:
 
         if self.num is not None:
             parts.append(f"num={self.num}")
+
+        if self.ratio is not None:
+            parts.append(f"ratio={self.ratio}")
 
         if self.concat:
             parts.append("concat=true")
@@ -704,6 +710,7 @@ def strip_dataset_spec_whitespace(spec: str) -> str:
 _SPEC_KEYS = {
     "split",
     "num",
+    "ratio",
     "concat",
     "apply_chat_template",
     "system_prompt",
@@ -725,6 +732,7 @@ def build_dataset_spec(
     apply_chat_template: bool = False,
     system_prompt: str | None = None,
     timeout: int = 300,
+    ratio: float | None = None,
 ) -> str:
     """Build a dataset spec string from individual parameters.
 
@@ -746,6 +754,7 @@ def build_dataset_spec(
         apply_chat_template: Whether to apply the tokenizer's chat template.
         system_prompt: Optional system prompt for chat template.
         timeout: Timeout in seconds for streaming data collection (default: 300).
+        ratio: Fraction of the total sample budget, instead of an absolute num.
 
     Returns:
         A spec string like ``"dataset:split=train:num=100:fields=q+a"``.
@@ -771,6 +780,9 @@ def build_dataset_spec(
 
     if num is not None:
         parts.append(f"num={num}")
+
+    if ratio is not None:
+        parts.append(f"ratio={ratio}")
 
     if concat:
         parts.append("concat=true")
@@ -806,7 +818,7 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
 
         dataset_name[:key=value[:key=value[...]]]
 
-    Recognised keys: ``split``, ``num``, ``concat``, ``apply_chat_template``,
+    Recognised keys: ``split``, ``num``, ``ratio``, ``concat``, ``apply_chat_template``,
     ``system_prompt``, ``fields``, ``template``, ``separator``, ``timeout``.
 
     Multi-value keys (``split``, ``fields``) use ``+`` as the intra-value
@@ -880,6 +892,8 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
             result["split"] = value.split("+") if value else None
         elif key == "num":
             result["num"] = int(value)
+        elif key == "ratio":
+            result["ratio"] = float(value)
         elif key == "concat":
             result["concat"] = value.lower() != "false"
         elif key == "apply_chat_template":
