@@ -1159,7 +1159,7 @@ def get_new_chinese_title_dataset(
         apply_chat_template: Whether to apply chat template in tokenization.
 
         Returns: A default tokenizer function that applies the provided tokenizer with truncation and a maximum length
-        of seqlen to the "text" field of examples.
+        of seqlen to the "content" field of examples.
         """
 
         def default_tokenizer_function(examples):
