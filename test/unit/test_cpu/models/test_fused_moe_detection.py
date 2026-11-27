@@ -114,6 +114,7 @@ def test_families_with_a_dedicated_replacement_are_left_alone():
         "llama4",
         "deepseek_v2",
         "step3p5",
+        "tr_hash_moe",
         "kimi_vl",
         "kimi_linear",
         "kimi_k3",
@@ -125,6 +126,13 @@ def test_families_with_a_dedicated_replacement_are_left_alone():
         # These two only get a dedicated replacement on the pre-5.0 linear_loop path.
         expected |= {"qwen3_vl_moe", "gpt_oss"}
     assert set(BUILTIN_MODULES) == expected
+
+
+def test_tr_hash_rejects_forced_disk_streaming(tmp_path, monkeypatch):
+    context = _model_context_for_detection(tmp_path)
+    monkeypatch.setattr(envs, "AR_DISK_STREAM_MODEL", True)
+    with pytest.raises(ValueError, match="TR-HASH.*unset AR_DISK_STREAM_MODEL"):
+        context._should_use_meta_skeleton(_FakeConfig("tr_hash_moe"))
 
 
 def test_native_fused_checkpoint_enables_meta_skeleton_without_merge_converter(tmp_path, monkeypatch):

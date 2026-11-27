@@ -336,6 +336,8 @@ def test_tracker_release_original_drops_entry():
     tracker.release_original(rep)
     # ``release_original`` deletes the original and the entry.
     assert tracker.get_original(rep) is None
+    assert tracker.get_info_by_name(str(id(rep))) is None
+    assert tracker.get_info_by_name("test_name") is None
 
 
 def test_tracker_get_original_unknown_returns_none():

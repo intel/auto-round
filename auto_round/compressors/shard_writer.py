@@ -471,8 +471,11 @@ class ShardWriter:
                 continue
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
-                lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
-                continue
+                # Some models use the embedding itself as their output head.
+                # Only a separate head is redundant when weights are tied.
+                if not isinstance(lm_head_module, torch.nn.Embedding):
+                    lm_head_module.to("meta")  # Avoid saving the separate tied head twice.
+                    continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
 
         if stale_unpacked_tensors:
