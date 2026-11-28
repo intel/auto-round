@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, K_SCALE_SIZE, QK_K
+from auto_round.logger import logger
 from auto_round.utils import clear_memory, get_reciprocal
 
 GGML_QUANT_TYPE = {}
@@ -82,7 +83,7 @@ def ggml_quant(
     original=False,
 ):
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
-    data = data.to(torch.float32).to(device)
+    data = data.to(torch.float32)
     shape = data.shape
     n_blocks = data.nelement() // block_size
     # Only chunk genuinely oversized tensors (e.g. an unusually large vocab embedding, multiple
@@ -93,16 +94,45 @@ def ggml_quant(
     split_num = 16 if data.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD else 1
     blocks = data.reshape((n_blocks, block_size))
 
+    # A single oversized tensor (e.g. a >4 GiB vocab embedding in fp32) may not fit on the
+    # packing device even when the device has that much free memory, because the allocator
+    # needs it in one piece. Only move what is about to be quantized, and keep the source
+    # (CPU) copy if the move fails, so the chunk loop below still runs instead of dying
+    # before it starts -- which is what #2686 hit on XPU.
+    def _to_packing_device(t):
+        if t is None or not isinstance(t, torch.Tensor):
+            return t
+        try:
+            target = torch.device(device)
+        except (TypeError, RuntimeError):
+            target = None
+        # A tensor already on the packing device needs no second move; the index is
+        # ignored because `device="cuda"` and a tensor on `cuda:0` are the same place.
+        if target is not None and t.device.type == target.type and (
+            target.index is None or t.device.index == target.index
+        ):
+            return t
+        try:
+            return t.to(device)
+        except torch.OutOfMemoryError:
+            logger.warning(
+                "Not enough memory to move a %s tensor to %s for packing; keeping it on %s.",
+                "GB-scale" if t.nelement() * t.element_size() > _LARGE_TENSOR_BYTES_THRESHOLD else "small",
+                device,
+                t.device,
+            )
+            return t
+
     def _safe_reshape(t):
         if t is None or not isinstance(t, torch.Tensor):
             return t
         # Q4_0 / Q5_0 etc. compute their own scales; metadata from a different
         # group size (e.g. 256 vs block_size 32) cannot be reshaped and is unused.
         if t.dim() == 1:  # imatrix / per-channel importance vector; keep as-is
-            return t.to(device)
+            return _to_packing_device(t)
         if t.nelement() % blocks.shape[0] != 0:
             return None
-        return t.to(device).reshape(blocks.shape[0], -1)
+        return _to_packing_device(t).reshape(blocks.shape[0], -1)
 
     scale = _safe_reshape(scale)
     zp = _safe_reshape(zp)
@@ -116,7 +146,7 @@ def ggml_quant(
         for i in range(split_num):
             start = chunk_size * i
             end = chunk_size * (i + 1)
-            tmp_blocks = blocks[start:end]
+            tmp_blocks = _to_packing_device(blocks[start:end])
             tmp_scale = scale[start:end] if scale is not None else scale
             tmp_zp = zp[start:end] if zp is not None and isinstance(zp, torch.Tensor) else zp
             tmp_wmin = wmin[start:end] if wmin is not None else wmin
@@ -129,7 +159,18 @@ def ggml_quant(
             if split_num > 1:
                 clear_memory(device_list=device)
     else:
-        new_data = ggml_quant_core(quant_func, blocks, scale, zp, wmin, d_scale, d_wmin, imatrix, original)
+        moved_blocks = _to_packing_device(blocks)
+        new_data = ggml_quant_core(
+            quant_func,
+            moved_blocks,
+            scale,
+            zp,
+            wmin,
+            d_scale,
+            d_wmin,
+            imatrix,
+            original,
+        )
         results.append(new_data)
 
     if len(results) == 1:
