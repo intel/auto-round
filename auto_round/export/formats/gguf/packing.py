@@ -108,8 +108,10 @@ def ggml_quant(
             target = None
         # A tensor already on the packing device needs no second move; the index is
         # ignored because `device="cuda"` and a tensor on `cuda:0` are the same place.
-        if target is not None and t.device.type == target.type and (
-            target.index is None or t.device.index == target.index
+        if (
+            target is not None
+            and t.device.type == target.type
+            and (target.index is None or t.device.index == target.index)
         ):
             return t
         try:
