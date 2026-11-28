@@ -123,6 +123,9 @@ class XeSparseSageFwdKernel {
     StrideK dK_cache{};
     const ElementV* V_cache;
     StrideV dV_cache{};
+    const int* execution_schedule = nullptr;
+    const int* execution_schedule_rounds = nullptr;
+    int execution_schedule_max_rounds = 0;
   };
   using KernelParams = KernelArguments;
 
@@ -298,6 +301,18 @@ class XeSparseSageFwdKernel {
                                (((idx_b * s.num_heads_q + head_q) * params.mainloop.num_q_blocks + sparse_q_block) *
                                 params.mainloop.num_k_blocks)
                          : nullptr;
+      int const* execution_schedule_rows = nullptr;
+      int execution_schedule_rounds = 0;
+      if (params.kernel.execution_schedule != nullptr && params.kernel.execution_schedule_rounds != nullptr &&
+          params.kernel.execution_schedule_max_rounds > 0 && sparse_q_block_size > 0 && sparse_q_rows_in_tile > 1) {
+        int q_blocks_per_tile = cute::max(1, int(get<0>(TileShapeQK{})) / sparse_q_block_size);
+        int q_groups = cute::ceil_div(params.mainloop.num_q_blocks, q_blocks_per_tile);
+        int schedule_group = (idx_b * s.num_heads_q + head_q) * q_groups + blk_q;
+        execution_schedule_rounds = params.kernel.execution_schedule_rounds[schedule_group];
+        execution_schedule_rows =
+            params.kernel.execution_schedule +
+            size_t(schedule_group) * q_blocks_per_tile * params.kernel.execution_schedule_max_rounds;
+      }
       auto ptrO = p.O + offset_o;
 
       auto stride_q = is_var_len ? cutlass::make_cute_packed_stride(StrideQ{}, shape_Q) : p.dQ;
@@ -330,11 +345,18 @@ class XeSparseSageFwdKernel {
       // sparse_q_rows_in_tile is the key extra argument versus dense mainloop:
       // it tells the sparse kernel whether this workgroup should walk a single
       // LUT row linearly or merge multiple LUT rows inside one Q tile.
-      mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
-               0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,
-               K_cache(_, _, head, l_coord),
-               V_cache(_, _, head, l_coord));
+      if constexpr (cute::is_same_v<ElementQ, cute::int8_t>) {
+        mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum,
+                 blk_qv, 0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
+                 full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,
+                 K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+      } else {
+        mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum,
+                 blk_qv, 0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
+                 full_tile_offset, discard_seq_coord, lut_rows_base, valid_blocks_base, sparse_q_rows_in_tile,
+                 execution_schedule_rows, execution_schedule_rounds, params.kernel.execution_schedule_max_rounds,
+                 K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+      }
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());

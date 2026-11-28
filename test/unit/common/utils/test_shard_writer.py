@@ -118,6 +118,22 @@ def test_finalize_skips_lm_head_when_tie_word_embeddings_true(tmp_path, monkeypa
     assert model.lm_head.weight.device.type == "meta"
 
 
+def test_finalize_keeps_embedding_used_as_both_input_and_output(tmp_path, monkeypatch):
+    model = _LMStyleModel()
+    del model.lm_head
+    model.embed_tokens = torch.nn.Embedding(8, 4)
+    model.get_input_embeddings = model.get_output_embeddings = lambda: model.embed_tokens
+    expected = model.embed_tokens.weight.detach().clone()
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
+    assert writer.lm_head_name == "embed_tokens"
+
+    writer.save_module(model.transformer_blocks[0], "transformer_blocks.0")
+    writer.finalize()
+
+    saved = torch.load(tmp_path / "model.bin", map_location="cpu")
+    torch.testing.assert_close(saved["embed_tokens.weight"], expected)
+
+
 def test_expand_fused_experts_for_skipped_talker_prefix(tmp_path, monkeypatch):
     """Talker fused 3D weights must be expanded to exact per-expert 2D keys.
 

@@ -330,8 +330,9 @@ class TestPatchWrapperWALayerIdempotency:
         # And it's different from the original
         assert WrapperWALayer.forward is not original_forward
 
-    def test_inp_transform_applied_in_forward(self):
+    def test_inp_transform_applied_in_forward(self, monkeypatch):
         """Verify the per-layer protocol is applied inside ``forward``."""
+        monkeypatch.setattr("auto_round.wrapper.compile_func", lambda func, device: func)
         orig_layer = _FakeOrigLayer()
         set_teq_equivalent_transforms(
             orig_layer,
@@ -350,8 +351,9 @@ class TestPatchWrapperWALayerIdempotency:
         called_args = wrapper.orig_layer.act_quant_func.call_args[0]
         assert torch.equal(called_args[0], x * 4.0)
 
-    def test_act_max_passed_when_present(self):
+    def test_act_max_passed_when_present(self, monkeypatch):
         """If ``orig_layer.act_max`` exists, it should be forwarded to act_quant_func."""
+        monkeypatch.setattr("auto_round.wrapper.compile_func", lambda func, device: func)
         from auto_round.algorithms.transforms.hadamard.patch import (
             patch_wrapperwalayer_forward_to_apply_transform,
         )

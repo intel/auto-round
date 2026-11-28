@@ -104,8 +104,10 @@ def attn_forward(
 
     past_key_values = None
 
-    # transformers <= 4.55.4 is past_key_value
-    if "past_key_values" in kwargs:
+    # transformers <= 4.55.4 is past_key_value; >= 5.24 is cache
+    if kwargs.get("cache") is not None:
+        past_key_values = kwargs["cache"]
+    elif "past_key_values" in kwargs:
         past_key_values = kwargs["past_key_values"]
     elif "past_key_value" in kwargs:
         past_key_values = kwargs["past_key_value"]
