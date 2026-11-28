@@ -4,6 +4,29 @@ project(bestla LANGUAGES CXX VERSION 0.1.0)
 if(BTLA_SYCL)
   include(cmake/sycl.cmake)
 endif()
+
+# The published XPU wheel must not inherit the build host ISA: with -march=native
+# on an AVX-512 builder, auto_round_kernel_xpu carried EVEX instructions and died
+# with SIGILL on CPUs without AVX-512 (issue #2659).
+option(BTLA_NATIVE_ARCH "Use the host ISA (-march=native); local builds only, not portable" OFF)
+
+# ISAs the portable wheel must not emit, applied when the BTLA_*_FOUND definitions
+# are generated below. FindSIMD's cached *_FOUND values are deliberately left
+# alone: forcing them in the cache would make a later `-DBTLA_NATIVE_ARCH=ON`
+# reconfigure of the same build directory silently keep them off, because
+# check_isa() skips any type whose cache entry already exists.
+#
+# Every entry is an ISA the fixed baseline below does not enable on the compile
+# line, so leaving its guard on would ask for intrinsics that line cannot
+# satisfy. `AVX_VNNI` is the non-obvious one: `-mavx2 -mfma -mf16c` does not
+# imply `-mavxvnni`, and kernel_avx_vnni.h's only other guard is a
+# compiler-specific pragma/attribute pair.
+set(BESTLA_PORTABLE_ISA_EXCLUSIONS "")
+if(BTLA_SYCL AND NOT BTLA_NATIVE_ARCH)
+  set(BESTLA_PORTABLE_ISA_EXCLUSIONS
+      AVX512 AVX512_VNNI AVX_VNNI AVX512_BF16 AVX512_FP16 AMX_BF16 AMX_INT8 AMX_FP16)
+endif()
+
 include(cmake/FindSIMD.cmake)
 
 file(GLOB headers ${PROJECT_NAME}/*.h ${PROJECT_NAME}/*.hpp)
@@ -44,11 +67,14 @@ target_include_directories(
 )
 
 function(add_isa_def ARG)
-	if(${${ARG}_FOUND})
+  if(ARG IN_LIST BESTLA_PORTABLE_ISA_EXCLUSIONS)
+    # Excluded for the portable XPU wheel even when the build host has the ISA.
+    target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=0)
+  elseif(${${ARG}_FOUND})
     target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=1)
   else()
     target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=0)
-	endif()
+  endif()
 endfunction()
 
 foreach (ISA ${ISA_SET})
@@ -62,7 +88,18 @@ if(BTLA_SYCL)
   file(GLOB sycl_headers ${PROJECT_NAME}/sycl/*.h ${PROJECT_NAME}/sycl/*.hpp)
   target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_SYCL)
   list(APPEND sycl_libs IntelSYCL::SYCL_CXX)
-  target_compile_options(${PROJECT_NAME} INTERFACE -march=native)
+  # A wheel must not inherit the build host ISA. On an AVX-512 host -march=native
+  # puts EVEX instructions into auto_round_kernel_xpu, and the published wheel then
+  # dies with SIGILL on CPUs without AVX-512 (issue #2659). Keep a fixed baseline
+  # for anything that can be shipped; make the native build an explicit opt-in.
+  if(BTLA_NATIVE_ARCH)
+    target_compile_options(${PROJECT_NAME} INTERFACE -march=native)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    # x86-64-v3 baseline: AVX2 stays available (the CompileAVX2() kernels need it),
+    # AVX-512 does not. -march=x86-64-v2 was rejected because it compiles the AVX2
+    # paths out as well.
+    target_compile_options(${PROJECT_NAME} INTERFACE -mavx2 -mfma -mf16c -mtune=generic)
+  endif()
   target_link_libraries(${PROJECT_NAME} INTERFACE ${sycl_libs})
   # add_link_options(-fsycl-targets=spir64 -Xsycl-target-backend "-options -ze-opt-large-register-file")
 endif(BTLA_SYCL)
