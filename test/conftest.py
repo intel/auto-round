@@ -35,6 +35,33 @@ except ImportError:
     pass
 
 
+def _register_fuzz_profiles():
+    """Register Hypothesis profiles used by the ``*_fuzz`` test folders.
+
+    ``ci`` (default) is small and derandomized so PR CI stays fast and reproducible;
+    ``deep`` explores randomly with many more examples for local/nightly bug hunting.
+    Select with ``AR_FUZZ_PROFILE=ci|deep`` (or ``--hypothesis-profile``) and override
+    the example budget with ``AR_FUZZ_MAX_EXAMPLES``.
+    """
+    try:
+        from hypothesis import HealthCheck, settings
+    except ImportError:
+        return
+
+    max_examples = os.environ.get("AR_FUZZ_MAX_EXAMPLES")
+    common = dict(
+        deadline=None,
+        print_blob=True,
+        suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+    )
+    settings.register_profile("ci", max_examples=int(max_examples or 25), derandomize=True, database=None, **common)
+    settings.register_profile("deep", max_examples=int(max_examples or 500), **common)
+    settings.load_profile(os.environ.get("AR_FUZZ_PROFILE", "ci"))
+
+
+_register_fuzz_profiles()
+
+
 ### HPU related configuration, usage: `pytest --mode=compile/lazy``
 def pytest_addoption(parser):
     parser.addoption(

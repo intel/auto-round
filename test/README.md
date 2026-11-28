@@ -21,6 +21,8 @@ Tests are split into three **tiers**, then by hardware backend
   `nightly-test-cpu.yml`, XPU via `nightly-test-xpu.yml`, CUDA via `nightly-test-cuda.yml`.
 - **`e2e/`** — full-model / real inference-engine tests. Run **manually**
 
+Hardware-agnostic unit tests live in `unit/common/` and are run by the CPU, CUDA and XPU unit pipelines.
+
 Within `unit/test_cpu/` and `unit/test_cuda/`, tests are grouped by functionality:
 
 - **core/** - Core AutoRound API and quantization workflows
@@ -158,6 +160,40 @@ def test_long_running_case(): ...
 @pytest.mark.skip_ci(reason="Time-consuming accuracy evaluation; covered by nightly tests")
 def test_optional_accuracy_evaluation(): ...
 ```
+
+### Fuzz (Property-Based) Tests
+
+Fuzz tests use [Hypothesis](https://hypothesis.readthedocs.io/) and live in folders named `<area>_fuzz/`:
+
+- **Tensor / numeric fuzz** (quantizers, packing, GGUF) → `unit/common/<area>_fuzz/`. They run on the
+  accelerator of the CI machine executing them (CUDA or XPU, else CPU). Override with `AR_FUZZ_DEVICE=cpu`.
+- **Pure-Python / CPU-only fuzz** (parsers, path safety) → `unit/test_cpu/<area>_fuzz/`.
+- Shared strategies and oracles (tensor recipes, value patterns, grid/monotonicity checks) are in
+  `test/fuzz_helpers.py`; import them with `from test.fuzz_helpers import ...`.
+- Assert **properties** against an independent oracle (round-trips, reference implementations,
+  invariants), not hard-coded outputs. Use `hypothesis.note(...)` to log context for failures.
+
+Two Hypothesis profiles are registered in `conftest.py`:
+
+| Profile | Selection | Behaviour |
+|---------|-----------|-----------|
+| `ci` (default) | `AR_FUZZ_PROFILE=ci` | 25 examples, derandomized, no example database: fast and reproducible in PR CI |
+| `deep` | `AR_FUZZ_PROFILE=deep` | 500 random examples per test, for local or nightly bug hunting; failing examples are saved in `.hypothesis/` (git-ignored) and replayed first on the next run |
+
+`AR_FUZZ_MAX_EXAMPLES=<n>` overrides the example budget of either profile. Expensive properties can
+scale it per test with `@scaled_settings(factor)`; security-relevant shapes that must never be missed
+should also be pinned with `@example(...)`.
+
+```sh
+pytest unit/common/quant_fuzz/                              # ci profile
+AR_FUZZ_PROFILE=deep pytest unit/test_cpu/parsing_fuzz/     # deep exploration
+pytest unit/common/packing_fuzz/ --runxfail                 # confirm known bugs still reproduce
+```
+
+Real bugs found by fuzzing are recorded as `@pytest.mark.xfail(strict=True, reason="fuzz-found: ...")`
+with a minimal, targeted strategy, so CI stays green while the bug is open and turns red (XPASS) once it is
+fixed. When fixing such a bug, remove the `xfail` marker in the same PR. A failing example can be replayed
+with the `@reproduce_failure(...)` decorator that Hypothesis prints.
 
 ## 5. Running Tests
 
