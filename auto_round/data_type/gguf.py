@@ -623,9 +623,20 @@ def quant_tensor_gguf_asym_dq(
 
     Args:
         tensor (torch.Tensor): Input tensor to quantize.
-        bits (int): Number of bits for quantization.
+        bits (int): Number of bits for quantization. Only 2, 4 and 5 are accepted, for
+            `q2_k`, `q4_k` and `q5_k`; anything else raises `ValueError`.
+        v: Rounding value perturbation.
         scale_dtype (torch.dtype): Data type for quantized scale.
         imatrix (torch.Tensor, optional): Importance matrix for weighted quantization.
+        scale: Scale from a previous call, reused when `prev_scale` is set. Defaults to None.
+        wmin: Per-group minimum carried with `scale`. Defaults to None.
+        d_scale: Double-quantization scale paired with `scale`. Defaults to None.
+        d_wmin: Double-quantization minimum paired with `wmin`. Defaults to None.
+        prev_scale: Scale carried over from an earlier iteration, reused while `iter % 10 != 0`.
+        prev_wmin: Minimum carried over with `prev_scale`.
+        prev_d_scale: Double-quantization scale paired with `prev_scale`.
+        prev_d_wmin: Double-quantization minimum paired with `prev_wmin`.
+        iter: Iteration counter driving the scale-reuse heuristic. Defaults to None, read as 0.
 
     Returns:
         Tuple: (Quantized-dequantized tensor, scale dictionary, zero-point dictionary)
@@ -920,7 +931,8 @@ def quant_tensor_gguf_sym_dq(
 
     Args:
         tensor: Tensor containing the tensor to be quantized
-        bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
+        bits: Number of bits for quantization. Only 3 and 6 are accepted, for `q3_k` and
+            `q6_k`; anything else raises `KeyError`.
         v: Rounding value perturbation
         imatrix: Importance matrix used to weight the scale search. Defaults to None.
         scale: Scale from a previous call, reused when `prev_scale` is set. Defaults to None.
