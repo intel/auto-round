@@ -1,0 +1,760 @@
+# RRQ Accuracy and Cost on Qwen3.8-27B (Experimental)
+
+> **Note**: RRQ is an experimental feature. APIs, formats, and behaviours may
+> change in future releases.
+
+Recurrent Residual Quantization (RRQ) packs a weight into K sequential INT2
+planes — 1 base plane plus K-1 residual planes. A single checkpoint therefore
+serves 2/4/6/8-bit weight-only precision, switchable at load time without
+re-quantizing, and additionally supports per-layer mixed precision.
+
+This page reports the measured accuracy, storage footprint and quantization
+cost for **Qwen3.8-27B** quantized as **2+2+2+2** (1 base + 3 residuals,
+4 planes of 2 bits each).
+
+## Setup
+
+| Item | Value |
+|---|---|
+| Model | `Qwen/Qwen3-27B` (Qwen3.8, 64 decoder layers, 400 packed linear modules) |
+| Scheme | `W2A16` (weight-only INT2, activation 16-bit) |
+| Planes | 4 × 2-bit (1 base + 3 residuals) |
+| Group size / sym | 128 / symmetric |
+| Algorithm | RRQ **RTN** (`--iters 0`, zero-shot per plane) |
+| Calibration | `nsamples=128`, `seqlen=2048`, default AutoRound dataset |
+| Excluded layers | `mtp.*` kept in FP16 (`--ignore_layers mtp`); MTP does not support 2-bit |
+| Hardware | 1× GPU (80 GB class) for quantization; 1× GPU per bit-width for evaluation |
+| Evaluation | lm-eval, full test sets, bf16 forward |
+
+### Quantization command
+
+```bash
+auto_round --model Qwen/Qwen3-27B --scheme W2A16 \
+    --format auto_round:rrq --alg_configs rrq --iters 0 \
+    --ignore_layers mtp \
+    --nsamples 128 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out
+```
+
+This writes two artifacts:
+
+```
+rrq_out/<model>/base/       # standard INT2 W2A16 base plane (plane 0)
+rrq_out/<model>/residual/   # auto_round:rrq artifact (residual planes 1..3)
+```
+
+### Generating residuals for an existing INT2 base
+
+If you already have a quantized INT2 model, `generate_rrq_residual` builds the
+residual planes without re-quantizing the base:
+
+```python
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/<model>/base",
+    raw_model="Qwen/Qwen3-27B",
+    output_dir="./rrq_out/<model>/residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+The layers are independent, so this parallelizes perfectly. `num_workers`
+spreads them over processes and `device` decides where the quantization math
+runs; a bare `"cuda"` expands to every visible GPU and jobs are assigned
+round-robin. For Qwen3.8-27B (400 layers, 8 GPUs, `num_workers=32`) this takes
+**5 min 10 s**, versus many hours serially on CPU. Each worker pins itself to
+one GPU, and packing stays on CPU because the packing kernel is CPU-only.
+
+```bash
+# multi-GPU without writing Python
+python -c "
+from auto_round.export import generate_rrq_residual
+generate_rrq_residual('base/', raw_model='Qwen/Qwen3-27B',
+                      output_dir='residual/', group_size=128, sym=True,
+                      device='cuda', num_workers=32)"
+```
+
+### Evaluation command
+
+```python
+from transformers import AutoTokenizer
+from auto_round.inference import load_rrq_model
+from auto_round.eval.evaluation import simple_evaluate_user_model
+
+model = load_rrq_model("./rrq_out/<model>/base", "./rrq_out/<model>/residual", active_bits=4, device="cuda")
+tokenizer = AutoTokenizer.from_pretrained("./rrq_out/<model>/base")
+
+result = simple_evaluate_user_model(
+    model,
+    tokenizer,
+    batch_size=8,
+    tasks=["piqa", "winogrande", "hellaswag", "arc_easy", "arc_challenge"],
+)
+```
+
+## Quantization cost
+
+| Item | Value |
+|---|---|
+| Total wall time | **26 min 21 s** |
+| Per layer | ~24.7 s × 64 layers |
+| Peak GPU memory | 10.74 GB |
+| Peak host RAM | 78.35 GB |
+
+For comparison, the same configuration with sign-SGD tuning (`--iters 200`)
+takes roughly 11 minutes per layer (~11 h total), i.e. **~27× slower** than the
+RTN path used here.
+
+## Storage footprint
+
+| Artifact | Size |
+|---|---|
+| `base/` (plane 0) | 13.44 GB |
+| `residual/` (planes 1–3) | 19.53 GB |
+| **Full checkpoint (all 4 planes)** | **32.97 GB** |
+
+Only the planes required by the requested precision need to be loaded:
+
+| Precision | Planes loaded | Footprint | vs FP16 (~52 GiB) |
+|---|---|---|---|
+| 2-bit | 1 (base) | 13.44 GB | 24.1% |
+| 4-bit | 2 | 19.95 GB | 35.7% |
+| 6-bit | 3 | 26.46 GB | 47.4% |
+| 8-bit | 4 | 32.97 GB | 59.0% |
+
+The main benefit is that one checkpoint covers all four operating points:
+2-bit needs only 13.4 GB, a 76% reduction versus FP16, while the higher
+precisions remain available from the same artifact.
+
+## Accuracy
+
+lm-eval, full test sets, bf16 forward.
+
+| Precision | Planes | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge | **Avg.** |
+|---|---|---|---|---|---|---|---|
+| 2-bit | 1 | 74.59 | 68.59 | 50.69 | 78.45 | 49.06 | **64.28** |
+| 50% mixed<sup>†</sup> | 1.5 (avg) | 77.37 | 71.74 | 58.24 | 81.57 | 51.28 | **68.04** |
+| 4-bit | 2 | 80.09 | 75.93 | 63.13 | 82.53 | 56.66 | **71.67** |
+| 6-bit | 3 | 81.39 | 76.48 | 63.69 | 82.49 | 56.91 | **72.19** |
+| 8-bit | 4 | 80.85 | 75.61 | 63.58 | 82.66 | 56.57 | **71.85** |
+
+<sup>†</sup> 200 of 400 layers at 4-bit (base + 1 residual), the other 200 at
+2-bit (base only). Selected with `residual_fraction=0.5`, `residual_seed=0`,
+reproducible. Effective average precision ≈ 3-bit.
+
+### Observations
+
+1. **2 → 4-bit is the decisive step** (+7.39 avg). A single INT2 plane carries
+   far too little information; the first residual plane contributes the largest
+   gain of any plane. HellaSwag gains the most (+12.45), followed by
+   ARC-challenge (+7.59).
+2. **4/6/8-bit are effectively equivalent** (spread < 0.6 points, within
+   evaluation noise). Under RTN, residual planes 3 and 4 are saturated: 6-bit is
+   0.52 ahead of 4-bit and 8-bit is 0.34 *below* 6-bit, so the trend is
+   **not monotonic**.
+3. **Mixed precision lands on the linear interpolation.** The theoretical
+   midpoint between 2-bit (64.28) and 4-bit (71.67) is 67.98; measured 68.04.
+   Per-layer precision contributions are therefore close to independent and
+   uniform across layers, which makes `residual_fraction` a predictable knob:
+   storage and accuracy both scale linearly with the fraction.
+
+## Base plane quality: RTN vs. AutoRound
+
+The numbers above use RTN for every plane (`--iters 0`). The base plane is by
+far the most important one, so it is worth spending sign-SGD tuning on it alone
+and generating the residual planes incrementally:
+
+1. Quantize the base plane with full AutoRound tuning (`--iters 1000`), optionally
+   sharded across GPUs.
+2. Feed that INT2 base to `generate_rrq_residual` to obtain the residual planes.
+
+That split is exactly what `generate_rrq_residual` exists for. Note that the
+residual planes still use RTN — the same optimized RTN scale search as the
+one-pass path — so the only difference between the two configurations is how
+the base plane was produced.
+
+| Configuration | Base plane | Residual planes | Base cost | Residual cost |
+|---|---|---|---|---|
+| **A** | RTN (`iters=0`) | RTN | incl. below | — |
+| **B** | AutoRound (`iters=1000`) | RTN | 6 h 09 m (4 GPUs) | 5 m 10 s (8 GPUs) |
+
+Configuration A takes 26 min 21 s in total; B costs an additional 6 h because of
+the sign-SGD tuning of the base plane.
+
+Configuration A is the one-pass command from
+[Quantization command](#quantization-command) — it writes `base/` and
+`residual/` together:
+
+```bash
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round:rrq --alg_configs rrq --iters 0 \
+    --ignore_layers mtp \
+    --nsamples 128 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/A
+```
+
+Configuration B is two steps: tune the base with sign-SGD, then derive the
+residual planes from it. Note that `--format auto_round` is used for the base
+here, not `auto_round:rrq` — the RRQ exporter writes base and residual in one
+pass and would also run the residual generation with RTN, which is not what B
+wants.
+
+```bash
+# Step 1: base plane with full AutoRound tuning (6 h 09 m on 4 GPUs)
+auto_round --model Qwen/Qwen3.8-27B --scheme W2A16 \
+    --format auto_round --alg_configs auto_round --iters 1000 \
+    --ignore_layers mtp \
+    --nsamples 512 --seqlen 2048 --low_gpu_mem_usage \
+    --output_dir ./rrq_out/B_base
+```
+
+```python
+# Step 2: residual planes from that base (5 min 10 s on 8 GPUs)
+from auto_round.export import generate_rrq_residual
+
+generate_rrq_residual(
+    "./rrq_out/B_base",
+    raw_model="Qwen/Qwen3.8-27B",
+    output_dir="./rrq_out/B_residual",
+    group_size=128,
+    sym=True,
+    device="cuda",
+    num_workers=32,
+)
+```
+
+Loading either configuration:
+
+```python
+from auto_round import load_rrq_model
+
+# A: base and residual are siblings from the one-pass export
+model = load_rrq_model("./rrq_out/A/base", "./rrq_out/A/residual", active_bits=4)
+
+# B: the residual was generated separately, so its path is independent
+model = load_rrq_model("./rrq_out/B_base", "./rrq_out/B_residual", active_bits=4)
+```
+
+### Accuracy comparison
+
+lm-eval, full test sets, bf16 forward, identical evaluation harness.
+
+| Precision | A: all RTN | B: AutoRound base + RTN residual | **Δ** |
+|---|---|---|---|
+| 2-bit | 64.28 | **68.02** | **+3.74** |
+| 4-bit | **71.67** | 72.02 | +0.35 |
+| 6-bit | **72.19** | 72.03 | −0.16 |
+| 8-bit | **71.85** | 71.79 | −0.06 |
+
+Configuration B detail:
+
+| Precision | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge |
+|---|---|---|---|---|---|
+| 2-bit | 77.97 | 71.35 | 55.60 | 81.86 | 53.33 |
+| 4-bit | 80.47 | 76.16 | 63.38 | 82.91 | 57.17 |
+| 6-bit | 81.18 | 74.90 | 63.67 | 83.16 | 57.25 |
+| 8-bit | 81.07 | 75.37 | 63.75 | 82.20 | 56.57 |
+
+Per-task delta (B − A):
+
+| Precision | PIQA | WinoGrande | HellaSwag | ARC-easy | ARC-challenge | Avg. |
+|---|---|---|---|---|---|---|
+| 2-bit | +3.38 | +2.76 | **+4.91** | +3.41 | +4.27 | **+3.74** |
+| 4-bit | +0.38 | +0.23 | +0.25 | +0.38 | +0.51 | +0.35 |
+| 6-bit | −0.21 | −1.58 | −0.02 | +0.67 | +0.34 | −0.16 |
+| 8-bit | +0.22 | −0.24 | +0.17 | −0.46 | −0.00 | −0.06 |
+
+At 2-bit the gain is spread across every task, and the two weakest 2-bit tasks
+gain the most (HellaSwag +4.91, ARC-challenge +4.27). From 4-bit up the deltas
+are small and sign-inconsistent, i.e. noise.
+
+Configuration B precision ladder:
+
+| Step | Avg. delta |
+|---|---|
+| 2 → 4-bit | **+4.00** (decisive) |
+| 4 → 6-bit | +0.01 (saturated) |
+| 6 → 8-bit | −0.24 (not monotonic) |
+
+B saturates one step earlier than A: a better base plane means the first residual
+plane closes almost the whole gap, so planes 3 and 4 are pure noise.
+
+### Confirmation on reasoning benchmarks
+
+The five-task average is a shallow probe: the +3.74 gain at 2-bit is real but
+modest, and none of those tasks require sustained multi-step reasoning. Two
+harder benchmarks make the same comparison under prefill6/decode2, where the base
+plane is the only thing carrying the model:
+
+| Benchmark | A: all RTN | B: AutoRound base | Delta | Significance |
+|---|---|---|---|---|
+| GSM8K (n=1319) | 78.32% | **85.97%** | **+7.66** | p = 2.5e-07 |
+| MATH-500 (n=500) | 36.00% | **60.60%** | **+24.60** | p = 7.9e-26 |
+
+On MATH-500 the paired comparison is lopsided: B solves 130 problems that A
+cannot, while A solves only 7 that B cannot (McNemar z = +10.51). Excluding
+truncated generations, B reaches 72.49% against A's 46.04%.
+
+The gain grows with task difficulty — +7.66 on grade-school arithmetic, +24.60 on
+competition mathematics — which is what one expects if the base plane sets a
+ceiling that residual planes only partially repair. The shallow five-task average
+understated this by roughly 2x on GSM8K and more on MATH.
+
+A second effect shows up in generation length. At decode-2 the tuned base
+produces **2503** mean tokens on MATH-500 against **4119** for the RTN base, and
+truncation drops from 21.8% to 16.4%. Tuning the base therefore does not only
+improve correctness at this width, it also keeps the model from degenerating into
+longer, less productive reasoning — worth as much as the accuracy gain when the
+output budget is fixed.
+
+**Caveat on the 4-bit claim.** The conclusion below that the two bases converge
+from 4-bit up is measured only on the five shallow tasks, at uniform widths. The
+B-group runs at prefill6/decode4 and uniform 4-bit on GSM8K and MATH-500 were
+started and cancelled before producing results, so 4-bit equivalence is
+**unverified on the reasoning benchmarks**. The 2-bit conclusion, by contrast, is
+now supported by three independent benchmarks.
+
+### Observations
+
+1. **Tuning the base plane only pays off at 2-bit** (+3.74), where it buys
+   ~3.7 accuracy points for 6 extra hours of quantization time. HellaSwag gains
+   the most (+4.91), then ARC-challenge (+4.27). On reasoning benchmarks the same
+   direction is much stronger: +7.66 on GSM8K and +24.60 on MATH-500.
+2. **At 4-bit and above the two configurations are equivalent** (spread ≤ 0.35,
+   i.e. evaluation noise) *on the five shallow tasks measured at uniform widths*.
+   Once one residual plane is present the base plane is no longer the bottleneck,
+   so the expensive tuning is wasted: the extra residual planes absorb the error
+   the base leaves behind. This has not been confirmed on GSM8K or MATH-500, so
+   treat 4-bit equivalence as plausible rather than established.
+3. **A tuned 2-bit base is competitive with a 3-bit mixed-precision checkpoint.**
+   Compare B at 2-bit (68.02, 13.44 GB) with A at `residual_fraction=0.5`
+   (68.04, 19.95 GB): the averages are identical while B uses 6.5 GB less, at
+   the cost of a different capability profile — HellaSwag is 2.64 lower but
+   ARC-challenge is 2.05 higher.
+4. **Practical guidance.** If the target deployment is 2-bit, tune the base with
+   AutoRound and generate the residuals incrementally. If the target is 4-bit or
+   higher — or if the checkpoint must serve several widths — quantizing
+   everything with RTN (`--iters 0`) is the better trade at 6 fewer hours, with
+   the 4-bit caveat above.
+
+## Mixed precision
+
+`load_rrq_model` exposes random per-layer precision via three arguments, plus a
+deterministic helper:
+
+```python
+from auto_round.inference import load_rrq_model
+from auto_round.inference.rrq_linear import set_rrq_bits, set_rrq_random_residual
+
+# Uniform precision
+model = load_rrq_model(base_dir, residual_dir, active_bits=4)
+
+# Random mix: half the layers at 4-bit, half at 2-bit (reproducible)
+model = load_rrq_model(
+    base_dir,
+    residual_dir,
+    residual_fraction=0.5,
+    residual_seed=0,
+    residual_high_bits=4,
+    residual_low_bits=2,
+)
+
+# Or switch after loading
+set_rrq_bits(model, 6)
+set_rrq_random_residual(model, fraction=0.25, seed=1, high_bits=4, low_bits=2)
+```
+
+## Inference performance
+
+`RRQLinear` keeps the packed INT2 planes resident and dequantizes them on every
+forward. That is what makes a single checkpoint switchable between
+2/4/6/8-bit, but it is slow: each layer rebuilds its weight tensor for every
+token.
+
+Calling `materialize_rrq(model)` once converts every RRQ layer into a dense
+`nn.Linear`, paying the dequantization a single time and then running ordinary
+dense GEMMs. The trade-off is memory and flexibility: the dense copy needs about
+2 bytes per parameter (~54 GB for a 27B model in bf16) and the precision is
+frozen at whatever was active when it was called.
+
+```python
+from auto_round import load_rrq_model, materialize_rrq
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=4, device="cuda")
+# ... validate accuracy at 2/4/6/8-bit if you like ...
+materialize_rrq(model)  # freeze the active precision, dense inference
+```
+
+Measured on Qwen3.8-27B (8-bit, single 80 GB card):
+
+| Path | Speed | Peak VRAM |
+|---|---|---|
+| `load_rrq_model` only (dequant per forward) | 0.31 tok/s | 30.9 GB |
+| after `materialize_rrq` | **15.08 tok/s** | 51.1 GB |
+
+That is a **48x** speedup, numerically equivalent (same float32 accumulation,
+rounded to the layer dtype).
+
+`load_rrq_model` also caches dequantized weights automatically when the whole
+model fits: it enables the cache only if one dense copy of *every* layer fits in
+the free device memory, and otherwise logs how many GiB it would need. A
+partial cache cannot help because each forward visits every layer, so the
+uncached ones dominate.
+
+## Phase-dependent precision: 6-bit prefill, 2-bit decode
+
+Prefill and decode have opposite bottlenecks, so the best weight width differs
+between them:
+
+- **Prefill** pushes the whole prompt through each weight load. It is compute
+  bound, so the matmul dominates and a wider weight is nearly free.
+- **Decode** emits one token per step and is bandwidth bound: every weight is
+  streamed for a single token, so the weight width *is* the speed.
+
+`set_rrq_phase_bits` exploits that by selecting the plane count from the input
+length, which needs no plumbing through the model — decode feeds
+`(batch, 1, hidden)` while prefill feeds `(batch, seq, hidden)`:
+
+```python
+from auto_round.inference import load_rrq_model, set_rrq_phase_bits
+
+model = load_rrq_model(base_dir, residual_dir, active_bits=6, device="cuda")
+set_rrq_phase_bits(model, prefill_bits=6, decode_bits=2)
+
+model.generate(**inputs)  # prefill runs 6-bit, every decoded token runs 2-bit
+```
+
+Measured on Qwen3.8-27B (105-token prompt, single 80 GB card, reference kernel):
+
+| Configuration | Prefill | Decode | Prefill vs 6-bit | Decode vs 2-bit |
+|---|---|---|---|---|
+| 2-bit | 1690 ms | 783 ms/tok | — | — |
+| 6-bit | 2580 ms | 2397 ms/tok | 1.00× | — |
+| 8-bit | 3369 ms | 3200 ms/tok | — | — |
+| **prefill 6 / decode 2** | **2412 ms** | **779 ms/tok** | **0.94×** | **1.00×** |
+
+Decode throughput of each split, measured with the fused kernel at batch 16
+(96 generated tokens per sequence, single 80 GB card):
+
+| Configuration | Decode | vs 2-bit |
+|---|---|---|
+| 2-bit | **121.2 tok/s** | 1.00× |
+| prefill 6 / decode 2 | **110.1 tok/s** | 0.91× |
+| **prefill 6 / decode 2+2×50%, MLP only (96/400)** | **92.6 tok/s** | **0.76×** |
+| prefill 6 / decode 2+2×50%, all layers (200/400) | 83.8 tok/s | 0.69× |
+| prefill 6 / decode 2+2×50%, MLP x100% (192/400) | 78.7 tok/s | 0.65× |
+| 4-bit | 68.8 tok/s | 0.57× |
+| prefill 6 / decode 4 | 68.2 tok/s | 0.56× |
+| 6-bit | 48.8 tok/s | 0.40× |
+
+Batch must stay at or below `_RRQ_FUSED_MAX_BATCH` (16). Above that cutoff
+`RRQLinear` skips the fused kernel entirely and falls back to dequant + matmul:
+2-bit decode drops from 113 tok/s at batch 16 to **30 tok/s at batch 24**. A
+benchmark that silently exceeds the cutoff measures the reference path, not the
+kernel.
+
+### GSM8K accuracy
+
+The accuracy question this configuration has to answer is: *does a 6-bit
+prefill recover the accuracy that 2-bit decode loses?* GSM8K is a good probe
+because the reasoning happens during generation, which runs at bit-width of the
+decode phase.
+
+Full test set (1319 questions), greedy decoding, exact match on the final
+answer. Generation config: chat template with **thinking disabled** and
+**`max_new_tokens=2048`**, so every chain-of-thought finishes on its own. This
+matters for a reasoning model — with thinking left on and a short output budget
+the model spends the whole budget inside a `thinking` block and never emits
+an answer, which silently depresses every configuration (see
+*Generation-configuration sensitivity* below).
+
+| Configuration | Correct | GSM8K accuracy | 95% CI | Truncated |
+|---|---|---|---|---|
+| full 2-bit | 955 / 1319 | 72.40% | ±2.41 | 39 |
+| **prefill 6 / decode 2** | **1033 / 1319** | **78.32%** | ±2.22 | 73 |
+| prefill 6 / decode 2+2×50%, MLP only (96/400) | 1206 / 1319 | 91.43% | ±1.51 | 35 |
+| **prefill 6 / decode 2+2×50%, all layers (200/400)** | **1213 / 1319** | **91.96%** | ±1.47 | 38 |
+| prefill 6 / decode 2+2×50%, MLP x100% (192/400) | 1213 / 1319 | 91.96% | ±1.47 | 43 |
+| full 4-bit | 1245 / 1319 | 94.39% | ±1.24 | 15 |
+| **prefill 6 / decode 4** | **1261 / 1319** | **95.60%** | ±1.11 | 10 |
+| full 6-bit | 1247 / 1319 | 94.54% | ±1.23 | 10 |
+| bf16 (unquantized) | 1249 / 1319 | 94.69% | ±1.21 | — |
+
+Against the unquantized row, all three configurations at 4-bit decode or wider
+are statistically indistinguishable, and everything narrower is not:
+
+| Comparison | Delta | Significant? |
+|---|---|---|
+| prefill 6 / decode 4 - bf16 | +0.91 | no (p = 0.28) |
+| full 6-bit - bf16 | -0.15 | no (p = 0.86) |
+| full 4-bit - bf16 | -0.30 | no (p = 0.73) |
+| MLP x100% (2.96-bit) - bf16 | -2.73 | yes (p = 0.005) |
+| MLP only (2.48-bit) - bf16 | -3.26 | yes (p = 0.001) |
+
+So the lossless threshold is **4-bit decode**, not one particular
+configuration — prefill6/decode4, uniform 4-bit and uniform 6-bit all land on the
+unquantized score. prefill6/decode4 remains the recommended point of the three
+purely on speed (68.2 versus 48.8 tok/s for uniform 6-bit) at equal accuracy,
+which makes uniform 6-bit dominated. The +0.91 above bf16 is noise; with
+N = 1319 the smallest detectable difference is about 1.7 points.
+
+Decode width is what the score tracks. Going from 2-bit to 4-bit decode is worth
+**+21.99 points**; going from 4-bit to 6-bit decode is worth **+0.15**, i.e.
+nothing. Decode carries nearly all of GSM8K's arithmetic, so accuracy saturates
+once decode reaches 4 bits.
+
+The mixed decode rows are the useful new operating points, and **where the extra
+residual plane goes matters more than how many layers get it.** Every row
+spends the same per-layer widening (2 -> 4 bits) but distributes it differently:
+
+| Configuration | Layers at 4-bit | Effective decode | GSM8K | Decode |
+|---|---|---|---|---|
+| prefill 6 / decode 2 | 0 | 2.00-bit | 78.32% | 0.91× |
+| **2+2×50%, MLP only** | **96** | **2.48-bit** | **91.43%** | **0.76×** |
+| 2+2×50%, all layers | 200 | 2.96-bit | 91.96% | 0.69× |
+| 2+2×50%, MLP x100% | 192 | 2.96-bit | 91.96% | 0.65× |
+| full 4-bit | 400 | 4.00-bit | 94.39% | 0.57× |
+
+Two findings:
+
+- **MLP-only is the best trade on this curve.** Spending the residual plane on
+  96 MLP projections reaches 91.43%, only **0.53 points** below the 200-layer
+  variant, while decoding **10% faster** (0.76× against 0.69×). Attention
+  projections (`linear_attn.*`, `self_attn.*`) are where the bandwidth budget is
+  tight, so leaving them at 2-bit is nearly free.
+- **Budget-matched comparison confirms the ordering.** Upgrading *all* 192 MLP
+  layers (2.96-bit, same plane count as the 200-layer draw) scores exactly the
+  same 91.96% as the random 50%-over-everything draw, but is slower (0.65×
+  against 0.69×). Random selection across module families wins on speed because
+  it upgrades fewer attention layers.
+
+Compared with the uniform neighbours, the MLP-only point buys **+13.11 points
+over 2-bit decode for 0.15× of speed**, and the remaining climb to full 4-bit
+costs another 0.19× for only **+2.96**. It is the knee of the curve.
+
+| Comparison | Delta | Significant? |
+|---|---|---|
+| full 4-bit - full 2-bit | +21.99 | yes |
+| MLP-only mixed - prefill6/decode2 | +13.11 | yes |
+| full 4-bit - MLP-only mixed | +2.96 | yes |
+| all-layers mixed - MLP-only mixed | +0.53 | no |
+| full 6-bit - full 4-bit | +0.15 | no |
+| prefill6/decode4 - full 4-bit | +1.21 | no (p ~ 0.15) |
+
+**Practical reading - pick the operating point by decode budget:**
+
+- Must decode at 2-bit for speed: `set_rrq_phase_bits(model, 6, 2)`, +5.91 points
+  for 0.91× and no extra storage.
+- Can spare about 0.15× more decode bandwidth: **MLP-only mixed decode**,
+  `set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2,
+  prefill_bits=6, only="mlp.")`. 91.43% at 0.76× is the best accuracy per unit of
+  decode bandwidth in this table, and it keeps every attention projection on a
+  single INT2 plane.
+- Need the last ~3 points: uniform 4-bit (94.39%) at 0.57×. It is statistically
+  identical to prefill6/decode4 (95.60%) at the same decode speed with a cheaper
+  prefill, so skip the split there.
+- Uniform 6-bit is not worth it for GSM8K: 94.54% sits inside the noise band of
+  uniform 4-bit, at 0.40× the decode speed of 2-bit.
+
+Mechanically, prefill touches only the first token while most of GSM8K's
+computation happens during decode — the chain of arithmetic is produced token by
+token. A better-conditioned prefill lets the model start correctly, which is
+where the +5.91 points come from, but it cannot re-introduce information the
+low-precision decode weights drop later. That is also why widening prefill stops
+helping once decode reaches 4 bits: the decode weights are no longer the
+bottleneck.
+
+#### Generation-configuration sensitivity
+
+These numbers depend strongly on the decoding setup, and an earlier revision of
+this document reported much lower ones (42.00 / 53.45 / 63.23%) for the same
+checkpoints. That measurement used a raw prompt without the chat template and a
+320-token output budget. With the model's reasoning mode active, ` thinking` alone
+consumed the budget: 22 of 660 completions for 2-bit contained no parsable
+number at all, and the remainder were cut off mid-solution. Two independent
+settings were therefore needed — thinking off, and a 2048-token budget:
+
+| Configuration | Thinking | Max new tokens | 2-bit | prefill 6 / decode 2 | 6-bit |
+|---|---|---|---|---|---|
+| earlier (invalid) | on | 320 | 42.00% | 53.45% | 63.23% |
+| **current** | **off** | **2048** | **72.40%** | **78.32%** | **94.54%** |
+
+Residual truncation still costs a little, mostly at 2-bit where the model rambles
+more: excluding truncated rows gives 73.98% / 82.58% / 95.19%. The ordering and
+the size of each gap are unchanged, so the practical conclusion is not an
+artefact of the output budget.
+
+Prefill runs at the same three-plane 6-bit precision as uniform 6-bit, so its
+2412 ms versus 2580 ms is run-to-run variance rather than a saving. The real
+gain is on decode: **779 ms/tok, identical to uniform 2-bit**, against
+2397 ms/tok for uniform 6-bit. For an 8-token completion that is **3.1× faster**
+end to end, and the token stream is verified to match exactly — the first token
+equals the 8-bit run and all following tokens equal the 2-bit run.
+
+Two details make this correct rather than approximate:
+
+- **Sequence length, not token count.** Batched decode is `(batch, 1, hidden)`;
+  its total element count is the batch size, which would be misread as prefill.
+  The phase is therefore decided from `x.shape[-2]`.
+- **Cache keyed by plane count.** The two phases alternate on every request, so
+  a single cache slot would evict the weight the next phase needs and both
+  phases would rebuild every step. Each layer keeps one slot per plane count and
+  `required_rrq_cache_bytes` counts both, so the all-or-nothing cache check stays
+  honest.
+
+### MATH-500 accuracy
+
+GSM8K saturates once decode reaches 4 bits, so it cannot show whether prefill
+precision is doing anything. A harder benchmark is needed to separate the two
+phases, and the benchmark has to be one whose *output type* actually exercises
+decode. That rules out MMLU: lm-eval scores it as `loglikelihood`, so every
+forward is a whole context-plus-continuation and `seq_len > prefill_threshold`.
+Under a prefill/decode split, MMLU only ever runs at the **prefill** bit-width.
+It cannot be used to study decode precision at all.
+
+MATH-500 is `generate_until`, so the prompt is prefilled once and then one token
+is fed per step. Instrumenting `RRQLinear._resolve_forward_planes` over MATH-500
+prompts confirms the split is real rather than nominal — at prefill 6 / decode 4,
+**98.4% of forwards are single-token decode** (25200 decodes at 2 planes versus
+400 prefills at 3 planes).
+
+Full test set (500 problems), greedy decoding, 8192-token budget, exact match on
+the final `\boxed{}` after light normalisation. The budget matters: at 4096
+tokens 7.8% of problems were cut off mid-solution and every one of them scored
+zero, which understated the score by five points. Truncated items were re-run at
+the larger budget and merged by problem id.
+
+| Configuration | Correct | MATH-500 accuracy | 95% CI | Truncated |
+|---|---|---|---|---|
+| bf16 (unquantized) | 439 / 500 | 87.80% | ±2.87 | 3 |
+| **prefill 6 / decode 4** | **436 / 500** | **87.20%** | ±2.93 | 6 |
+| uniform 4-bit (prefill 4 / decode 4) | 424 / 500 | 84.80% | ±3.15 | 13 |
+| prefill 6 / decode 2 | 180 / 500 | 36.00% | ±4.21 | 109 |
+
+Two conclusions, and they are different in kind.
+
+**Decode 4-bit is lossless here too.** prefill6/decode4 is 0.60 points below the
+unquantized model, McNemar p = 0.44 — indistinguishable. This is *not* the
+benchmark being too weak to see the difference: prefill6/decode2 collapses to
+36.00%, a 51.8-point drop at p < 0.0001 where decode-4 scores 256 problems the
+decode-2 run cannot solve and decode-2 solves none that decode-4 misses. MATH-500
+separates decode precision very sharply, and 4-bit still lands on the unquantized
+score.
+
+**Prefill 6-bit buys something, but not reasoning quality.** Raising prefill from
+4-bit to 6-bit with decode held at 4-bit is worth **+2.40 points, McNemar
+z = +2.68, p = 0.0073**. Decomposing that gain shows where it comes from:
+
+| Source | Contribution |
+|---|---|
+| the 484 problems both configurations finished | **+0.83** points (z = 1.26, p = 0.21) |
+| 4-bit prefill truncating 7 more problems | **+1.4** points |
+| total | +2.40 points |
+
+On problems both configurations complete, the two are statistically the same.
+The measurable effect is on **output length**, not answer correctness: 4-bit
+prefill makes the model ramble, so it hits the output cap more often.
+
+| Configuration | Mean tokens | p90 tokens |
+|---|---|---|
+| bf16 | 1292 | 2802 |
+| prefill 6 / decode 4 | 1400 | 3084 |
+| prefill 4 / decode 4 | 1530 | 3733 |
+
+So the honest characterisation of prefill precision is **shorter, more reliable
+output** — fewer tokens to serve and fewer answers lost to the budget — rather
+than better arithmetic. That is still a real end-to-end benefit, since served
+latency and truncation loss both improve, but it should not be described as a
+reasoning gain.
+
+Broken down by difficulty, the entire prefill-4 to prefill-6 difference sits at
+the hardest level, and the easier levels are exactly tied:
+
+| Level | n | prefill 6 / decode 4 | prefill 4 / decode 4 | Delta |
+|---|---|---|---|---|
+| 1 | 42 | 92.86% | 92.86% | +0.00 |
+| 2 | 90 | 90.00% | 88.89% | +1.11 |
+| 3 | 104 | 88.46% | 88.46% | +0.00 |
+| 4 | 124 | 88.71% | 88.71% | +0.00 |
+| 5 | 124 | 84.68% | 82.26% | +2.42 |
+
+Reproduce with `--mode p6d4` / `p4d4` / `p6d2` against
+`HuggingFaceH4/MATH-500`; the baseline row loads the unquantized checkpoint in
+bfloat16 and runs the same prompt, scorer and budget.
+
+## Fused decode kernel
+
+Decode feeds one token per sequence, so each forward is a matrix-vector product
+that streams the whole weight and does almost no arithmetic. The generic path
+dequantizes the packed INT2 into bf16 and then runs a GEMM, which writes and
+re-reads 8× more bytes than the packed weights hold (2 bytes/parameter against
+0.25). At one token that materialization is **65% of the layer time**.
+
+`auto_round/inference/rrq_triton.py` provides a Triton kernel that never
+materializes the weight: each program owns a tile of output features, unpacks the
+INT2 nibbles in registers and accumulates `x @ W` directly. It engages
+automatically for `seq_len == 1` on CUDA and falls back to the dequant path
+everywhere else, so prefill and non-CUDA platforms keep working.
+
+Measured on Qwen3.8-27B, 16-token greedy decode, single 80 GB card:
+
+| Configuration | Dequant path | Fused kernel | Speedup |
+|---|---|---|---|
+| uniform 2-bit | 1708 ms/tok | **253 ms/tok** | 6.74× |
+| uniform 6-bit | 5242 ms/tok | **359 ms/tok** | 14.63× |
+| prefill 6 / decode 2 | 1708 ms/tok | **254 ms/tok** | 6.74× |
+
+The 6-bit case gains more because it previously had to materialize three planes.
+Note that the phase configuration decodes at the same speed as uniform 2-bit
+(254 against 253 ms/tok), which is the whole point: it pays 2-bit bandwidth for
+decode while keeping 6-bit prefill.
+
+Numerical behaviour, measured as max relative error against an fp32 reference
+(`x @ W` with the dequantized weight kept in float32) over 24 layers:
+
+| Planes | Kernel vs torch path | **Kernel vs fp32 truth** | **Torch path vs fp32 truth** |
+|---|---|---|---|
+| 2-bit (1) | 1.98e-04 | **2.51e-03** | 2.51e-03 |
+| 4-bit (2) | 4.36e-03 | **2.44e-03** | 2.88e-03 |
+| 6-bit (3) | 4.47e-03 | **2.44e-03** | 3.16e-03 |
+
+The kernel is **as accurate as, and at 2+ planes slightly more accurate than** the
+dequant path. Two effects explain the numbers:
+
+- The dequant path rounds the accumulated weight to bf16 before the GEMM, which
+  costs ~2.5e-03 relative to fp32. The kernel never leaves float32, so at 2 and 3
+  planes it avoids that rounding and lands closer to the true value.
+- The kernel-vs-torch difference (up to 4.5e-03) is dominated by that same bf16
+  rounding on one side, not by kernel error. Both paths are equally distant from
+  the fp32 reference at 2-bit, where no accumulation order is involved.
+
+This also means the fused path does not change the model's accuracy in a way that
+differs from the reference path: both are bf16-level approximations of the same
+float32 result. Pass `set_rrq_fused_decode(model, False)` to force the dequant
+path, which is useful for bisecting any observed difference.
+
+## Notes and limitations
+
+- **MTP layers.** Qwen3.8 ships Multi-Token Prediction head layers (`mtp.*`).
+  RRQ only supports 2-bit planes, and these layers were not supported at 2-bit,
+  so they are excluded with `--ignore_layers mtp` and stay in FP16. Without the
+  exclusion the base artifact contains packed `mtp.*` layers while the residual
+  artifact contains none, and `load_rrq_model` correctly refuses to load the
+  mismatched pair.
+- **bf16 forward.** RRQ accumulates planes in float32 and feeds a bf16 matmul.
+  Loading the base in float32 requires ~108 GB for a 27B model and OOMs on a
+  single 80 GB card, so the base is loaded in bfloat16 (float16 only where bf16
+  is unavailable).
+- **Full-precision baseline.** The bf16 reference is measured on MATH-500
+  (87.80%, see *MATH-500 accuracy*) but not on GSM8K, so the GSM8K table above
+  still reports only relative comparisons between RRQ operating points. The
+  MATH-500 result is what establishes that decode-4 is lossless; the GSM8K
+  ordering is consistent with it but is not itself anchored to a bf16 row.
+- **Single model.** These numbers come from one 27B model with one calibration
+  setting. Absolute values will differ across models and calibration budgets;
+  the qualitative shape (large gain at the first residual plane, saturation
+  afterwards) is what to expect.

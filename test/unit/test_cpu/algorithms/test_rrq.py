@@ -591,6 +591,204 @@ class TestRRQLinear:
         with pytest.raises(ValueError):
             set_rrq_random_residual(nn.Module())
 
+    def test_random_residual_with_prefill_bits(self):
+        """prefill_bits keeps prefill uniform while the random draw governs decode."""
+        from auto_round.inference.rrq_linear import set_rrq_random_residual
+
+        model = nn.Module()
+        model.layers = nn.ModuleList([self._build_rrq_layer(64, 32, group_size=32, num_residual=3) for _ in range(10)])
+
+        # 6-bit prefill everywhere, decode split 50/50 between 4-bit and 2-bit.
+        n_high = set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2, prefill_bits=6)
+        assert n_high == 5
+        assert {m.phase_bits for m in model.layers} == {(6, 4), (6, 2)}
+
+        prefill = torch.randn(1, 7, 32, dtype=torch.float16)
+        decode = torch.randn(1, 1, 32, dtype=torch.float16)
+        # Prefill is 3 planes (6-bit) for every layer, decode is 2 or 1.
+        assert {m._resolve_forward_planes(prefill) for m in model.layers} == {3}
+        assert {m._resolve_forward_planes(decode) for m in model.layers} == {1, 2}
+
+        # prefill_bits beyond the available planes must be rejected.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=0.5, prefill_bits=10)
+
+    def test_random_residual_only_matches_module_family(self):
+        """only= restricts the upgrade to one module family, e.g. MLP alone."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
+
+        names = [
+            "model.layers.0.mlp.down_proj",
+            "model.layers.0.mlp.gate_proj",
+            "model.layers.0.mlp.up_proj",
+            "model.layers.0.mlp.up_proj.x_proj",
+            "model.layers.0.linear_attn.in_proj_qkv",
+            "model.layers.0.linear_attn.in_proj_z",
+            "model.layers.0.linear_attn.out_proj",
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.self_attn.o_proj",
+        ]
+        model = nn.Module()
+        for name in names:
+            *prefix, leaf = name.split(".")
+            holder = model
+            for part in prefix:
+                if not hasattr(holder, part):
+                    setattr(holder, part, nn.Module())
+                holder = getattr(holder, part)
+            setattr(
+                holder,
+                leaf,
+                RRQLinear(in_features=64, out_features=32, num_planes=4, bits=2, bias=False),
+            )
+
+        # Only MLP projections are eligible: 4 of the 9 layers.
+        n_high = set_rrq_random_residual(
+            model, fraction=0.5, seed=0, high_bits=4, low_bits=2, prefill_bits=6, only="mlp."
+        )
+        assert n_high == 2
+
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            prefill_bits, decode_bits = module.phase_bits
+            assert prefill_bits == 6, name  # prefill stays uniform
+            if "mlp." in name:
+                assert decode_bits in (2, 4), name
+            else:
+                # Attention never pays for a residual plane at decode.
+                assert decode_bits == 2, name
+
+        # A filter that matches nothing is a usage error, not a silent no-op.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=0.5, only="does_not_exist")
+
+    def test_random_residual_depth_restricts_upgrade_to_bands(self):
+        """depth= spends the residual planes on selected decoder layers only."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
+
+        depths = range(8)
+        leaves = ("mlp.down_proj", "self_attn.q_proj")
+        model = nn.Module()
+        model.model = nn.Module()
+        model.model.layers = nn.ModuleList()
+        for _ in depths:
+            block = nn.Module()
+            for leaf in leaves:
+                *prefix, attr = leaf.split(".")
+                holder = block
+                for part in prefix:
+                    if not hasattr(holder, part):
+                        setattr(holder, part, nn.Module())
+                    holder = getattr(holder, part)
+                setattr(holder, attr, RRQLinear(in_features=64, out_features=32, num_planes=4, bits=2, bias=False))
+            model.model.layers.append(block)
+
+        def depth_of(name):
+            return int(name.split(".layers.")[1].split(".")[0])
+
+        # Two 2-layer bands, everything in them upgraded: 4 of 16 layers.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, depth="1-2,6-7")
+        assert n_high == 8
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            expected = 2 if depth_of(name) in (1, 2, 6, 7) else 1
+            assert module.active_planes == expected, name
+
+        # `depth` composes with `only`: only the MLP projections in a band.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, only="mlp.", depth="0-3")
+        assert n_high == 4
+        for name, module in model.named_modules():
+            if not isinstance(module, RRQLinear):
+                continue
+            expected = 2 if ("mlp." in name and depth_of(name) <= 3) else 1
+            assert module.active_planes == expected, name
+
+        # A single depth is accepted without a dash.
+        n_high = set_rrq_random_residual(model, fraction=1.0, high_bits=4, low_bits=2, depth="5")
+        assert n_high == 2
+
+        # Malformed or empty selections are usage errors, not silent no-ops.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="not-a-range")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="5-2")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth=",,")
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.0, depth="100-200")
+
+    def test_materialize_rrq_replaces_layers_and_preserves_output(self):
+        """materialize_rrq converts to dense nn.Linear with the same numerics."""
+        from auto_round.inference.rrq_linear import RRQLinear, materialize_rrq
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        layer.set_active_bits(4)  # 2 planes
+
+        x = torch.randn(4, 64)
+        with torch.no_grad():
+            before = layer(x)
+
+        container = nn.Module()
+        container.proj = layer
+        n = materialize_rrq(container)
+
+        assert n == 1
+        assert isinstance(container.proj, nn.Linear)
+        assert not isinstance(container.proj, RRQLinear)
+        assert container.proj.weight.shape == (32, 64)
+
+        with torch.no_grad():
+            # materialize_rrq rounds to the model dtype (fp32 on CPU here).
+            after = container.proj(x)
+        assert torch.allclose(before, after, atol=1e-3), "materialized output diverged"
+
+    def test_materialize_rrq_frees_packed_planes(self):
+        """Packed INT2 plane buffers are released so the dense copy does not double memory."""
+        from auto_round.inference.rrq_linear import materialize_rrq
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        container = nn.Module()
+        container.proj = layer
+
+        # Keep a handle so we can inspect it after replacement.
+        materialize_rrq(container)
+        assert layer.base is None
+        assert layer.planes is None
+
+    def test_required_cache_bytes_matches_dense_footprint(self):
+        """required_rrq_cache_bytes sums one dense copy of every RRQ layer."""
+        from auto_round.inference.rrq_linear import required_rrq_cache_bytes
+
+        model = nn.Module()
+        model.a = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        model.b = self._build_rrq_layer(128, 64, group_size=32, num_residual=3)
+
+        # bf16 -> 2 bytes/element: (32*64 + 64*128) * 2
+        expected = (32 * 64 + 64 * 128) * 2
+        assert required_rrq_cache_bytes(model, torch.bfloat16) == expected
+        assert required_rrq_cache_bytes(model, torch.float32) == expected * 2
+        assert required_rrq_cache_bytes(nn.Module()) == 0
+
+    def test_cache_budget_gates_cuda_caching_only(self):
+        """A zero budget disables CUDA caching; CPU always caches."""
+        from auto_round.inference import rrq_linear
+
+        layer = self._build_rrq_layer(64, 32, group_size=32, num_residual=3)
+        assert layer.base.qweight.device.type == "cpu"
+
+        # CPU ignores the budget: repeated forwards reuse the cached weight.
+        rrq_linear.set_rrq_weight_cache_budget(0)
+        layer.reset_packed_weight_cache()
+        x = torch.randn(2, 64)
+        with torch.no_grad():
+            layer(x)
+        assert layer._packed_weight is not None, "CPU should cache regardless of budget"
+
+        # Reset for other tests.
+        rrq_linear.set_rrq_weight_cache_budget(0)
+
 
 class TestRRQConfigBuilder:
     """Tests for the residual-model quantization_config builder."""
@@ -649,13 +847,11 @@ class TestRRQSave:
         out_dir = str(tmp_path / "rrq_residual")
         save_quantized_rrq(out_dir, model)
 
-        # The three residual planes (packed INT2) should be renamed to the ABI.
+        # In-memory buffers keep their ``rrq_*`` names (no side-effect rename).
         for k in range(1, 4):
-            assert f"qweight_{k}" in layer._buffers, f"qweight_{k} buffer missing"
-            assert f"scales_{k}" in layer._buffers, f"scales_{k} buffer missing"
-            assert f"qzeros_{k}" in layer._buffers, f"qzeros_{k} buffer missing"
-            for old in (f"rrq_qweight_{k}", f"rrq_scales_{k}", f"rrq_qzeros_{k}"):
-                assert old not in layer._buffers
+            assert f"rrq_qweight_{k}" in layer._buffers, f"rrq_qweight_{k} buffer missing"
+            assert f"rrq_scales_{k}" in layer._buffers, f"rrq_scales_{k} buffer missing"
+            assert f"rrq_qzeros_{k}" in layer._buffers, f"rrq_qzeros_{k} buffer missing"
 
         # Only residual-plane tensors should be saved -- no base weight, no
         # non-RRQ params.  There are exactly 3 planes x 3 tensors = 9 entries.
@@ -805,7 +1001,9 @@ class TestGenerateRRQResidual:
         torch.manual_seed(42)
         yield
 
-    def _make_base_and_raw(self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True):
+    def _make_base_and_raw(
+        self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True, raw_format="safetensors"
+    ):
         """Build a fake base model dir (packed INT2) + raw FP state dict.
 
         Returns ``(base_dir, raw_dir)`` where:
@@ -880,7 +1078,13 @@ class TestGenerateRRQResidual:
         raw_dir = os.path.join(str(tmp_path), "raw")
         os.makedirs(raw_dir, exist_ok=True)
         raw_state = {"test_layer.weight": W.clone()}
-        save_file(raw_state, os.path.join(raw_dir, "model.safetensors"))
+        if raw_format == "bin":
+            # Pre-safetensors checkpoints (e.g. facebook/opt-125m as shipped in
+            # CI) store a single ``pytorch_model.bin``.  The residual generator
+            # must still accept them, so keep a variant that only has the .bin.
+            torch.save(raw_state, os.path.join(raw_dir, "pytorch_model.bin"))
+        else:
+            save_file(raw_state, os.path.join(raw_dir, "model.safetensors"))
 
         return base_dir, raw_dir
 
@@ -910,6 +1114,38 @@ class TestGenerateRRQResidual:
             assert state[f"test_layer.qweight_{k}"].dtype == torch.int32
             assert state[f"test_layer.scales_{k}"].dtype == torch.float16
             assert state[f"test_layer.qzeros_{k}"].dtype == torch.int32
+
+    def test_raw_model_without_safetensors(self, tmp_path):
+        """A raw model that only ships ``pytorch_model.bin`` is still accepted.
+
+        ``facebook/opt-125m`` predates safetensors and CI keeps only the .bin,
+        so rejecting non-safetensors raw models made the incremental workflow
+        unusable for every pre-safetensors checkpoint.
+        """
+        from safetensors.torch import load_file
+
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True, raw_format="bin")
+        assert not os.path.exists(os.path.join(raw_dir, "model.safetensors"))
+        assert os.path.exists(os.path.join(raw_dir, "pytorch_model.bin"))
+
+        out_dir = str(tmp_path / "residual_from_bin")
+        generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=True)
+
+        state = load_file(os.path.join(out_dir, "model.safetensors"))
+        planes = sorted({int(k.rsplit("_", 1)[1]) for k in state if ".qweight_" in k})
+        assert planes == [1, 2, 3], f"expected residual planes 1..3, got {planes}"
+
+    def test_missing_raw_weights_raises(self, tmp_path):
+        """A raw dir with neither format present still fails loudly."""
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
+        os.remove(os.path.join(raw_dir, "model.safetensors"))
+
+        with pytest.raises(FileNotFoundError, match="No safetensors or pytorch_model.bin"):
+            generate_rrq_residual(base_dir, raw_dir, str(tmp_path / "out"), group_size=32, sym=True)
 
     def test_residual_norm_decreases(self, tmp_path):
         """Successive residual planes should reduce the reconstruction error."""
@@ -1207,3 +1443,384 @@ class TestResolveActiveBits:
         # 2 planes x 2 bits = 4-bit max; 6-bit is out of range for this checkpoint.
         with pytest.raises(ValueError, match="exceeds the maximum supported"):
             _resolve_active_bits(2, 2, 6)
+
+
+class TestRRQIncrementalFromRealBase:
+    """End-to-end: quantize a real model to a 2-bit base, then build residuals.
+
+    Covers the two-phase workflow that ``generate_rrq_residual`` exists for:
+    an INT2 base model exported by the normal ``auto_round`` path is extended
+    with RTN residual planes, without re-quantizing the base.  Uses OPT-125M
+    so the test exercises real layer names (``model.decoder.layers.*``) rather
+    than a synthetic state dict.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(0)
+        yield
+
+    @pytest.fixture(scope="class")
+    def quantized_base(self, tmp_path_factory):
+        """Quantize OPT-125M to a standard INT2 (W2A16) base model once."""
+        out_dir = tmp_path_factory.mktemp("rrq_opt_base")
+        ar = AutoRound(
+            opt_name_or_path,
+            scheme="W2A16",
+            nsamples=8,
+            seqlen=128,
+            batch_size=1,
+            iters=0,
+        )
+        _, save_folder = ar.quantize_and_save(output_dir=str(out_dir), format="auto_round")
+        return save_folder
+
+    def test_base_is_standard_int2(self, quantized_base):
+        """The first phase must produce a plain 2-bit auto_round model."""
+        import json
+        import os
+
+        with open(os.path.join(quantized_base, "config.json"), "r", encoding="utf-8") as f:
+            config = json.load(f)
+        quant = config["quantization_config"]
+        assert quant["bits"] == 2
+        assert quant["data_type"] == "int"
+        assert quant["quant_method"] == "auto-round"
+        # A standard base export must not advertise the RRQ packing format.
+        assert quant.get("packing_format") != RRQ_PACKING_FORMAT
+
+    def test_generate_residual_from_quantized_base(self, quantized_base, tmp_path):
+        """Phase two: RTN residual planes are generated from the exported base."""
+        import json
+        import os
+
+        from safetensors.torch import load_file
+
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        residual_dir = str(tmp_path / "residual")
+        generate_rrq_residual(
+            quantized_base,
+            raw_model=opt_name_or_path,
+            output_dir=residual_dir,
+            group_size=128,
+            sym=True,
+        )
+
+        # The residual artifact declares the RRQ ABI and 1 base + 3 residuals.
+        with open(os.path.join(residual_dir, "config.json"), "r", encoding="utf-8") as f:
+            quant = json.load(f)["quantization_config"]
+        assert quant["packing_format"] == RRQ_PACKING_FORMAT
+        assert quant["quant_method"] == RRQ_QUANT_METHOD
+        assert quant["total_planes"] == 4
+        assert quant["bits"] == 2
+
+        state = load_file(os.path.join(residual_dir, "model.safetensors"))
+        planes = sorted({int(k.rsplit("_", 1)[1]) for k in state if ".qweight_" in k})
+        assert planes == [1, 2, 3], f"expected residual planes 1..3, got {planes}"
+
+        # Every residual plane must be packed INT2 of the expected dtypes.
+        for key, tensor in state.items():
+            if ".qweight_" in key:
+                assert tensor.dtype == torch.int32, key
+            elif ".scales_" in key:
+                assert tensor.dtype == torch.float16, key
+            elif ".qzeros_" in key:
+                assert tensor.dtype == torch.int32, key
+
+        # Every packed base layer must have all three residual planes.
+        base_state = load_file(os.path.join(quantized_base, "model.safetensors"))
+        base_layers = {k.rsplit(".qweight", 1)[0] for k in base_state if k.endswith(".qweight")}
+        residual_layers = {k.rsplit(".qweight_", 1)[0] for k in state if ".qweight_" in k}
+        assert base_layers == residual_layers, (
+            f"base/residual layer mismatch: missing={sorted(base_layers - residual_layers)[:3]}, "
+            f"extra={sorted(residual_layers - base_layers)[:3]}"
+        )
+
+    def test_residual_reduces_error_against_fp(self, quantized_base, tmp_path):
+        """Each successive residual plane must lower the FP reconstruction error."""
+        import glob
+        import os
+
+        from safetensors.torch import load_file
+
+        from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.inference.rrq_model import _build_quant_plane
+
+        residual_dir = str(tmp_path / "residual_norm")
+        generate_rrq_residual(
+            quantized_base,
+            raw_model=opt_name_or_path,
+            output_dir=residual_dir,
+            group_size=128,
+            sym=True,
+        )
+
+        # Compare one projection layer end to end: base -> base+1 -> ... -> base+3.
+        base_state = load_file(os.path.join(quantized_base, "model.safetensors"))
+        residual_state = load_file(os.path.join(residual_dir, "model.safetensors"))
+
+        # ``opt_name_or_path`` may be an HF id; resolve it to a local checkpoint.
+        # ``snapshot_download`` can return a revision without safetensors weights,
+        # so scan the snapshot dirs and take the first file that actually exists.
+        raw_file = None
+        if os.path.isdir(opt_name_or_path):
+            raw_file = os.path.join(opt_name_or_path, "model.safetensors")
+        else:
+            from huggingface_hub import snapshot_download
+
+            local_dir = snapshot_download(opt_name_or_path)
+            candidates = glob.glob(os.path.join(os.path.dirname(local_dir), "*", "model.safetensors"))
+            candidates += glob.glob(os.path.join(local_dir, "model.safetensors"))
+            raw_file = next((c for c in candidates if os.path.exists(c)), None)
+        assert raw_file is not None, f"no FP safetensors weights found for {opt_name_or_path}"
+        raw_state = load_file(raw_file)
+
+        layer = "model.decoder.layers.0.self_attn.q_proj"
+        assert f"{layer}.qweight" in base_state
+        assert f"{layer}.weight" in raw_state
+
+        QuantLinear = _rrq_quant_linear_class(True)
+        out_features = raw_state[f"{layer}.weight"].shape[0]
+        in_features = raw_state[f"{layer}.weight"].shape[1]
+
+        accum = _build_quant_plane(
+            QuantLinear,
+            base_state[f"{layer}.qweight"],
+            base_state[f"{layer}.scales"],
+            base_state[f"{layer}.qzeros"],
+            2,
+            128,
+            in_features,
+            out_features,
+            False,
+            None,
+            torch.device("cpu"),
+        )
+        identity = torch.eye(in_features, dtype=torch.float32)
+        with torch.no_grad():
+            W = accum.forward(identity).T.to(torch.float32)
+
+        W_fp = raw_state[f"{layer}.weight"].to(torch.float32)
+        norms = [(W_fp - W).norm().item()]
+        for k in (1, 2, 3):
+            plane = _build_quant_plane(
+                QuantLinear,
+                residual_state[f"{layer}.qweight_{k}"],
+                residual_state[f"{layer}.scales_{k}"],
+                residual_state[f"{layer}.qzeros_{k}"],
+                2,
+                128,
+                in_features,
+                out_features,
+                False,
+                None,
+                torch.device("cpu"),
+            )
+            with torch.no_grad():
+                W = W + plane.forward(identity).T.to(torch.float32)
+            norms.append((W_fp - W).norm().item())
+
+        for i in range(1, len(norms)):
+            assert norms[i] <= norms[i - 1] + 1e-4, f"residual error increased at plane {i}: {norms[i]} > {norms[i-1]}"
+        # 8-bit (base + 3 residuals) should be much closer to FP than 2-bit base.
+        assert norms[-1] < norms[0] * 0.5, f"4-plane reconstruction not better than base: {norms}"
+
+
+class TestRRQPhasePrecision:
+    """Prefill at one precision, decode at another (``set_rrq_phase_bits``)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(0)
+        yield
+
+    def _build_rrq_layer(self, *args, **kwargs):
+        # ``_build_rrq_layer`` uses no instance state, so reuse the fixture
+        # logic from TestRRQLinear instead of duplicating the packing code.
+        return TestRRQLinear()._build_rrq_layer(*args, **kwargs)
+
+    def test_phase_bits_prefill_and_decode_differ(self):
+        """Prefill (many tokens) and decode (one token) use different precisions."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+
+        assert rrq.phase_bits == (6, 2)
+
+        x_seq = torch.randn(2, 8, in_features)  # seq=8 -> prefill
+        x_one = torch.randn(2, 1, in_features)  # seq=1 -> decode, even with batch=2
+        prefill_out = rrq(x_seq)
+        decode_out = rrq(x_one)
+
+        # Reference: 6-bit (3 planes) and 2-bit (1 plane) selected explicitly.
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(6)
+        ref_prefill = rrq(x_seq)
+        rrq.set_active_bits(2)
+        ref_decode = rrq(x_one)
+
+        assert torch.allclose(prefill_out, ref_prefill, atol=1e-3)
+        assert torch.allclose(decode_out, ref_decode, atol=1e-3)
+
+    def test_phase_bits_decode_differs_from_prefill_output(self):
+        """A single-token forward must not equal the 6-bit forward."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        x = torch.randn(1, 1, in_features)
+
+        rrq.set_phase_bits(prefill_bits=2, decode_bits=8)
+        decode_out = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        two_bit = rrq(x)
+        rrq.set_active_bits(8)
+        eight_bit = rrq(x)
+
+        assert torch.allclose(decode_out, eight_bit, atol=1e-3)
+        assert not torch.allclose(decode_out, two_bit, atol=1e-6)
+
+    def test_phase_bits_threshold(self):
+        """The threshold controls where the prefill/decode boundary sits."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        x = torch.randn(1, 16, in_features)  # seq_len=16
+
+        # Threshold above the sequence length -> decode precision (2-bit).
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=64)
+        below = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        assert torch.allclose(below, rrq(x), atol=1e-3)
+
+        # Threshold below the sequence length -> prefill precision (8-bit).
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=8)
+        above = rrq(x)
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(8)
+        assert torch.allclose(above, rrq(x), atol=1e-3)
+
+    def test_phase_bits_batched_decode_stays_low_precision(self):
+        """Batched decode is (batch, 1, hidden): it must stay at decode precision.
+
+        Using the total token count instead of the sequence length would misread
+        a batch of 8 decode steps as prefill and silently pay prefill cost on
+        every generated token.
+        """
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=8, decode_bits=2)
+
+        x_batched_decode = torch.randn(8, 1, in_features)
+        batched_out = rrq(x_batched_decode)
+
+        rrq.disable_phase_bits()
+        rrq.set_active_bits(2)
+        assert torch.allclose(batched_out, rrq(x_batched_decode), atol=1e-3)
+
+    def test_phase_bits_validation(self):
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=3, decode_bits=2)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=8, decode_bits=16)
+        with pytest.raises(ValueError):
+            rrq.set_phase_bits(prefill_bits=8, decode_bits=2, prefill_threshold=0)
+
+    def test_set_rrq_bits_disables_phase(self):
+        """set_rrq_bits is contradictory with phase precision, so it clears it."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_bits
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+        assert rrq.phase_bits == (6, 2)
+
+        set_rrq_bits(wrapper, 4)
+        assert rrq.phase_bits is None
+        assert rrq.active_bits == 4
+
+    def test_phase_cache_keeps_both_slots(self):
+        """Both phases stay cached; alternating them must not thrash the cache."""
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+
+        x_seq = torch.randn(1, 8, in_features)
+        x_one = torch.randn(1, 1, in_features)
+        rrq(x_seq)
+        rrq(x_one)
+
+        # Two distinct plane counts must be cached simultaneously.
+        assert rrq._packed_weight is not None
+        assert set(rrq._packed_weight) == {3, 1}, f"cache slots: {set(rrq._packed_weight)}"
+
+    def test_fused_decode_disabled_still_matches(self):
+        """The fused decode path must not change the output of a 2-bit forward.
+
+        At one plane the fused kernel and the dequant-then-GEMM path perform the
+        identical arithmetic, so any difference signals a kernel bug rather than
+        acceptable floating-point reordering.
+        """
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        rrq.set_active_bits(2)
+        x = torch.randn(1, 1, in_features)
+
+        rrq.set_fused_decode(False)
+        ref = rrq(x)
+        rrq.set_fused_decode(True)
+        got = rrq(x)
+        # On CPU the fused kernel does not engage (CUDA only), so both runs must
+        # be bit-identical.
+        assert torch.equal(ref, got)
+
+    def test_fused_decode_getter_and_toggle(self):
+        from auto_round.inference.rrq_linear import set_rrq_fused_decode
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        rrq.set_fused_decode(True)
+        assert rrq._fused_decode is True
+        rrq.set_fused_decode(False)
+        assert rrq._fused_decode is False
+
+        assert set_rrq_fused_decode(wrapper, True) == 1
+        assert rrq._fused_decode is True
+        assert set_rrq_fused_decode(wrapper, False) == 1
+        assert rrq._fused_decode is False
+
+    def test_fused_decode_no_rrq_layers_warns(self):
+        from auto_round.inference.rrq_linear import set_rrq_fused_decode
+
+        empty = nn.Module()
+        empty.add_module("proj", nn.Linear(8, 8))
+        assert set_rrq_fused_decode(empty, True) == 0
+
+    def test_triton_kernel_shape_helpers(self):
+        """rrq_gemv reports its packing assumptions consistently."""
+        from auto_round.inference.rrq_triton import triton_gemv_available
+
+        # Availability is a plain bool and must not raise on any platform.
+        assert isinstance(triton_gemv_available(), bool)
+
+    def test_required_cache_bytes_counts_both_phases(self):
+        from auto_round.inference.rrq_linear import RRQLinear, required_rrq_cache_bytes
+
+        in_features, out_features = 64, 32
+        rrq = self._build_rrq_layer(in_features, out_features, group_size=32, num_residual=3)
+        wrapper = nn.Module()
+        wrapper.add_module("proj", rrq)
+
+        single = required_rrq_cache_bytes(wrapper)
+        rrq.set_phase_bits(prefill_bits=6, decode_bits=2)
+        doubled = required_rrq_cache_bytes(wrapper)
+        assert doubled == single * 2, f"{doubled} != 2 * {single}"
