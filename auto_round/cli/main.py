@@ -596,6 +596,7 @@ def tune(args):
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             default_shared_layers=not getattr(args, "disable_default_shared_layers", False),
+            weight_score_mode=args.weight_score_mode,
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
