@@ -7,18 +7,24 @@ endif()
 
 # The published XPU wheel must not inherit the build host ISA: with -march=native
 # on an AVX-512 builder, auto_round_kernel_xpu carried EVEX instructions and died
-# with SIGILL on CPUs without AVX-512 (issue #2659). Pin the ISA detection to an
-# x86-64-v3 baseline instead, unless a local build asks for the native ISA.
-# This runs before FindSIMD.cmake, so the BTLA_*_FOUND definitions below follow
-# the same choice for host and device compilation and the guards in
-# bestla_utils.h stay untouched.
-if(BTLA_SYCL)
-  option(BTLA_NATIVE_ARCH "Use the host ISA (-march=native); local builds only, not portable" OFF)
-  if(NOT BTLA_NATIVE_ARCH)
-    foreach(_isa AVX512 AVX512_VNNI AVX512_BF16 AVX512_FP16 AMX_BF16 AMX_INT8 AMX_FP16)
-      set(${_isa}_FOUND FALSE CACHE BOOL "Forced off for the portable XPU wheel (issue #2659)" FORCE)
-    endforeach()
-  endif()
+# with SIGILL on CPUs without AVX-512 (issue #2659).
+option(BTLA_NATIVE_ARCH "Use the host ISA (-march=native); local builds only, not portable" OFF)
+
+# ISAs the portable wheel must not emit, applied when the BTLA_*_FOUND definitions
+# are generated below. FindSIMD's cached *_FOUND values are deliberately left
+# alone: forcing them in the cache would make a later `-DBTLA_NATIVE_ARCH=ON`
+# reconfigure of the same build directory silently keep them off, because
+# check_isa() skips any type whose cache entry already exists.
+#
+# Every entry is an ISA the fixed baseline below does not enable on the compile
+# line, so leaving its guard on would ask for intrinsics that line cannot
+# satisfy. `AVX_VNNI` is the non-obvious one: `-mavx2 -mfma -mf16c` does not
+# imply `-mavxvnni`, and kernel_avx_vnni.h's only other guard is a
+# compiler-specific pragma/attribute pair.
+set(BESTLA_PORTABLE_ISA_EXCLUSIONS "")
+if(BTLA_SYCL AND NOT BTLA_NATIVE_ARCH)
+  set(BESTLA_PORTABLE_ISA_EXCLUSIONS
+      AVX512 AVX512_VNNI AVX_VNNI AVX512_BF16 AVX512_FP16 AMX_BF16 AMX_INT8 AMX_FP16)
 endif()
 
 include(cmake/FindSIMD.cmake)
@@ -61,11 +67,14 @@ target_include_directories(
 )
 
 function(add_isa_def ARG)
-	if(${${ARG}_FOUND})
+  if(ARG IN_LIST BESTLA_PORTABLE_ISA_EXCLUSIONS)
+    # Excluded for the portable XPU wheel even when the build host has the ISA.
+    target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=0)
+  elseif(${${ARG}_FOUND})
     target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=1)
   else()
     target_compile_definitions(${PROJECT_NAME} INTERFACE BTLA_${ARG}_FOUND=0)
-	endif()
+  endif()
 endfunction()
 
 foreach (ISA ${ISA_SET})
